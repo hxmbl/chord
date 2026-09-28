@@ -1,0 +1,7 @@
+[project]
+name = "chord"
+version = "0.1.0"
+description = "Connect Linear together with tools you already use."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
