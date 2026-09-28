@@ -1,0 +1,44 @@
+# MineSweep configuration
+# Every option is optional - delete anything you do not need.
+# Command-line flags override values in this file.
+
+# Policy profile used to decide whether findings block, warn, or redact.
+# Built-in profiles: default, developer, enterprise, public-github
+profile: default
+
+# Minimum severity that makes the scanner exit non-zero (useful as a CI gate).
+# One of: info, low, medium, high, critical
+fail_on: low
+
+# Only report findings at or above this severity.
+# min_severity: low
+
+# Hide findings whose confidence is below this threshold (0.0 - 1.0).
+# min_confidence: 0.5
+
+# Only include findings tagged with one of these labels.
+# tags: [aws, gcp]
+
+# Scan test files too (they are skipped by default).
+include_test_files: false
+
+# Base branch used by "minesweep --diff" (pull-request scanning).
+# diff_base: main
+
+# Record known findings here so only NEW ones are reported later.
+# Create once with: minesweep --update-baseline --baseline .minesweep-baseline.json .
+# baseline_file: .minesweep-baseline.json
+
+# Ignore specific findings listed in a suppression file.
+# suppress_file: .minesweep-suppress.yml
+
+# Directories with custom detection rules, policies, and profiles.
+# On-disk directories take precedence over the built-ins shipped in the binary.
+# rules_dir: rules
+# policy_dir: policy
+# profiles_dir: profiles
+
+# Performance tuning (rarely needed; defaults scale with your machine).
+# workers: 8
+# max_files: 0              # 0 = unlimited
+# max_file_size_mb: 50      # files larger than this are skipped
