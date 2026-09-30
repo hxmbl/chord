@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Test and coverage output. `pyproject.toml` writes coverage.xml on every run.
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Tooling caches.
+.ruff_cache/
+
+# minesweep baseline, if one is ever created.
+.minesweep-baseline.json
