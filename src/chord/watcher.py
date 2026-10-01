@@ -16,7 +16,7 @@ from chord import logging
 from chord import notify, subscribe
 from chord.context import Issue, render
 from chord.harness import Harness
-from chord.linear import Linear, LinearError
+from chord.linear import LinearClient, LinearError
 from chord.subscribe import Subscription
 from chord.webhook import Webhook
 
@@ -79,7 +79,7 @@ def _spacer() -> None:
 class Watcher:
     def __init__(
         self,
-        linear: Linear,
+        linear: LinearClient,
         harness: Harness,
         label: str,
         interval: int,
@@ -267,7 +267,9 @@ class Watcher:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             body = json.dumps({"handed_over": trimmed}, indent=2) + "\n"
-            self._path.write_text(body)
+            pending = self._path.with_suffix(self._path.suffix + ".tmp")
+            pending.write_text(body)
+            pending.replace(self._path)
         except OSError as exc:
             # Losing this costs a duplicate hand-over after a restart, which
             # is a much smaller problem than a watcher that stops working.

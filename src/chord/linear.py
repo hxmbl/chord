@@ -4,7 +4,7 @@ Chord never writes to Linear. Everything here is a read, and the only secret
 involved is a token that credentials.py put in the keychain.
 """
 
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 import httpx
 
@@ -89,6 +89,12 @@ class IssuePage(NamedTuple):
 
     issues: list[Issue]
     truncated: bool
+
+
+class LinearClient(Protocol):
+    async def issues_with_label(self, label: str) -> IssuePage: ...
+
+    async def comments(self, issue_id: str) -> list[dict[str, Any]]: ...
 
 
 class Linear:

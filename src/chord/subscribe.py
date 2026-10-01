@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 from typing import Any
 
+from chord.event_source import EventSource
 from chord.text import one_line
 
 SUBSCRIPTION_ENDPOINT = "wss://api.linear.app/graphql"
@@ -92,23 +93,25 @@ def available() -> bool:
     return True
 
 
-class Subscription:
+class Subscription(EventSource):
     """A best-effort live connection that wakes the watcher early."""
 
+    consume_pending_when_inactive = False
+
     def __init__(self, access_token: str) -> None:
+        super().__init__()
         self._token = access_token
         self._report: Any = None
-        self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._closing = False
-        # A counter rather than a flag, so a wake-up can tell "an event arrived
-        # since I last looked" from "the event I saw was the one that woke me".
-        self._generation = 0
-        self._consumed = 0
 
     @property
     def connected(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def active(self) -> bool:
+        return self.connected
 
     def report_problems_to(self, callback) -> None:
         """Where to say why the connection is unhappy.
@@ -132,39 +135,6 @@ class Subscription:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
-
-    def _wake(self) -> None:
-        self._generation += 1
-        self._event.set()
-
-    async def wait(self, timeout: float) -> bool:
-        """Sleep up to `timeout`, returning early if something changed.
-
-        Returns whether anything arrived that the last `wait` didn't already
-        report. Compared against a marker rather than an event flag, because a
-        flag cleared here would also discard a change that landed while the
-        caller was busy polling — which is exactly when one tends to arrive.
-
-        A caller that gets `False` should simply do its scheduled work. Nothing
-        is lost either way, because the poll decides what is outstanding.
-        """
-        if not self.connected:
-            await asyncio.sleep(timeout)
-            return False
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while self._generation == self._consumed:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return False
-            self._event.clear()
-            try:
-                await asyncio.wait_for(self._event.wait(), remaining)
-            except TimeoutError:
-                return False
-        self._consumed = self._generation
-        return True
 
     async def _run(self) -> None:
         """Hold the connection open, reconnecting when it drops.
