@@ -14,7 +14,7 @@ from typing import TypeAlias
 from chord.paths import config_path
 
 DEFAULT_LABEL = "Chord"
-DEFAULT_HARNESS = "print"
+DEFAULT_HARNESS = "opencode"
 DEFAULT_INTERVAL = 60
 DEFAULT_WEBHOOK_PORT = 23842
 

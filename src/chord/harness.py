@@ -28,8 +28,8 @@ class Harness(Protocol):
 class PrintHarness:
     """Writes the issue to Chord's own output, which is the watcher's log.
 
-    The default, and deliberately a real harness: it makes a first run
-    inspectable instead of speculative.
+    A built-in harness: it makes a first run inspectable instead of
+    speculative.
     """
 
     name = "print"

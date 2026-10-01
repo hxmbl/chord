@@ -13,7 +13,7 @@ from chord import config, credentials
 def test_defaults_run_with_no_file(tmp_path):
     cfg = config.load(tmp_path / "nothing.toml")
     assert cfg.label == "Chord"
-    assert cfg.harness == "print"
+    assert cfg.harness == "opencode"
     assert cfg.interval == 60
     assert cfg.from_file is False
 

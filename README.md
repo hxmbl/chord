@@ -2,19 +2,20 @@
 
 > Connect Linear together with the tools you use to build.
 
-Chord watches Linear for issues carrying one label, and hands each one to a
-coding harness of your choosing.
+Chord watches Linear for issues carrying a label (default: `Chord`), and hands
+each one to a coding harness of your choosing. That's the whole thing.
 
 ```
 Linear  →  Chord  →  Context  →  chosen harness
 ```
 
-Chord is the layer that isn't Cursor. Put the `chord` label on an issue, and
-whatever you normally build with — Claude Code, Codex, a script of your own —
-is handed the issue and gets to work on it.
+Chord is the layer that connects your issue tracker to your coding tools. Put the
+`Chord` label on an issue, and whatever you normally build with — opencode,
+Claude Code, Codex, or a custom script — is handed the issue on stdin and gets
+to work on it.
 
-It never writes back to Linear. Linear stays the source of truth; Chord is the
-trigger.
+It never writes back to Linear. Linear stays the source of truth; Chord is only
+a trigger that reads and forwards.
 
 ---
 
@@ -22,13 +23,9 @@ trigger.
 
 - [uv](https://docs.astral.sh/uv/)
 - Python 3.11 or newer
-- A Linear OAuth application
+- A Linear OAuth application (for authentication)
 
-Chord asks Linear for the `read` scope and nothing else. It never writes to
-Linear.
-
-Chord starts a local webhook listener for fast issue notifications. Polling is
-kept as the reliable backup, so a dropped webhook cannot lose work.
+Chord asks Linear for the `read` scope only. It never writes to Linear.
 
 ## Setup
 
@@ -40,7 +37,7 @@ application**.
 - **Redirect URL**: `http://127.0.0.1:23841/callback`
 - **Permissions**: `read`
 
-Linear shows the client secret once, at creation.
+Linear shows the client secret once, at creation. Copy it somewhere safe.
 
 ### 2. Put the credentials in `.env`
 
@@ -52,7 +49,7 @@ LINEAR_CLIENT_SECRET="your client secret"
 `.env` is already git-ignored, and the token itself never goes near it — see
 [Credentials](#credentials) below.
 
-### 3. Connect
+### 3. Connect to Linear
 
 ```bash
 uv sync
@@ -62,13 +59,31 @@ uv run chord setup
 This opens a browser, asks Linear to confirm, and puts the resulting token in
 your keychain. `chord setup` is the only step that needs a person.
 
-### 4. Start watching
+### 4. (Optional) Set up a Linear webhook for instant notifications
+
+Without a webhook, Chord polls Linear every 60 seconds (configurable). To get
+instant notifications when issues are labeled:
+
+1. In Linear: **Settings → Integrations → Webhooks → Add webhook**
+2. **URL**: `http://<your-external-url>:23842/webhook` (see note below)
+3. **Events**: Select "Issue created" and "Issue updated"
+4. **Teams**: Select the team(s) you want to watch
+
+**Note on the URL**: Chord's webhook listens on `127.0.0.1:23842` by default, which
+only works from your machine. To receive Linear webhooks, expose this port publicly
+using a tunnel service (like ngrok, Cloudflare Tunnel, or Tailscale) and use
+that public URL. Run `chord info` to see the exact webhook URL Chord is listening on.
+
+If you skip this step, polling still works — webhooks are purely for speed.
+
+### 5. Start watching
 
 ```bash
 uv run chord start
 ```
 
-Put the `chord` label on an issue. Within a minute it appears in the log:
+Put the `Chord` label on an issue. Within a minute (or instantly with webhooks) it
+appears in the log:
 
 ```bash
 uv run chord watch
@@ -103,8 +118,8 @@ config at `~/.chord/chord.toml` is also supported; the project config wins.
 # The label that triggers a run. Default: "Chord".
 label = "Chord"
 
-# What does the work. Default: "print".
-harness = "print"
+# What does the work. Default: "opencode".
+harness = "opencode"
 
 # Seconds between checks of Linear. Default: 60, floor 5.
 interval = 60
@@ -121,28 +136,23 @@ so `chord start` works the same from a subdirectory. The nearest one wins. That
 directory is also what identifies the project to the rest of Chord — see
 [State on disk](#state-on-disk).
 
-## Live updates
+## How webhooks work
 
-The watcher listens for HTTP `POST` events at `/webhook` and immediately
-re-checks the configured label. Point a Linear webhook or a public tunnel at
-the URL printed in the log. The webhook payload is only a wake-up signal;
-Chord fetches the issue and discussion itself, so duplicate or malformed event
-payloads are harmless. Polling continues at `interval` as the backup.
+If you set up a Linear webhook (see Setup step 4), the watcher receives instant
+notifications. The webhook payload is only a wake-up signal; Chord always re-fetches
+the full issue and discussion from Linear, so duplicate or malformed payloads
+are harmless.
 
-Linear's subscription filters can narrow by assignee, project, state, parent
-and team, but not by label, so every issue event in the workspace arrives and
-the label is checked afterwards. A spurious event costs one poll that finds
-nothing.
-
-Set `interval` as high as you like when webhooks are working — it becomes the
-cadence for catching anything missed during a delivery outage, not the delay
-before you hear about a new issue.
+Polling continues at your configured `interval` as a reliable backup. You can
+set `interval` high (even hours) when webhooks are working — it only controls
+how long Chord waits to catch anything missed during a delivery outage, not how
+quickly you see new issues.
 
 ## Harnesses
 
 `harness` is either a name Chord knows or a command to run.
 
-**`print`** is the default. It writes the issue to Chord's log and is a real
+**`opencode`** is the default. **`print`** is also available: it writes the issue to Chord's log and is a real
 harness, not a placeholder — it makes the first run inspectable.
 
 Anything else is run as a command, with the issue **on standard input**:
