@@ -4,10 +4,12 @@ Chord never writes to Linear. Everything here is a read, and the only secret
 involved is a token that credentials.py put in the keychain.
 """
 
+import asyncio
 from typing import Any, NamedTuple, Protocol
 
 import httpx
 
+from chord import logging
 from chord.context import Issue
 from chord.text import one_line
 
@@ -32,6 +34,9 @@ MAX_ISSUES_PER_POLL = 1000
 # but an issue with a thousand comments is a sign something else is wrong, and
 # reading all of it on every hand-over is not worth the tokens.
 MAX_COMMENTS = 200
+
+RETRY_MAX_ATTEMPTS = 3
+RETRY_BACKOFF_BASE = 1
 
 # The label is the whole of the trigger, so the filter happens at Linear.
 # `after` walks the connection: the first page alone used to be the whole
@@ -161,17 +166,38 @@ class Linear:
         return nodes, True
 
     async def _query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as http:
+        for attempt in range(RETRY_MAX_ATTEMPTS):
             try:
-                response = await http.post(
-                    GRAPHQL_ENDPOINT,
-                    json={"query": query, "variables": variables},
-                    headers=self._headers,
+                async with httpx.AsyncClient(timeout=TIMEOUT) as http:
+                    response = await http.post(
+                        GRAPHQL_ENDPOINT,
+                        json={"query": query, "variables": variables},
+                        headers=self._headers,
+                    )
+            except (httpx.HTTPError, TimeoutError) as exc:
+                if attempt + 1 == RETRY_MAX_ATTEMPTS:
+                    raise LinearError(
+                        f"Couldn't reach Linear ({type(exc).__name__})."
+                    ) from exc
+                delay = RETRY_BACKOFF_BASE * 2**attempt
+                logging.warning(
+                    f"Linear request failed ({type(exc).__name__}); "
+                    f"retrying in {delay}s (attempt {attempt + 2}/{RETRY_MAX_ATTEMPTS})."
                 )
-            except httpx.HTTPError as exc:
-                raise LinearError(
-                    f"Couldn't reach Linear ({type(exc).__name__})."
-                ) from exc
+                await asyncio.sleep(delay)
+                continue
+
+            if 500 <= response.status_code < 600:
+                if attempt + 1 == RETRY_MAX_ATTEMPTS:
+                    raise LinearError(f"Linear returned HTTP {response.status_code}.")
+                delay = RETRY_BACKOFF_BASE * 2**attempt
+                logging.warning(
+                    f"Linear returned HTTP {response.status_code}; "
+                    f"retrying in {delay}s (attempt {attempt + 2}/{RETRY_MAX_ATTEMPTS})."
+                )
+                await asyncio.sleep(delay)
+                continue
+            break
 
         if response.status_code in (401, 403):
             # The status and nothing more: the body can carry workspace detail,

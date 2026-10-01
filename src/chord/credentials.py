@@ -9,6 +9,7 @@ import json
 import re
 import secrets
 import time
+import warnings
 from typing import TypeAlias
 
 import typer
@@ -50,6 +51,29 @@ LINEAR_TTL = 24 * 60 * 60
 # Every step answers with (exit code, content): on failure the content is the
 # error message, on success it is whatever that step produced.
 Outcome: TypeAlias = tuple[int, str | dict]
+
+warnings.filterwarnings("ignore", message="The httpx module is deprecated.*")
+
+
+def _oauth_clients():
+    """Load authlib without surfacing its expected legacy fallback warning."""
+    try:
+        import httpx2  # noqa: F401
+    except ImportError:
+        # Authlib emits this warning when it falls back to httpx. Keep the
+        # fallback for existing installations, but don't make every test and
+        # command noisy when httpx2 is not installed yet.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="The httpx module is deprecated.*"
+            )
+            from authlib.integrations.httpx_client import (
+                AsyncOAuth2Client,
+                OAuthError,
+            )
+    else:
+        from authlib.integrations.httpx_client import AsyncOAuth2Client, OAuthError
+    return AsyncOAuth2Client, OAuthError
 
 
 def _printable(value: str) -> str:
@@ -208,7 +232,9 @@ async def refresh() -> Outcome:
         return FAILED, pair
     client_id, client_secret = pair
 
-    from authlib.integrations.httpx_client import AsyncOAuth2Client, OAuthError
+    # Authlib prefers its httpx2 compatibility module. Older environments may
+    # not have httpx2, so the helper retains the httpx fallback.
+    AsyncOAuth2Client, OAuthError = _oauth_clients()
 
     # authlib's AsyncOAuth2Client supports `async with` at runtime (it
     # inherits it from httpx.AsyncClient) but doesn't declare __aenter__ /
@@ -323,7 +349,8 @@ async def authenticate(store: bool) -> Outcome:
         client_id, client_secret = pair
 
         from authlib.common.security import generate_token
-        from authlib.integrations.httpx_client import AsyncOAuth2Client, OAuthError
+        # See the matching import in refresh().
+        AsyncOAuth2Client, OAuthError = _oauth_clients()
 
         # authlib's AsyncOAuth2Client supports `async with` at runtime (it
         # inherits it from httpx.AsyncClient) but doesn't declare __aenter__ /
