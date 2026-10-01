@@ -13,6 +13,7 @@ import warnings
 from typing import TypeAlias
 
 import typer
+from authlib.deprecate import AuthlibDeprecationWarning
 
 from chord.linear import GRAPHQL_ENDPOINT
 from chord.paths import find_upwards
@@ -52,13 +53,17 @@ LINEAR_TTL = 24 * 60 * 60
 # error message, on success it is whatever that step produced.
 Outcome: TypeAlias = tuple[int, str | dict]
 
-warnings.filterwarnings("ignore", message="The httpx module is deprecated.*")
+warnings.filterwarnings(
+    "ignore",
+    message="The httpx module is deprecated.*",
+    category=AuthlibDeprecationWarning,
+)
 
 
 def _oauth_clients():
     """Load authlib without surfacing its expected legacy fallback warning."""
     try:
-        import httpx2  # noqa: F401
+        import httpx2  # type: ignore[reportMissingImports]  # noqa: F401
     except ImportError:
         # Authlib emits this warning when it falls back to httpx. Keep the
         # fallback for existing installations, but don't make every test and

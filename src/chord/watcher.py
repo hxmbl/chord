@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from chord import harness as harnesses
-from chord import logging
-from chord import notify, subscribe
+from chord import logging, notify, subscribe
 from chord.context import Issue, render
 from chord.harness import Harness
 from chord.linear import LinearClient, LinearError
@@ -248,7 +247,7 @@ class Watcher:
             # every poll forever and nothing after it in the queue would ever
             # run. The failure is in the log, which is where a person looks.
             _spacer()
-            log(f"  didn't finish: {exc}")
+            self._problem(f"{identifier} didn't finish: {exc}")
             self._remember(issue_id)
             await notify.send("Chord done", f"{identifier} did not finish: {exc}")
             return
@@ -273,7 +272,7 @@ class Watcher:
         except OSError as exc:
             # Losing this costs a duplicate hand-over after a restart, which
             # is a much smaller problem than a watcher that stops working.
-            log(f"couldn't record {issue_id} in {self._path}: {exc.strerror}")
+            self._problem(f"couldn't record {issue_id} in {self._path}: {exc.strerror}")
 
     def _problem(self, message: str) -> None:
         """Report a problem, but only the first time in a row.

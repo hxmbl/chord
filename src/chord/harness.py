@@ -13,11 +13,11 @@ import shlex
 import shutil
 from typing import Protocol
 
-from chord.config import HarnessSpec
 from chord import logging
+from chord.config import HarnessSpec
 
 try:
-    HARNESS_TIMEOUT = float(os.environ.get("HARNESS_TIMEOUT", 30 * 60))
+    HARNESS_TIMEOUT = float(os.environ.get("HARNESS_TIMEOUT", str(30 * 60)))
 except ValueError:
     HARNESS_TIMEOUT = 30 * 60
 
@@ -77,7 +77,7 @@ class CommandHarness:
             output, _ = await asyncio.wait_for(
                 process.communicate(prompt.encode()), HARNESS_TIMEOUT
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             process.kill()
             await process.communicate()
             logging.error(f"Harness `{self.name}` timed out after {HARNESS_TIMEOUT}s.")
