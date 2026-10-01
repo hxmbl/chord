@@ -8,11 +8,18 @@ chord.toml rather than teaching Chord about it.
 """
 
 import asyncio
+import os
 import shlex
 import shutil
 from typing import Protocol
 
 from chord.config import HarnessSpec
+from chord import logging
+
+try:
+    HARNESS_TIMEOUT = float(os.environ.get("HARNESS_TIMEOUT", 30 * 60))
+except ValueError:
+    HARNESS_TIMEOUT = 30 * 60
 
 
 class HarnessError(Exception):
@@ -35,7 +42,7 @@ class PrintHarness:
     name = "print"
 
     async def send(self, prompt: str) -> None:
-        print(prompt, end="", flush=True)
+        logging.write(prompt)
 
 
 class CommandHarness:
@@ -67,7 +74,16 @@ class CommandHarness:
         try:
             # stderr was merged into stdout above, so everything the harness
             # said arrives in the first slot and the second is always None.
-            output, _ = await process.communicate(prompt.encode())
+            output, _ = await asyncio.wait_for(
+                process.communicate(prompt.encode()), HARNESS_TIMEOUT
+            )
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.communicate()
+            logging.error(f"Harness `{self.name}` timed out after {HARNESS_TIMEOUT}s.")
+            raise HarnessError(
+                f"`{self.name}` timed out after {HARNESS_TIMEOUT}s."
+            ) from exc
         except asyncio.CancelledError:
             # We're being shut down, most likely by `chord stop`. Don't leave
             # an agent running with nobody watching it.
@@ -78,9 +94,18 @@ class CommandHarness:
         if said:
             # Whatever the harness says belongs in the log. Without this, a
             # harness that fails quietly looks exactly like one that worked.
-            print(said, flush=True)
+            logging.write(said, end="\n")
         if process.returncode:
             raise HarnessError(f"`{self.name}` exited {process.returncode}.")
+
+
+class OpenCodeHarness(CommandHarness):
+    """The default harness: the `opencode` command."""
+
+    name = "opencode"
+
+    def __init__(self) -> None:
+        super().__init__(["opencode"])
 
 
 def build(spec: HarnessSpec) -> Harness:
@@ -89,6 +114,8 @@ def build(spec: HarnessSpec) -> Harness:
         return CommandHarness(spec)
     if spec == PrintHarness.name:
         return PrintHarness()
+    if spec == OpenCodeHarness.name:
+        return OpenCodeHarness()
 
     # A bare word we don't recognise is most likely the name of a tool the
     # user meant, so try it as a command before giving up. Naming the command
@@ -104,6 +131,7 @@ def build(spec: HarnessSpec) -> Harness:
     if found:
         return CommandHarness([found, *argv[1:]])
     raise HarnessError(
-        f"Don't know a harness called `{spec}`. Use `{PrintHarness.name}`, or "
+        f"Don't know a harness called `{spec}`. "
+        f"Use `{PrintHarness.name}` or `{OpenCodeHarness.name}`, or "
         'name the command to run instead, like ["claude", "-p"].'
     )

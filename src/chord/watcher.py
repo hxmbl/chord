@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from chord import harness as harnesses
+from chord import logging
 from chord import notify, subscribe
 from chord.context import Issue, render
 from chord.harness import Harness
 from chord.linear import Linear, LinearError
 from chord.subscribe import Subscription
-from chord.text import one_line
 from chord.webhook import Webhook
 
 # The most hand-overs to remember, and no smaller than the number of issues
@@ -67,14 +67,13 @@ def log(message: str) -> None:
     bodies and Linear's error text all reach this function, and none of them
     should be able to break the line or draw on the reader's terminal.
     """
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{stamp}  {one_line(message)}", flush=True)
+    logging.info(message)
 
 
 def _spacer() -> None:
     """A blank line, so a rendered issue doesn't run straight into the log line
     that follows it and leave the reader unsure which is which."""
-    print(flush=True)
+    logging.write("\n")
 
 
 class Watcher:
