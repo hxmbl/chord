@@ -32,14 +32,15 @@ SUBSCRIPTION_ENDPOINT = "wss://api.linear.app/graphql"
 # One root field per subscription, which is what the graphql-transport-ws
 # protocol expects. Linear's `IssueSubscriptionFilter` can narrow by assignee,
 # project, state, parent and team — but not by label — so every issue event in
-# the workspace arrives and the label is checked afterwards. That is a little
-# wasteful and completely harmless: the worst outcome of a spurious event is a
-# poll that finds nothing.
+# the workspace arrives and the route labels are checked afterwards, in the
+# poll. That is a little wasteful and completely harmless: the worst outcome of
+# a spurious event is a poll that finds nothing.
 #
 # Neither event is needed for correctness. `issueCreated` catches a new issue;
-# `issueUpdated` catches a label being added to one that already exists. If
-# Linear also fires something for the third case and we miss it, the interval
-# poll picks it up a minute later.
+# `issueUpdated` catches a label being added to one that already exists, which
+# is what routes an issue to a different harness. If Linear also fires
+# something for the third case and we miss it, the interval poll picks it up a
+# minute later.
 ISSUES_CHANGED = """
 subscription IssuesChanged {
   issueCreated { id }

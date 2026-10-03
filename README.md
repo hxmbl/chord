@@ -14,6 +14,11 @@ Chord is the layer that connects your issue tracker to your coding tools. Put th
 Claude Code, Codex, or a custom script — is handed the issue on stdin and gets
 to work on it.
 
+Want a different harness for a particular issue? Give it a different label.
+`Chord/opencode/space-bunny-free` sends that issue to the `space-bunny-free`
+harness instead of the default one, while everything else keeps going to the
+default. See [Routing](#routing).
+
 It never writes back to Linear. Linear stays the source of truth; Chord is only
 a trigger that reads and forwards.
 
@@ -91,6 +96,9 @@ uv run chord watch
 
 That is the whole loop, and it works with no config file at all.
 
+To send a particular issue somewhere else, label it `Chord/<name>` — see
+[Routing](#routing).
+
 ---
 
 ## Commands
@@ -111,14 +119,15 @@ That is the whole loop, and it works with no config file at all.
 ## chord.toml
 
 Chord runs with no config file. Write `.config/chord/chord.toml` in your
-project when you want to change the harness, label, or webhook port. A user
-config at `~/.chord/chord.toml` is also supported; the project config wins.
+project when you want to change the harness, the curated harnesses, the label,
+or the webhook port. A user config at `~/.chord/chord.toml` is also supported;
+the project config wins.
 
 ```toml
 # The label that triggers a run. Default: "Chord".
 label = "Chord"
 
-# What does the work. Default: "opencode".
+# What does the work by default. Default: "opencode".
 harness = "opencode"
 
 # Seconds between checks of Linear. Default: 60, floor 5.
@@ -126,6 +135,17 @@ interval = 60
 
 # Local webhook listener. Default: 23842; use 0 for an ephemeral test port.
 webhook_port = 23842
+
+# Extra named harnesses. A `Chord/<name>` label routes an issue to the one
+# called `<name>` instead of the default. See "Routing" below.
+#
+# Tables come last: in TOML everything after a `[table]` header belongs to that
+# table, so `interval` above has to be written before the first one of these.
+[harnesses."opencode/space-bunny-free"]
+command = ["opencode", "run", "--model", "space-bunny-free"]
+
+[harnesses.claude]
+command = ["claude", "-p"]
 ```
 
 Commit this file. It holds no secrets. Legacy root-level `chord.toml` files are
@@ -135,6 +155,41 @@ Chord looks for `chord.toml` in the directory you run it from and then upward,
 so `chord start` works the same from a subdirectory. The nearest one wins. That
 directory is also what identifies the project to the rest of Chord — see
 [State on disk](#state-on-disk).
+
+## Routing
+
+Which harness runs an issue is decided by its labels.
+
+| Label                       | Harness                     |
+| --------------------------- | --------------------------- |
+| `Chord`                     | whatever `harness` says     |
+| `Chord/claude`              | the curated `claude`        |
+| `Chord/opencode/tiny`       | the curated `opencode/tiny` |
+
+The whole part after `Chord/` is the harness name. Nothing in Chord knows what
+a harness is or how many segments its name has, so `opencode/tiny` is a name
+you chose, not a hierarchy Chord has to interpret.
+
+**An issue can carry more than one.** Label it `Chord`, then narrow it to
+`Chord/opencode/space-bunny-free` when you know where you want it to go, and
+both labels sit on the issue. Chord routes on **the one added most recently**,
+which it reads from Linear's own audit trail — not from a guess about which
+label is more specific. Narrowing an issue therefore changes where it goes,
+and handing it back to the default is just adding `Chord` again.
+
+If Linear can't be asked, Chord falls back to the most specific label on the
+issue and says so in the log.
+
+**A route with no harness behind it stops the issue.** `Chord/typo-here` isn't
+a typo Chord can shrug off: running the work on the default harness instead
+would hand it to an agent nobody asked for, on arguments nobody chose. So the
+issue is skipped, the log names the label and how to fix it, and the issues
+behind it still get their turn.
+
+`chord info` lists every route, which is the place to check what a label you
+typed in Linear will actually do. `chord start` builds every route before it
+spawns anything, so a curated harness naming a command that isn't installed is
+reported by the command rather than by the first issue that trips it.
 
 ## How webhooks work
 
@@ -150,28 +205,42 @@ quickly you see new issues.
 
 ## Harnesses
 
-`harness` is either a name Chord knows or a command to run.
+`harness` is either a name Chord knows or a command to run. Under
+`[harnesses.<name>]`, `command` means the same thing, and the entry's name is
+what a `Chord/<name>` label routes to.
 
-**`opencode`** is the default. **`print`** is also available: it writes the issue to Chord's log and is a real
-harness, not a placeholder — it makes the first run inspectable.
+**`opencode`** is the default built-in harness. **`print`** is a built-in
+debugging harness: it writes the issue to Chord's log so you can see exactly
+what would be handed over before trusting it with a real agent.
 
 Anything else is run as a command, with the issue **on standard input**:
 
 ```toml
 harness = ["claude", "-p"]
-harness = ["./scripts/on-issue.sh"]
-harness = ["my-agent", "--prompt", "-"]
+
+[harnesses.review]
+command = ["./scripts/on-issue.sh"]
+
+[harnesses.my-agent]
+command = ["my-agent", "--prompt", "-"]
 ```
 
 A bare name works too, if it's on your `PATH`:
 
 ```toml
 harness = "claude"
+
+[harnesses.review]
+command = "claude"
 ```
 
 That is the whole compatibility layer. Chord doesn't need to know what a
 harness is, so pointing it at a tool Chord has never heard of is a config
 change, not a release.
+
+A curated name and the default are separate things. `harness` is what a bare
+`Chord` runs; `Chord/foo` always means the entry named `foo`, even when the two
+happen to spell the same command.
 
 Two things follow from the issue arriving on stdin:
 
@@ -184,18 +253,44 @@ Two things follow from the issue arriving on stdin:
 Whatever your harness prints goes into Chord's log, and a non-zero exit is
 reported as a failure.
 
+**After the hand-over it isn't Chord's problem.** A harness that half-finishes,
+needs a nudge, or wants a PR opened is doing that on its own. Chord waits for
+the command to exit and writes down what it printed.
+
+Command harnesses have a 30-minute execution timeout. Set `HARNESS_TIMEOUT`
+in the environment to use a different value in seconds. Long-running work
+should checkpoint so it can be resumed after a timeout.
+
+## Adding Built-in Harnesses
+
+A new harness is a line in `chord.toml`, not a change to Chord. Reach for a
+built-in only when a harness needs to *do* something rather than run something —
+`print` is the only one that does, and it exists so a first run is inspectable
+instead of speculative.
+
+To add one anyway, in `src/chord/harness.py`:
+
+1. Write a class with a `name` (string) and an
+   `async def send(self, prompt: str) -> None`.
+2. Add a name check to `build()`.
+
+A built-in is reachable from `[harnesses.<name>]` like any other command, since
+`build()` is what resolves both.
+
 ---
 
 ## How it works
 
-Once a minute, Chord asks Linear for issues carrying the label. For each one it
-hasn't seen, it fetches the discussion, renders the two together, and hands
-that to the harness.
+Once a minute, Chord asks Linear for issues carrying a route label — the bare
+`Chord` label or any `Chord/...` one, in a single request however many harnesses
+you have curated. For each issue it hasn't seen, it picks a route, fetches the
+discussion, renders the two together, and hands that to the chosen harness.
 
-**A poll reads the whole label, not just its first page.** Chord follows
-Linear's cursor up to 1000 issues, so a label with a long history is fully
-visible. If a label somehow exceeds that, the log says so rather than quietly
-reading a prefix and leaving you to wonder why a few issues never arrive.
+**One poll reads every route, and all of it.** The filter goes to Linear, so the
+number of curated harnesses doesn't change how often Chord talks to Linear, and
+Chord follows the cursor up to 1000 issues rather than reading a prefix. If the
+routes somehow exceed that, the log says so rather than leaving you to wonder
+why a few issues never arrive.
 
 **Each issue is handed over once.** The record lives in the project's state
 file rather than in the process, so restarting Chord doesn't offer your whole
@@ -212,7 +307,8 @@ watcher picks the new token up on its next poll.
 
 **A failed hand-over is recorded anyway.** If your harness is missing or
 errors, the log says so and Chord moves to the next issue. Retrying forever
-would mean one broken harness blocked everything behind it.
+would mean one broken harness blocked everything behind it. The same goes for a
+route label with no harness behind it: skipped, logged, and out of the way.
 
 **The issue is delimited, not just concatenated.** Everything a person wrote in
 Linear goes to the harness between explicit `BEGIN`/`END` markers, under a line
@@ -220,6 +316,11 @@ saying it is the work to be done and not instructions about how to behave. An
 issue body is written by whoever filed it, and a harness is often an agent that
 does what the text tells it to. This is a prompt boundary, not a security
 boundary: it makes the distinction legible, and nothing more.
+
+**Which harness ran is in the log, not in the prompt.** The rendered issue is
+the same whichever route it took. The label that decided it is already on the
+issue and appears in the `Labels:` line, and Chord writes the route it chose to
+its own log. Nothing about routing leaks into the work.
 
 ## State on disk
 

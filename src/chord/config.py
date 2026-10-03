@@ -2,12 +2,13 @@
 
 Everything here has a default that works, so a fresh checkout runs without a
 config file. The file exists for the handful of choices that are genuinely
-yours: which label triggers a run, and what should do the work.
+yours: which label triggers a run, what should do the work, and what the extra
+named harnesses are.
 """
 
 import shlex
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
 
@@ -23,37 +24,53 @@ DEFAULT_WEBHOOK_PORT = 23842
 # turning into a denial of service against Linear.
 MIN_INTERVAL = 5
 
+# How a route label spells the harness it wants: `<label>/<harness name>`. The
+# whole suffix is the name, so a curated harness called `opencode/tiny` is
+# simply selected by `Chord/opencode/tiny`.
+#
+# This lives here rather than in routing.py so that config can check `label`
+# without importing the module that goes on to interpret it.
+SEPARATOR = "/"
+
 # A harness is either the name of one Chord knows, or the command to run. The
 # command form is the reason Chord stays small: anything that reads a prompt
 # from stdin is a harness, so supporting a new tool needs no change in here.
 HarnessSpec: TypeAlias = str | list[str]
+
+_SETTINGS = frozenset({"label", "harness", "harnesses", "interval", "webhook_port"})
+_HARNESS_KEYS = frozenset({"command"})
 
 
 class ConfigError(Exception):
     """chord.toml says something Chord can't act on."""
 
 
+def spell(spec: HarnessSpec) -> str:
+    """How to name a harness in a sentence or a log line."""
+    return spec if isinstance(spec, str) else " ".join(spec)
+
+
 @dataclass(frozen=True)
 class Config:
     label: str
     harness: HarnessSpec
-    interval: int
-    webhook_port: int
-    path: Path
-    from_file: bool
+    harnesses: dict[str, HarnessSpec] = field(default_factory=dict)
+    interval: int = DEFAULT_INTERVAL
+    webhook_port: int = DEFAULT_WEBHOOK_PORT
+    path: Path = field(default_factory=lambda: config_path()[0])
+    from_file: bool = False
 
     @property
     def harness_name(self) -> str:
-        """How to talk about the harness in a sentence."""
-        if isinstance(self.harness, str):
-            return self.harness
-        return " ".join(self.harness)
+        """How to talk about the default harness in a sentence."""
+        return spell(self.harness)
 
 
 def defaults(path: Path | None = None) -> Config:
     return Config(
         label=DEFAULT_LABEL,
         harness=DEFAULT_HARNESS,
+        harnesses={},
         interval=DEFAULT_INTERVAL,
         webhook_port=DEFAULT_WEBHOOK_PORT,
         path=path or config_path()[0],
@@ -93,7 +110,7 @@ def _build(raw: dict, path: Path) -> Config:
 
     # A misspelled setting would otherwise be ignored, and the symptom is
     # Chord doing something other than what the file says. Better to say so.
-    unknown = set(raw) - {"label", "harness", "interval", "webhook_port"}
+    unknown = set(raw) - _SETTINGS
     if unknown:
         names = ", ".join(f"`{name}`" for name in sorted(unknown))
         raise ConfigError(f"{path} has settings Chord doesn't know: {names}.")
@@ -101,6 +118,13 @@ def _build(raw: dict, path: Path) -> Config:
     label = raw.get("label", base.label)
     if not isinstance(label, str) or not label.strip():
         raise ConfigError(f"`label` in {path} has to be a non-empty string.")
+    label = label.strip()
+    if label.endswith(SEPARATOR):
+        # `Chord/` as the trigger would make every route `Chord//<name>`.
+        raise ConfigError(
+            f"`label` in {path} ends with {SEPARATOR!r}, which would double the "
+            f"separator in every route label. Write it as {label.rstrip(SEPARATOR)!r}."
+        )
 
     interval = raw.get("interval", base.interval)
     if not isinstance(interval, int) or isinstance(interval, bool):
@@ -121,8 +145,9 @@ def _build(raw: dict, path: Path) -> Config:
         )
 
     return Config(
-        label=label.strip(),
-        harness=_harness(raw.get("harness", base.harness), path),
+        label=label,
+        harness=_spec(raw.get("harness", base.harness), path, "`harness`"),
+        harnesses=_harnesses(raw.get("harnesses", {}), path),
         interval=interval,
         webhook_port=webhook_port,
         path=path,
@@ -130,18 +155,65 @@ def _build(raw: dict, path: Path) -> Config:
     )
 
 
-def _harness(value: object, path: Path) -> HarnessSpec:
+def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:
+    """The `[harnesses.<name>]` tables: extra harnesses a route label can name.
+
+    Each one is a command and nothing else, which is the whole point: the label
+    chooses the entry, and the entry is an ordinary command like any other.
+    """
+    if not isinstance(value, dict):
+        raise ConfigError(f"`harnesses` in {path} has to be a table of names.")
+
+    result: dict[str, HarnessSpec] = {}
+    for name, table in value.items():
+        # Named, not just described: with a dozen curated harnesses, "a name is
+        # wrong somewhere in this file" is a worse message than the one that
+        # says which one.
+        where = f"`harnesses.{name}`"
+        if not _usable_name(name):
+            raise ConfigError(
+                f"{where} in {path} has to be a usable harness name: a non-empty "
+                f"string with no leading, trailing or doubled {SEPARATOR!r}, "
+                f'like "opencode" or "opencode/tiny".'
+            )
+        if not isinstance(table, dict):
+            raise ConfigError(f"{where} in {path} has to be a table with a `command`.")
+        extra = set(table) - _HARNESS_KEYS
+        if extra:
+            names = ", ".join(f"`{key}`" for key in sorted(extra))
+            raise ConfigError(
+                f"{where} in {path} has settings Chord doesn't know: {names}."
+            )
+        if "command" not in table:
+            raise ConfigError(f"{where} in {path} is missing `command`.")
+        result[name] = _spec(table["command"], path, f"{where} `command`")
+    return result
+
+
+def _usable_name(name: object) -> bool:
+    """Whether `name` can be spelled as the suffix of a route label.
+
+    `Chord//x` and `Chord/x/` are typos rather than routes. Rejecting them here
+    means curation and the label grammar agree, so a name that config accepts
+    is a name a label can actually select.
+    """
+    if not isinstance(name, str) or not name or name != name.strip():
+        return False
+    return not (
+        name.startswith(SEPARATOR) or name.endswith(SEPARATOR) or SEPARATOR * 2 in name
+    )
+
+
+def _spec(value: object, path: Path, where: str) -> HarnessSpec:
     if isinstance(value, str) and value.strip():
         try:
             argv = shlex.split(value)
         except ValueError as exc:
-            raise ConfigError(
-                f"`harness` in {path} has invalid quoting: {exc}."
-            ) from exc
+            raise ConfigError(f"{where} in {path} has invalid quoting: {exc}.") from exc
         return argv if len(argv) > 1 else value.strip()
     if isinstance(value, list) and value and all(isinstance(p, str) for p in value):
         return list(value)
     raise ConfigError(
-        f'`harness` in {path} has to be a name like "{DEFAULT_HARNESS}", or a '
+        f'{where} in {path} has to be a name like "{DEFAULT_HARNESS}", or a '
         'command to run with the issue on stdin, like ["claude", "-p"].'
     )

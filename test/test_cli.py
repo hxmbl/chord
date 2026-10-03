@@ -22,6 +22,13 @@ def test_print_harness_writes_the_issue(capsys):
     assert capsys.readouterr().out == "the issue"
 
 
+def test_opencode_harness_is_recognized():
+    """The opencode harness should be built-in and recognized by build()."""
+    h = harness.build("opencode")
+    assert isinstance(h, harness.OpenCodeHarness)
+    assert h.name == "opencode"
+
+
 def test_command_harness_runs_and_captures(capsys):
     import asyncio
 
@@ -64,6 +71,7 @@ def test_build_returns_a_command_for_an_argv():
 def test_build_splits_a_command_string_without_a_shell(monkeypatch):
     monkeypatch.setattr(harness.shutil, "which", lambda name: "/bin/tool")
     built = harness.build('tool --message "hello world"')
+    assert isinstance(built, harness.CommandHarness)
     assert built.argv == ["/bin/tool", "--message", "hello world"]
 
 
@@ -286,6 +294,95 @@ def test_start_rejects_an_unknown_harness(stored_token, no_env, monkeypatch, tmp
     assert result.exit_code == 1
     assert not spawned
     assert "Don't know a harness" in result.output
+
+
+def test_start_rejects_a_curated_harness_that_cannot_run(
+    stored_token, no_env, monkeypatch, tmp_path
+):
+    """A curated route nobody can run is a mistake in a file, so it is caught
+    by the person who made it rather than by the first issue that trips it."""
+    stored_token()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chord.toml").write_text(
+        'harness = "print"\n'
+        "[harnesses.oops]\ncommand = 'definitely-not-a-real-command-xyz'\n"
+    )
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "state.json")
+    spawned = []
+    monkeypatch.setattr(daemon, "start", lambda: spawned.append(1))
+
+    result = runner.invoke(app, ["start"])
+
+    assert result.exit_code == 1
+    assert not spawned
+    assert "Chord/oops" in result.output, "the failing route label must be named"
+
+
+def test_start_accepts_curated_harnesses_that_can_run(
+    stored_token, no_env, monkeypatch, tmp_path
+):
+    stored_token()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chord.toml").write_text(
+        'harness = "print"\n'
+        '[harnesses."opencode/tiny"]\ncommand = "cat"\n'
+        '[harnesses.claude]\ncommand = "claude -p"\n'
+    )
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "chord.pid")
+    monkeypatch.setattr(daemon, "start", lambda: 4242)
+
+    result = runner.invoke(app, ["start"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_info_lists_every_route(keyring_backend, no_env, monkeypatch, tmp_path):
+    """`chord info` is where you check what a label in Linear will do."""
+    config = tmp_path / ".config" / "chord" / "chord.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        'label = "Chord"\n'
+        'harness = "opencode"\n'
+        '[harnesses."opencode/space-bunny-free"]\n'
+        'command = ["opencode", "run", "--model", "space-bunny-free"]\n'
+        '[harnesses.claude]\ncommand = "claude -p"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert "Chord" in out and "opencode" in out
+    assert "Chord/claude" in out and "claude -p" in out
+    assert "Chord/opencode/space-bunny-free" in out
+    assert "--model space-bunny-free" in out
+
+
+def test_info_says_what_the_default_is_when_nothing_is_curated(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    assert "Chord  opencode" in result.stdout, "the default route should still be listed"
+    assert result.stdout.count("Chord/") == 1, "only the watching line should mention a route"
+
+
+def test_info_rejects_a_curation_typo(no_env, monkeypatch, tmp_path):
+    """Same rule as everywhere else: a config Chord can't act on is one line."""
+    (tmp_path / "chord.toml").write_text('[harnesses.a]\nnope = "x"\n')
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["info"])
+    assert result.exit_code == 1
+    assert "doesn't know" in result.output
 
 
 def test_start_needs_credentials(no_env, monkeypatch, tmp_path):

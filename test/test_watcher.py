@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+from conftest import RecordingHarness, router_for
 
 from chord import harness as harnesses
 from chord import linear, watcher
@@ -11,36 +12,36 @@ from chord.linear import IssuePage
 
 
 class LinearStub:
-    def __init__(self, issues, comments=None, error=None, delay=0, truncated=False):
+    def __init__(
+        self, issues, comments=None, error=None, delay=0, truncated=False, history=None
+    ):
         self._issues = issues
         self._truncated = truncated
         self._comments = comments or []
         self._error = error
         self._delay = delay
+        self._history = history or []
         self.asked_for = []
+        self.history_asked_for = []
 
-    async def issues_with_label(self, label):
-        self.asked_for.append(label)
+    async def issues_for(self, filter):
+        self.asked_for.append(filter)
         if self._delay:
             await asyncio.sleep(self._delay)
         if self._error:
             raise self._error
         return IssuePage(self._issues, self._truncated)
 
+    async def label_history(self, issue_id):
+        self.history_asked_for.append(issue_id)
+        if isinstance(self._history, Exception):
+            raise self._history
+        return list(self._history)
+
     async def comments(self, issue_id):
         if isinstance(self._comments, Exception):
             raise self._comments
         return self._comments
-
-
-class HarnessSpy:
-    name = "spy"
-
-    def __init__(self):
-        self.prompts = []
-
-    async def send(self, prompt):
-        self.prompts.append(prompt)
 
 
 def issue(n, **extra):
@@ -54,14 +55,17 @@ def issue(n, **extra):
     }
 
 
-def build(tmp_path, linear_stub, harness_stub):
+def build(tmp_path, linear_stub, harness_stub=None, harnesses=None, name="spy"):
     return watcher.Watcher(
-        linear_stub, harness_stub, "chord", 1, tmp_path / "state.json"
+        linear_stub,
+        router_for(harness_stub, harnesses=harnesses, name=name),
+        1,
+        tmp_path / "state.json",
     )
 
 
 def test_hands_over_each_new_issue(tmp_path):
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     w = build(tmp_path, LinearStub([issue(1), issue(2)]), spy)
     asyncio.run(w.poll())
     assert len(spy.prompts) == 2
@@ -69,7 +73,7 @@ def test_hands_over_each_new_issue(tmp_path):
 
 
 def test_backlog_goes_oldest_first(tmp_path):
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     unordered = [issue(3), issue(1), issue(2)]
     w = build(tmp_path, LinearStub(unordered), spy)
     asyncio.run(w.poll())
@@ -78,7 +82,7 @@ def test_backlog_goes_oldest_first(tmp_path):
 
 
 def test_an_issue_is_not_offered_twice(tmp_path):
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     stub = LinearStub([issue(1)])
     w = build(tmp_path, stub, spy)
     asyncio.run(w.poll())
@@ -88,7 +92,7 @@ def test_an_issue_is_not_offered_twice(tmp_path):
 
 def test_state_is_written_to_disk(tmp_path):
     stub = LinearStub([issue(1)])
-    w = build(tmp_path, stub, HarnessSpy())
+    w = build(tmp_path, stub, RecordingHarness("spy"))
     asyncio.run(w.poll())
     saved = json.loads((tmp_path / "state.json").read_text())
     assert "1" in saved["handed_over"]
@@ -96,9 +100,9 @@ def test_state_is_written_to_disk(tmp_path):
 
 def test_state_survives_a_restart(tmp_path):
     """The reason state is on disk rather than in the process."""
-    asyncio.run(build(tmp_path, LinearStub([issue(1)]), HarnessSpy()).poll())
+    asyncio.run(build(tmp_path, LinearStub([issue(1)]), RecordingHarness("spy")).poll())
 
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     w = build(tmp_path, LinearStub([issue(1)]), spy)
     assert w.handed_over == 1
     asyncio.run(w.poll())
@@ -107,7 +111,7 @@ def test_state_survives_a_restart(tmp_path):
 
 def test_linear_failure_is_reported_and_survived(tmp_path, capsys):
     error = linear.LinearError("Linear is down")
-    w = build(tmp_path, LinearStub([], error=error), HarnessSpy())
+    w = build(tmp_path, LinearStub([], error=error), RecordingHarness("spy"))
     asyncio.run(w.poll())
     assert "Linear is down" in capsys.readouterr().out
 
@@ -115,7 +119,7 @@ def test_linear_failure_is_reported_and_survived(tmp_path, capsys):
 def test_a_repeated_failure_is_logged_once(tmp_path, capsys):
     """A watcher runs for days; a log nobody reads is worse than no log."""
     stub = LinearStub([], error=linear.LinearError("still down"))
-    w = build(tmp_path, stub, HarnessSpy())
+    w = build(tmp_path, stub, RecordingHarness("spy"))
     asyncio.run(w.poll())
     asyncio.run(w.poll())
     asyncio.run(w.poll())
@@ -123,7 +127,7 @@ def test_a_repeated_failure_is_logged_once(tmp_path, capsys):
 
 
 def test_a_missing_discussion_still_hands_over(tmp_path, capsys):
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     stub = LinearStub([issue(1)], comments=linear.LinearError("no comments"))
     asyncio.run(build(tmp_path, stub, spy).poll())
     assert len(spy.prompts) == 1
@@ -131,7 +135,7 @@ def test_a_missing_discussion_still_hands_over(tmp_path, capsys):
 
 
 def test_discussion_reaches_the_harness(tmp_path):
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     stub = LinearStub(
         [issue(1)],
         comments=[
@@ -160,7 +164,7 @@ def test_a_missing_harness_is_recorded_anyway(tmp_path, capsys):
 
 
 def test_issue_with_no_id_is_skipped_not_re_offered(tmp_path, capsys):
-    spy = HarnessSpy()
+    spy = RecordingHarness("spy")
     stub = LinearStub([{"identifier": "ENG-9", "title": "no id"}])
     w = build(tmp_path, stub, spy)
     asyncio.run(w.poll())
@@ -169,7 +173,7 @@ def test_issue_with_no_id_is_skipped_not_re_offered(tmp_path, capsys):
 
 
 def test_run_logs_then_polls(tmp_path, capsys):
-    w = build(tmp_path, LinearStub([issue(1)]), HarnessSpy())
+    w = build(tmp_path, LinearStub([issue(1)]), RecordingHarness("spy"))
 
     async def once():
         task = asyncio.create_task(w.run())
@@ -186,7 +190,7 @@ def test_run_logs_then_polls(tmp_path, capsys):
 
 def test_poll_timeout_is_reported(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(watcher, "POLL_TIMEOUT", 0.01)
-    w = build(tmp_path, LinearStub([issue(1)], delay=1), HarnessSpy())
+    w = build(tmp_path, LinearStub([issue(1)], delay=1), RecordingHarness("spy"))
     asyncio.run(w.poll())
     assert "didn't answer" in capsys.readouterr().out
 
@@ -195,7 +199,7 @@ def test_state_trim_keeps_the_newest(tmp_path):
     """A still-labelled issue must not reappear just because the file got long."""
 
     stub = LinearStub([issue(1)])
-    w = build(tmp_path, stub, HarnessSpy())
+    w = build(tmp_path, stub, RecordingHarness("spy"))
     monkeypatch_cap = watcher.STATE_CAP
     try:
         watcher.STATE_CAP = 3

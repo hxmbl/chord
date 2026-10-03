@@ -9,8 +9,13 @@ issues returned 50, `hasNextPage=True`, and Chord never looked again.
 import asyncio
 
 import pytest
+from conftest import router_for
 
 from chord import linear, watcher
+
+# Any filter will do here: pagination is what is under test, and the filter is
+# built by `Router`, which has its own tests.
+ROUTE = {"or": [{"labels": {"name": {"eq": "chord"}}}]}
 
 
 def issue(n, **extra):
@@ -57,7 +62,7 @@ def client(pages, monkeypatch):
 
 def test_single_page(monkeypatch):
     lin, rec = client([([issue(1), issue(2)], False, None)], monkeypatch)
-    page = asyncio.run(lin.issues_with_label("chord"))
+    page = asyncio.run(lin.issues_for(ROUTE))
     assert [i["id"] for i in page.issues] == ["1", "2"]
     assert page.truncated is False
     assert len(rec.calls) == 1
@@ -71,7 +76,7 @@ def test_walks_every_page(monkeypatch):
         ([issue(n) for n in range(9, 12)], False, None),
     ]
     lin, rec = client(pages, monkeypatch)
-    page = asyncio.run(lin.issues_with_label("chord"))
+    page = asyncio.run(lin.issues_for(ROUTE))
     assert [i["id"] for i in page.issues] == [str(n) for n in range(1, 12)]
     assert page.truncated is False
     assert len(rec.calls) == 3, "did not follow the cursor"
@@ -80,7 +85,7 @@ def test_walks_every_page(monkeypatch):
 def test_cursor_is_sent_back(monkeypatch):
     pages = [([issue(1)], True, "cursor-1"), ([issue(2)], False, None)]
     lin, rec = client(pages, monkeypatch)
-    asyncio.run(lin.issues_with_label("chord"))
+    asyncio.run(lin.issues_for(ROUTE))
     assert rec.calls[0]["after"] is None
     assert rec.calls[1]["after"] == "cursor-1"
 
@@ -88,7 +93,7 @@ def test_cursor_is_sent_back(monkeypatch):
 def test_page_size_is_respected(monkeypatch):
     pages = [([issue(1)], True, "1"), ([issue(2)], False, None)]
     lin, rec = client(pages, monkeypatch)
-    asyncio.run(lin.issues_with_label("chord"))
+    asyncio.run(lin.issues_for(ROUTE))
     assert all(c["first"] == linear.PAGE_SIZE for c in rec.calls)
 
 
@@ -96,7 +101,7 @@ def test_last_request_never_asks_for_more_than_it_needs(monkeypatch):
     """A final page shouldn't over-ask; the remaining budget is the cap."""
     pages = [([issue(1)], True, "1"), ([issue(2)], False, None)]
     lin, rec = client(pages, monkeypatch)
-    asyncio.run(lin.issues_with_label("chord"))
+    asyncio.run(lin.issues_for(ROUTE))
     assert rec.calls[-1]["first"] == min(
         linear.PAGE_SIZE, linear.MAX_ISSUES_PER_POLL - 1
     )
@@ -109,7 +114,7 @@ def test_hitting_the_cap_reports_truncation(monkeypatch):
     pages = [([issue(1)], True, "1"), ([issue(2)], True, "2")]
     lin, _ = client(pages, monkeypatch)
     monkeypatch.setattr(linear, "MAX_ISSUES_PER_POLL", 2)
-    page = asyncio.run(lin.issues_with_label("chord"))
+    page = asyncio.run(lin.issues_for(ROUTE))
     assert page.truncated is True, "a capped walk reported itself complete"
 
 
@@ -118,14 +123,14 @@ def test_exact_fit_is_not_truncation(monkeypatch):
     pages = [([issue(1), issue(2)], False, None)]
     lin, _ = client(pages, monkeypatch)
     monkeypatch.setattr(linear, "MAX_ISSUES_PER_POLL", 2)
-    assert asyncio.run(lin.issues_with_label("chord")).truncated is False
+    assert asyncio.run(lin.issues_for(ROUTE)).truncated is False
 
 
 def test_a_cursor_that_vanishes_stops(monkeypatch):
     """Says there's more but won't say where: stop rather than loop forever."""
     pages = [([issue(1)], True, None)]
     lin, rec = client(pages, monkeypatch)
-    page = asyncio.run(lin.issues_with_label("chord"))
+    page = asyncio.run(lin.issues_for(ROUTE))
     assert len(rec.calls) == 1
     assert page.truncated is True
 
@@ -173,24 +178,15 @@ def test_a_missing_issue_yields_no_comments(monkeypatch):
 # --- the watcher reports truncation ---
 
 
-class StubHarness:
-    name = "stub"
-
-    async def send(self, prompt):
-        return None
-
-
 def test_watcher_says_when_it_could_not_read_everything(tmp_path, capsys, monkeypatch):
     class Truncating:
-        async def issues_with_label(self, label):
+        async def issues_for(self, filter):
             return linear.IssuePage([issue(1)], True)
 
         async def comments(self, issue_id):
             return []
 
-    w = watcher.Watcher(
-        Truncating(), StubHarness(), "chord", 1, tmp_path / "state.json"
-    )
+    w = watcher.Watcher(Truncating(), router_for(), 1, tmp_path / "state.json")
     asyncio.run(w.poll())
     out = capsys.readouterr().out
     assert "more issues carry" in out, "truncation was swallowed"
@@ -199,15 +195,13 @@ def test_watcher_says_when_it_could_not_read_everything(tmp_path, capsys, monkey
 
 def test_watcher_reports_truncation_once(tmp_path, capsys):
     class Truncating:
-        async def issues_with_label(self, label):
+        async def issues_for(self, filter):
             return linear.IssuePage([], True)
 
         async def comments(self, issue_id):
             return []
 
-    w = watcher.Watcher(
-        Truncating(), StubHarness(), "chord", 1, tmp_path / "state.json"
-    )
+    w = watcher.Watcher(Truncating(), router_for(), 1, tmp_path / "state.json")
     for _ in range(3):
         asyncio.run(w.poll())
     assert capsys.readouterr().out.count("more issues carry") == 1
@@ -215,13 +209,13 @@ def test_watcher_reports_truncation_once(tmp_path, capsys):
 
 def test_no_truncation_means_no_complaint(tmp_path, capsys):
     class Whole:
-        async def issues_with_label(self, label):
+        async def issues_for(self, filter):
             return linear.IssuePage([], False)
 
         async def comments(self, issue_id):
             return []
 
-    w = watcher.Watcher(Whole(), StubHarness(), "chord", 1, tmp_path / "state.json")
+    w = watcher.Watcher(Whole(), router_for(), 1, tmp_path / "state.json")
     asyncio.run(w.poll())
     assert "more issues carry" not in capsys.readouterr().out
 
@@ -230,9 +224,9 @@ def test_no_truncation_means_no_complaint(tmp_path, capsys):
 
 
 def test_queries_declare_paging():
-    assert "$after" in linear.ISSUES_BY_LABEL
-    assert "pageInfo" in linear.ISSUES_BY_LABEL
-    assert "hasNextPage" in linear.ISSUES_BY_LABEL
+    assert "$after" in linear.ISSUES_BY_ROUTE
+    assert "pageInfo" in linear.ISSUES_BY_ROUTE
+    assert "hasNextPage" in linear.ISSUES_BY_ROUTE
     assert "$after" in linear.COMMENTS
     assert "pageInfo" in linear.COMMENTS
 

@@ -5,6 +5,7 @@ import asyncio
 import time
 
 import pytest
+from conftest import RecordingHarness, router_for
 
 from chord import credentials, text, watcher
 from chord.context import BEGIN, END, render
@@ -90,26 +91,16 @@ def test_client_secrets_returns_the_pair(no_env):
 # --- 2. poll() must not raise, whatever Linear hands back ---
 
 
-class StubHarness:
-    name = "stub"
-
-    def __init__(self, fail: Exception | None = None) -> None:
-        self.fail = fail
-        self.prompts: list[str] = []
-
-    async def send(self, prompt: str) -> None:
-        if self.fail:
-            raise self.fail
-        self.prompts.append(prompt)
-
-
 class StubLinear:
     def __init__(self, issues, truncated=False) -> None:
         self._issues = issues
         self._truncated = truncated
 
-    async def issues_with_label(self, label):
+    async def issues_for(self, filter):
         return IssuePage(self._issues, self._truncated)
+
+    async def label_history(self, issue_id):
+        return []
 
     async def comments(self, issue_id):
         return []
@@ -118,8 +109,7 @@ class StubLinear:
 def _watcher(tmp_path, issues, harness=None):
     return watcher.Watcher(
         StubLinear(issues),
-        harness or StubHarness(),
-        "chord",
+        router_for(harness),
         1,
         tmp_path / "state.json",
     )
@@ -139,14 +129,16 @@ def test_poll_survives_an_issue_with_nothing_at_all(tmp_path):
 
 def test_poll_survives_a_harness_bug(tmp_path):
     w = _watcher(
-        tmp_path, [{"id": "1", "identifier": "E-1"}], StubHarness(RuntimeError("boom"))
+        tmp_path,
+        [{"id": "1", "identifier": "E-1"}],
+        RecordingHarness(fail=RuntimeError("boom")),
     )
     asyncio.run(w.poll())
 
 
 def test_one_bad_issue_does_not_block_the_next(tmp_path):
     """The queue behind a bad entry is the thing that matters."""
-    harness = StubHarness()
+    harness = RecordingHarness()
     issues = [
         {"identifier": "E-bad"},  # no id, unusable
         {"id": "2", "identifier": "E-good", "title": "fine", "description": "do it"},
@@ -161,11 +153,11 @@ def test_cancellation_still_propagates(tmp_path):
     here would make the watcher unstoppable."""
     w = _watcher(tmp_path, [{"id": "1", "identifier": "E-1"}])
 
-    class Cancel(StubHarness):
+    class Cancel(RecordingHarness):
         async def send(self, prompt):
             raise asyncio.CancelledError
 
-    w._harness = Cancel()
+    w = _watcher(tmp_path, [{"id": "1", "identifier": "E-1"}], Cancel())
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(w.poll())
 

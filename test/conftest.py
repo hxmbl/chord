@@ -8,6 +8,8 @@ import keyring
 import pytest
 from keyring.backend import KeyringBackend
 
+from chord.routing import Router
+
 
 class FakeKeyring(KeyringBackend):
     """An in-memory keyring, so tests never touch the OS one."""
@@ -61,3 +63,39 @@ def no_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CHORD_MAX_AGE", raising=False)
     return tmp_path
+
+
+class RecordingHarness:
+    """A harness that writes down what it was handed, and does nothing else.
+
+    Most tests aren't about a harness. They're about which route was chosen, so
+    they need something that records the prompt without running an agent. One
+    definition here rather than four that differ only in `name`.
+    """
+
+    def __init__(self, name: str = "stub", fail: Exception | None = None) -> None:
+        self.name = name
+        self.prompts: list[str] = []
+        self.fail = fail
+
+    async def send(self, prompt: str) -> None:
+        if self.fail:
+            raise self.fail
+        self.prompts.append(prompt)
+
+
+def router_for(
+    harness: RecordingHarness | None = None,
+    label: str = "chord",
+    harnesses: dict | None = None,
+    name: str = "stub",
+) -> Router:
+    """A Router that hands the same harness back for every route.
+
+    The curation table is real — `harnesses` goes straight through — but the
+    building step is stubbed, because what these tests are about is which name
+    reached the Router. Whether a name maps to a runnable command is
+    `harness.build`'s business and has its own tests.
+    """
+    built = harness if harness is not None else RecordingHarness(name)
+    return Router(label, "stub", harnesses or {}, factory=lambda spec: built)

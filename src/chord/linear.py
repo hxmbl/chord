@@ -35,15 +35,26 @@ MAX_ISSUES_PER_POLL = 1000
 # reading all of it on every hand-over is not worth the tokens.
 MAX_COMMENTS = 200
 
+# How far back to look for the label that routed an issue. Only read when an
+# issue carries more than one route label, and only ever to answer "which was
+# added last". An issue whose most recent label changes are all older than this
+# falls back to the most specific label it carries, which is the right guess
+# anyway.
+MAX_HISTORY = 50
+
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BACKOFF_BASE = 1
 
-# The label is the whole of the trigger, so the filter happens at Linear.
+# The route label is the whole of the trigger, so the filter happens at Linear.
+# `routing.Router.filter()` builds it: a bare label or any `<label>/...` suffix,
+# in one request, so the number of curated harnesses doesn't change how often
+# Chord talks to Linear.
+#
 # `after` walks the connection: the first page alone used to be the whole
 # result, which silently hid every issue past page one.
-ISSUES_BY_LABEL = """
-query IssuesByLabel($label: String!, $first: Int!, $after: String) {
-  issues(filter: { labels: { name: { eq: $label } } }, first: $first, after: $after) {
+ISSUES_BY_ROUTE = """
+query IssuesByRoute($filter: IssueFilter!, $first: Int!, $after: String) {
+  issues(filter: $filter, first: $first, after: $after) {
     nodes {
       id
       identifier
@@ -56,6 +67,24 @@ query IssuesByLabel($label: String!, $first: Int!, $after: String) {
       labels { nodes { name } }
     }
     pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+# Which of an issue's labels was added last, read from Linear's own audit trail.
+# This is what makes "use the newest matching label" a fact rather than a guess:
+# `labels { nodes { name } }` comes back as an unordered set with no timestamps,
+# so an issue carrying both `Chord` and `Chord/opencode/tiny` cannot be resolved
+# from the issue alone. `addedLabels` says who put which label on and when.
+LABEL_HISTORY = """
+query LabelHistory($id: String!, $first: Int!) {
+  issue(id: $id) {
+    history(first: $first) {
+      nodes {
+        createdAt
+        addedLabels { name }
+      }
+    }
   }
 }
 """
@@ -97,7 +126,9 @@ class IssuePage(NamedTuple):
 
 
 class LinearClient(Protocol):
-    async def issues_with_label(self, label: str) -> IssuePage: ...
+    async def issues_for(self, filter: dict[str, Any]) -> IssuePage: ...
+
+    async def label_history(self, issue_id: str) -> list[str]: ...
 
     async def comments(self, issue_id: str) -> list[dict[str, Any]]: ...
 
@@ -109,11 +140,45 @@ class Linear:
         # can't ride along into the log.
         self._headers = {"Authorization": f"Bearer {access_token}"}
 
-    async def issues_with_label(self, label: str) -> IssuePage:
+    async def issues_for(self, filter: dict[str, Any]) -> IssuePage:
         nodes, truncated = await self._paged(
-            ISSUES_BY_LABEL, "issues", {"label": label}, MAX_ISSUES_PER_POLL
+            ISSUES_BY_ROUTE, "issues", {"filter": filter}, MAX_ISSUES_PER_POLL
         )
         return IssuePage(nodes, truncated)
+
+    async def label_history(self, issue_id: str) -> list[str]:
+        """Label names added to an issue, most recently added first.
+
+        Newest first because that is the order a caller wants to scan: the first
+        name that is one of an issue's route labels is the route that was asked
+        for most recently. Duplicates are dropped because a label added, removed
+        and added again should only be worth one look.
+        """
+        data = await self._query(LABEL_HISTORY, {"id": issue_id, "first": MAX_HISTORY})
+        entries = ((data.get("issue") or {}).get("history") or {}).get("nodes") or []
+
+        # Linear sends this newest-first, but the answer decides which harness
+        # runs, so it is sorted here rather than trusted. ISO 8601 in UTC sorts
+        # correctly as text, which is what every Linear timestamp is.
+        stamped = sorted(
+            (
+                (str(entry.get("createdAt") or ""), entry.get("addedLabels") or [])
+                for entry in entries
+                if isinstance(entry, dict)
+            ),
+            key=lambda entry: entry[0],
+            reverse=True,
+        )
+
+        seen: set[str] = set()
+        order: list[str] = []
+        for _, added in stamped:
+            for label in added:
+                name = str(label.get("name") or "") if isinstance(label, dict) else ""
+                if name and name not in seen:
+                    seen.add(name)
+                    order.append(name)
+        return order
 
     async def comments(self, issue_id: str) -> list[dict[str, Any]]:
         nodes, _ = await self._paged(

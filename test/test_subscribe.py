@@ -8,6 +8,7 @@ socket, and no socket at all must all hand over every issue exactly once.
 import asyncio
 
 import pytest
+from conftest import RecordingHarness, router_for
 
 from chord import subscribe, watcher
 from chord.linear import LinearError
@@ -21,7 +22,7 @@ class StubLinear:
         self.polls = 0
         self.failed = False
 
-    async def issues_with_label(self, label):
+    async def issues_for(self, filter):
         from chord.linear import IssuePage
 
         self.polls += 1
@@ -29,18 +30,11 @@ class StubLinear:
             raise LinearError("stub is broken")
         return IssuePage(self._issues, False)
 
-    async def comments(self, issue_id):
+    async def label_history(self, issue_id):
         return []
 
-
-class StubHarness:
-    name = "stub"
-
-    def __init__(self):
-        self.prompts = []
-
-    async def send(self, prompt):
-        self.prompts.append(prompt)
+    async def comments(self, issue_id):
+        return []
 
 
 def issue(n):
@@ -220,7 +214,7 @@ def test_events_make_the_watcher_poll_sooner(tmp_path, capsys):
     stub = StubLinear([issue(1)])
     sub = FakeSubscription([True, True, True])
     w = watcher.Watcher(
-        stub, StubHarness(), "chord", 60, tmp_path / "s.json", subscription=sub
+        stub, router_for(), 60, tmp_path / "s.json", subscription=sub
     )
 
     run_watcher(w, ticks=12)
@@ -234,7 +228,7 @@ def test_no_events_still_polls_on_the_interval(tmp_path):
     stub = StubLinear([issue(1)])
     sub = FakeSubscription([])
     w = watcher.Watcher(
-        stub, StubHarness(), "chord", 0.01, tmp_path / "s.json", subscription=sub
+        stub, router_for(), 0.01, tmp_path / "s.json", subscription=sub
     )
 
     run_watcher(w, ticks=20)
@@ -246,7 +240,7 @@ def test_no_events_still_polls_on_the_interval(tmp_path):
 def test_a_broken_socket_does_not_stop_the_poll_loop(tmp_path):
     """The failure mode that matters: no events, but work still gets done."""
     stub = StubLinear([issue(1), issue(2)])
-    harness = StubHarness()
+    harness = RecordingHarness()
 
     class Dead:
         def report_problems_to(self, cb): ...
@@ -260,7 +254,7 @@ def test_a_broken_socket_does_not_stop_the_poll_loop(tmp_path):
             return False  # never any news, ever
 
     w = watcher.Watcher(
-        stub, harness, "chord", 60, tmp_path / "s.json", subscription=Dead()
+        stub, router_for(harness), 60, tmp_path / "s.json", subscription=Dead()
     )
     run_watcher(w, ticks=14)
 
@@ -270,8 +264,8 @@ def test_a_broken_socket_does_not_stop_the_poll_loop(tmp_path):
 def test_no_subscription_at_all_still_works(tmp_path):
     """Chord without the live extra has to be a complete product."""
     stub = StubLinear([issue(1)])
-    harness = StubHarness()
-    w = watcher.Watcher(stub, harness, "chord", 60, tmp_path / "s.json")
+    harness = RecordingHarness()
+    w = watcher.Watcher(stub, router_for(harness), 60, tmp_path / "s.json")
 
     run_watcher(w, ticks=10)
     assert len(harness.prompts) == 1
@@ -280,10 +274,10 @@ def test_no_subscription_at_all_still_works(tmp_path):
 def test_each_issue_is_offered_once_with_events_firing(tmp_path):
     """A chatty socket must not cause repeated hand-overs."""
     stub = StubLinear([issue(1)])
-    harness = StubHarness()
+    harness = RecordingHarness()
     sub = FakeSubscription([True] * 10)
     w = watcher.Watcher(
-        stub, harness, "chord", 60, tmp_path / "s.json", subscription=sub
+        stub, router_for(harness), 60, tmp_path / "s.json", subscription=sub
     )
 
     run_watcher(w, ticks=20)
@@ -293,7 +287,7 @@ def test_each_issue_is_offered_once_with_events_firing(tmp_path):
 def test_a_broken_linear_still_gets_reported_once(tmp_path, capsys):
     stub = StubLinear([])
     stub.failed = True
-    w = watcher.Watcher(stub, StubHarness(), "chord", 60, tmp_path / "s.json")
+    w = watcher.Watcher(stub, router_for(), 60, tmp_path / "s.json")
 
     async def scenario():
         for _ in range(3):
@@ -308,7 +302,7 @@ def test_subscription_problem_is_announced_with_the_fallback(tmp_path, capsys):
     """A person should learn that live updates aren't working, and that the
     watcher is still going."""
     stub = StubLinear([])
-    w = watcher.Watcher(stub, StubHarness(), "chord", 45, tmp_path / "s.json")
+    w = watcher.Watcher(stub, router_for(), 45, tmp_path / "s.json")
 
     for _ in range(3):
         w.note_subscription_problem("connection refused")

@@ -15,8 +15,9 @@ import typer
 
 from chord import credentials, daemon, subscribe, watcher
 from chord.config import Config, ConfigError, load
-from chord.harness import Harness, HarnessError, build
+from chord.harness import HarnessError
 from chord.linear import Linear
+from chord.routing import Router
 from chord.watcher import StateError
 from chord.webhook import Webhook
 
@@ -60,7 +61,7 @@ def start():
     # so the person who typed the command is the one who hears about it rather
     # than a log file they haven't been pointed at yet.
     _token()
-    _harness(config)
+    _check_routes(_router(config))
     try:
         watcher.read_state(daemon.STATE_FILE)
     except StateError as exc:
@@ -132,8 +133,12 @@ def info():
 
     typer.echo("Chord")
     typer.echo(f"  daemon     {_daemon_line(pid)}")
-    typer.echo(f"  watching   issues labelled {config.label!r}")
-    typer.echo(f"  harness    {config.harness_name}")
+    typer.echo(
+        f"  watching   issues labelled {config.label!r} "
+        f"or {config.label}/<harness>"
+    )
+    for line in _routes(config):
+        typer.echo(line)
     typer.echo(f"  interval   {config.interval}s")
     typer.echo(f"  webhook    http://127.0.0.1:{config.webhook_port}/webhook")
     typer.echo(f"  linear     {_linear_line()}")
@@ -164,6 +169,15 @@ def serve():
 async def _watch() -> None:
     config = _config()
     token = _token()
+    router = _router(config)
+    try:
+        # `chord start` did this too, but config can have changed since, and a
+        # watcher that dies on its first issue is worse than one that says why
+        # it is stopping.
+        router.validate()
+    except HarnessError as exc:
+        watcher.log(f"Can't run every route: {exc}")
+        raise SystemExit(1) from None
 
     # Webhooks are the fast path. The interval poll remains the correctness
     # backup for dropped, delayed, or misconfigured deliveries.
@@ -175,8 +189,7 @@ async def _watch() -> None:
     try:
         runner = watcher.Watcher(
             linear=Linear(token),
-            harness=_harness(config),
-            label=config.label,
+            router=router,
             interval=config.interval,
             state_path=daemon.STATE_FILE,
             subscription=subscription,
@@ -212,11 +225,40 @@ def _config() -> Config:
         _fail(str(exc))
 
 
-def _harness(config: Config) -> Harness:
+def _router(config: Config) -> Router:
+    return Router(config.label, config.harness, config.harnesses)
+
+
+def _check_routes(router: Router) -> None:
+    """Build every route now, so a broken one is reported by `chord start`.
+
+    A route whose command isn't installed would otherwise be discovered the
+    first time an issue happens to carry that label — possibly overnight, with
+    no indication of which config file is wrong. Curating a harness you can't
+    run is a mistake worth catching while the person is still looking.
+    """
     try:
-        return build(config.harness)
+        router.validate()
     except HarnessError as exc:
         _fail(str(exc))
+
+
+def _routes(config: Config) -> list[str]:
+    """The label grammar as it stands, one line per route.
+
+    A curated harness is a command, and commands are long. One route per line
+    with the labels in a column keeps a dozen of them readable, which is the
+    whole point of listing them: `chord info` is where you check what a label
+    in Linear will actually do.
+    """
+    routes = _router(config).routes()
+    width = max(len(route.label) for route in routes)
+    lead = "  routes     "
+    return [
+        f"{lead if index == 0 else ' ' * len(lead)}"
+        f"{route.label.ljust(width)}  {route.spelling}"
+        for index, route in enumerate(routes)
+    ]
 
 
 def _token() -> str:
