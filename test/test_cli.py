@@ -402,3 +402,79 @@ def test_setup_command_is_wired():
     result = runner.invoke(app, ["--help"])
     assert "setup" in result.stdout
     assert "_serve" not in result.stdout, "internal command should be hidden"
+
+
+# --- `chord help` is a spelling of `chord --help` ---
+
+
+def test_help_is_the_same_output_as_the_help_flag():
+    """The whole point, so it is asserted as equality rather than by eye.
+
+    `chord help` reads the answer from the same context `--help` is answered
+    from, which is what keeps them from drifting apart as commands are added.
+    """
+    assert runner.invoke(app, ["help"]).output == runner.invoke(app, ["--help"]).output
+
+
+def test_help_lists_the_commands():
+    result = runner.invoke(app, ["help"])
+    assert result.exit_code == 0
+    for command in ("setup", "refresh", "start", "stop", "watch", "info"):
+        assert command in result.stdout
+
+
+def test_help_hides_the_internal_command():
+    result = runner.invoke(app, ["help"])
+    assert "_serve" not in result.stdout
+
+
+@pytest.mark.parametrize("command", ["setup", "refresh", "start", "stop", "watch", "info"])
+def test_help_with_a_command_matches_that_command_s_help_flag(command):
+    """`chord help start` is what people type when they have forgotten the flags."""
+    assert (
+        runner.invoke(app, ["help", command]).output
+        == runner.invoke(app, [command, "--help"]).output
+    )
+
+
+def test_help_for_a_command_names_that_command_in_the_usage():
+    """The usage line must be `chord start`, not the bare `chord`."""
+    result = runner.invoke(app, ["help", "start"])
+    assert "start" in result.stdout
+    assert "Start watching Linear in the background." in result.stdout
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_with_a_help_flag_is_the_same_request_as_bare_help(flag):
+    """`chord help --help` should not report a missing command called `--help`."""
+    assert runner.invoke(app, ["help", flag]).output == runner.invoke(app, ["help"]).output
+
+
+def test_help_for_an_unknown_command_says_so_and_lists_the_real_ones():
+    result = runner.invoke(app, ["help", "nonsense"])
+    assert result.exit_code != 0
+    assert "nonsense" in result.output
+    assert "start" in result.output, "the error should say what is available"
+
+
+def test_help_will_not_expose_the_internal_command():
+    """`_serve` is hidden from the listing, so it is not reachable by name either.
+
+    The error may still say what was asked for — that is how the person finds
+    out they typed it wrong. What it must not do is hand over the hidden
+    command's help or list it as available.
+    """
+    result = runner.invoke(app, ["help", "_serve"])
+    assert result.exit_code != 0
+    assert "Internal." not in result.output, "showed the hidden command's help"
+    available = result.output.split("These are the ones:")[1]
+    assert "_serve" not in available, "listed a command the listing hides"
+
+
+def test_bare_help_succeeds():
+    assert runner.invoke(app, ["help"]).exit_code == 0
+
+
+def test_the_help_command_lists_itself():
+    """It is a command, so it appears like one. Not hidden, not a special case."""
+    assert "help" in runner.invoke(app, ["help"]).stdout

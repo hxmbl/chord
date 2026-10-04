@@ -111,8 +111,10 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 | `chord watch`      | Follow the log, live.                                   |
 | `chord info`       | Show the connection, the settings, and the state.       |
 | `chord refresh`    | Renew the token. You'll need this about once a day.     |
+| `chord help`       | The same as `chord --help`.                             |
 
-`chord info` is the one to reach for when something isn't happening.
+`chord help <command>` is `chord <command> --help`, and `chord info` is the one
+to reach for when something isn't happening.
 
 ---
 

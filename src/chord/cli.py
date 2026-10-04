@@ -12,6 +12,7 @@ import time
 from typing import NoReturn
 
 import typer
+import typer.core
 
 from chord import credentials, daemon, subscribe, watcher
 from chord.config import Config, ConfigError, load
@@ -166,6 +167,69 @@ def info():
     if pid is None:
         typer.echo("")
         typer.echo("Not watching. `chord start` to begin.")
+
+
+@app.command(
+    name="help",
+    # Typer builds this one; the help it shows is authored there, not here.
+    add_help_option=False,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def help_command(ctx: typer.Context, args: list[str] | None = None):
+    """Show this message and exit.
+
+    A spelling of `--help` for people who type `chord help` and mean it.
+    Printed from the same place `--help` is, so the two cannot drift apart as
+    commands are added.
+
+    With a command name, forwards to that command's help — `chord help start`
+    is what people type when they have forgotten the flags, and rejecting it
+    would be a worse answer than `chord start --help`.
+    """
+    parent = ctx.parent
+    # The parent context is the same one `--help` is answered from, and its
+    # command is the group holding every subcommand. Reaching the answer through
+    # the live context rather than rebuilding one is what keeps the two in step.
+    assert parent is not None and isinstance(parent.command, typer.core.TyperGroup), (
+        "help was invoked without the top-level command group"
+    )
+    group = parent.command
+
+    # With `allow_extra_args`, anything after the command name lands in
+    # `ctx.args` — the function's own `args` parameter is only populated when
+    # the annotation makes it a real parameter, which a bare `list[str]` with a
+    # default does not reliably do across typer versions. The context is the
+    # stable place to read them from.
+    names = list(ctx.args)
+
+    # `chord help --help` is the same request as `chord help`, and treating the
+    # flag as a command name would report a missing command called `--help`.
+    # `chord help -h` too.
+    if not names or names[0] in ("--help", "-h"):
+        typer.echo(parent.get_help())
+        return
+
+    command = group.commands.get(names[0])
+    # Anything starting with `_` is an internal command, hidden from `chord
+    # --help` and from this error message. Reachable by name would be a way to
+    # get at something the interface deliberately does not advertise.
+    if command is None or names[0].startswith("_"):
+        visible = sorted(n for n in group.commands if not n.startswith("_"))
+        typer.echo(
+            f"No command named {names[0]!r}. These are the ones: {', '.join(visible)}.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # A context of its own, parented to the top-level one, so the usage line
+    # reads `chord start [OPTIONS]` — the same as `chord start --help` rather
+    # than the bare `chord [OPTIONS]` that reusing the parent would produce.
+    child = typer.Context(
+        command=command,
+        info_name=names[0],
+        parent=parent,
+    )
+    typer.echo(command.get_help(child))
 
 
 @app.command(name=daemon.SERVE_COMMAND, hidden=True)
