@@ -1,6 +1,26 @@
-# Python tests: synthetic credentials in test_webhook.py. minesweep's
-# isTestFile() does not match the test_*.py prefix convention.
-test/
+# Why the tests are not excluded outright.
+#
+# This file used to ignore `test/` wholesale, because the detector fires on
+# synthetic credentials in the test suite — `s3cret`, `hunter2-secret`,
+# `token = content["access_token"]` — and a gate that fires on a test's own
+# fixtures is a gate people learn to bypass.
+#
+# But excluding the whole directory means a real credential pasted into a test
+# is never looked at, and tests are exactly where somebody pastes a value to
+# reproduce a bug. That trade is only safe while nobody does it, which is not a
+# property anyone checks.
+#
+# So the directory is scanned. Measured on the current suite: one finding, at
+# 0.70 confidence, on the *name* of a test function
+# (`test_a_normal_multi_page_walk_is_untouched`) — a detector that read
+# `test_boundaries` as an encoded token. No test contains anything resembling a
+# real credential.
+#
+# The finding is left visible rather than baselined, deliberately. A baseline
+# marks findings as accepted, and spending it on this would also silence
+# anything real that later appeared in the same file. It sits at `low`, so it
+# does not block commits at `fail_on: high`, and it is the honest state: a real
+# finding in a test would still be reported and would still block.
 
 # Example values in the commented-out starter config.
 .minesweep.yml
