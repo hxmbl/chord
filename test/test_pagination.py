@@ -175,6 +175,25 @@ def test_a_missing_issue_yields_no_comments(monkeypatch):
     assert asyncio.run(lin.comments("gone")) == []
 
 
+def test_an_issue_that_is_not_an_object_yields_no_comments(monkeypatch):
+    """`issue` is nullable in Linear's schema, so `null` is the shape to expect.
+
+    Anything else in that slot is a query or schema change, and it is reported as
+    a `LinearError` rather than being treated as "no comments" — a silent empty
+    result here would hand every issue over with no discussion and nothing in
+    the log to say why.
+    """
+    for payload in ({"issue": "nope"}, {"issue": 42}, {"issue": ["a"]}):
+        lin = linear.Linear("token")
+
+        async def fake(query, variables, payload=payload):
+            return payload
+
+        monkeypatch.setattr(lin, "_query", fake)
+        with pytest.raises(linear.LinearError, match="wrong shape"):
+            asyncio.run(lin.comments("x"))
+
+
 # --- the watcher reports truncation ---
 
 

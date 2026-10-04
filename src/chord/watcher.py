@@ -52,6 +52,37 @@ def _key(issue_id: object) -> str:
     return str(issue_id)
 
 
+def _usable_issues(issues: object) -> tuple[list[Issue], int]:
+    """The issues in a page that are records, and how many were not.
+
+    `linear._paged` already drops these, so under normal operation nothing is
+    dropped here. It is checked again anyway because `LinearClient` is a
+    Protocol — anything implementing it can hand over whatever it likes — and
+    because the cost of being wrong here is the whole watcher. Cheap
+    insurance, at the one place where it decides what runs.
+    """
+    if not isinstance(issues, list):
+        return [], 0 if issues is None else 1
+    good = [issue for issue in issues if isinstance(issue, dict)]
+    return good, len(issues) - len(good)
+
+
+def _order(issue: Issue) -> str:
+    """Sort key for oldest-first.
+
+    Takes the stamp off a value that may be any shape at all. It used to be
+    `issue.get("createdAt") or ""` evaluated in the `sorted()` call, which is
+    outside the per-issue handler — so one issue missing a field, or carrying
+    something other than a dict, raised straight out of `poll()`, out of
+    `run()`, and killed the daemon with the traceback in a log nobody was
+    watching. `poll()` documents that it never raises; this is why that has to
+    be true of the sort key too.
+    """
+    if not isinstance(issue, dict):
+        return ""
+    return str(issue.get("createdAt") or "")
+
+
 def _label(issue: Issue) -> str:
     """How to name an issue in the log, when Linear may not have given us a
     title or an identifier."""
@@ -218,7 +249,28 @@ class Watcher:
 
     async def poll(self) -> None:
         """One pass over Linear. Never raises: a watcher that dies on a bad
-        moment is worse than one that says what went wrong and carries on."""
+        moment is worse than one that says what went wrong and carries on.
+
+        The promise covers the whole body, including the paging loop and the
+        sort, rather than just the request. A daemon has no supervisor and no
+        restart: when it exits, Chord stops watching until somebody notices and
+        runs `chord start` again, and the only trace is a traceback in a log
+        file. So the guard belongs here, at the outermost edge, and the
+        per-issue handler inside it is there to keep one bad issue from costing
+        the rest of the backlog.
+        """
+        try:
+            await self._poll()
+        except asyncio.CancelledError:
+            # `chord stop` reaches the watcher this way. Swallowing it here would
+            # make the watcher unstoppable.
+            raise
+        except Exception as exc:
+            self._problem(
+                f"couldn't read Linear: {type(exc).__name__}: {one_line(str(exc))}"
+            )
+
+    async def _poll(self) -> None:
         try:
             page = await asyncio.wait_for(
                 self._linear.issues_for(self._router.filter()), POLL_TIMEOUT
@@ -230,12 +282,6 @@ class Watcher:
             return
         except TimeoutError:
             self._problem(f"Linear didn't answer within {POLL_TIMEOUT}s.")
-            return
-        except Exception as exc:
-            # A bug in the paging loop or the HTTP layer is not something a
-            # person can fix by waiting, but it is still not worth losing the
-            # watcher over: report it and try again on the next tick.
-            self._problem(f"couldn't read Linear: {type(exc).__name__}: {exc}")
             return
 
         # Said out loud on purpose. The alternative — quietly reading the first
@@ -253,9 +299,15 @@ class Watcher:
         else:
             self._last_problem = None
 
+        usable, dropped = _usable_issues(page.issues)
+        if dropped:
+            # Said rather than swallowed: an issue that disappears without a word
+            # is indistinguishable from one that never existed.
+            self._problem(f"skipped {dropped} issue(s) Linear returned unreadable")
+
         # Oldest first, so a backlog works its way through in the order it was
         # written rather than the order it was last touched.
-        for issue in sorted(page.issues, key=lambda i: i.get("createdAt") or ""):
+        for issue in sorted(usable, key=_order):
             if _key(issue.get("id")) not in self._seen:
                 try:
                     await self._hand_over(issue)

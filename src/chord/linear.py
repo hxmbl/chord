@@ -45,6 +45,14 @@ MAX_HISTORY = 50
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BACKOFF_BASE = 1
 
+# A hard ceiling on the pages one walk will ask for, independent of how many
+# nodes come back. The node budget alone cannot bound the loop: a connection
+# that reports `hasNextPage: true` forever while sending nothing never reaches
+# it. That is not hypothetical — it hung the watcher inside `comments()`,
+# which nothing wraps in a timeout, and the reply to an unanswered question is
+# to stop asking it.
+MAX_PAGES_PER_WALK = 200
+
 # The route label is the whole of the trigger, so the filter happens at Linear.
 # `routing.Router.filter()` builds it: a bare label or any `<label>/...` suffix,
 # in one request, so the number of curated harnesses doesn't change how often
@@ -169,6 +177,38 @@ def flatten(changes: list[LabelChange]) -> list[str]:
     return order
 
 
+def _detail(errors: object) -> str:
+    """The first error message, if there is a usable one.
+
+    `errors` is a list of error objects, and the first message is nearly always
+    the one that explains the failure. Anything else in that shape — a bare
+    string, a dict, a null, a message that is itself null — still has to produce
+    a `LinearError`, because it has to reach the handler that knows what to do
+    with a query that did not work.
+    """
+    if not isinstance(errors, list) or not errors:
+        return "no detail given"
+    first = errors[0]
+    if isinstance(first, dict):
+        message = first.get("message")
+        if message is not None:
+            return str(message)
+    return f"an error with no usable message ({type(first).__name__})"
+
+
+def _usable_nodes(raw: object) -> tuple[list[dict[str, Any]], int]:
+    """The records in a connection's `nodes`, and how many were not records.
+
+    A Relay connection is typed, but the type is Linear's promise rather than
+    something Chord checked, and everything downstream reads these as dicts.
+    A single unexpected element should cost that element, not the page.
+    """
+    if not isinstance(raw, list):
+        return [], 0
+    good = [node for node in raw if isinstance(node, dict)]
+    return good, len(raw) - len(good)
+
+
 def _actor(entry: dict[str, Any]) -> Actor | None:
     """Who applied the labels in one history entry, if the answer is knowable.
 
@@ -279,17 +319,42 @@ class Linear:
         variables: dict[str, Any],
         limit: int,
         inner: str | None = None,
-    ) -> tuple[list[Any], bool]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Walk a Relay connection to the end, or to `limit`, whichever is first.
 
-        Returns the nodes and whether it stopped short. `inner` names a nested
-        connection, for the case where the top-level field is an object
+        Returns the usable nodes and whether it stopped short. `inner` names a
+        nested connection, for the case where the top-level field is an object
         wrapping one (`issue { comments { ... } }`).
+
+        This is the boundary where Linear's answer becomes Chord's data, so it is
+        also where the shape is checked. A Relay connection is a list of nodes
+        and every consumer downstream assumes each one is a record it can read
+        a field from — `watcher` sorts on `createdAt`, `context` reads
+        `labels.nodes[].name`. One unexpected element used to end there: the
+        sort key ran outside any handler and raised, taking the whole watcher
+        down with no way to restart it.
+
+        Dropping the unusable entry and saying so is the right trade. The
+        alternative — refusing the whole page — would let one bad node cost a
+        hundred good ones, and the rest of the page is still good data.
         """
-        nodes: list[Any] = []
+        nodes: list[dict[str, Any]] = []
         after: str | None = None
+        previous: str | None = None
+        pages = 0
 
         while len(nodes) < limit:
+            pages += 1
+            if pages > MAX_PAGES_PER_WALK:
+                # A connection that keeps promising more pages while returning
+                # none of them would otherwise spin here forever, because the
+                # budget counts nodes and nodes is what never arrives. Bounded
+                # by pages as well, so an empty page always terminates the walk.
+                logging.warning(
+                    f"stopped reading {field} after {MAX_PAGES_PER_WALK} pages "
+                    f"with {len(nodes)} issue(s) in hand"
+                )
+                return nodes, True
             data = await self._query(
                 query,
                 {
@@ -298,20 +363,40 @@ class Linear:
                     "after": after,
                 },
             )
-            connection = data.get(field) or {}
+            connection = data.get(field)
             if inner:
-                connection = connection.get(inner) or {}
+                if connection is None:
+                    # The wrapper being absent is how Linear says "no such
+                    # issue", which is an empty answer, not a broken one.
+                    return nodes, False
+                connection = connection.get(inner) if isinstance(connection, dict) else None
+            if not isinstance(connection, dict):
+                raise LinearError(
+                    f"Linear sent back a {field} connection of the wrong shape "
+                    f"({type(connection).__name__}) where the query asked for a connection."
+                )
 
-            nodes.extend(connection.get("nodes") or [])
+            usable, dropped = _usable_nodes(connection.get("nodes"))
+            if dropped:
+                logging.warning(
+                    f"skipped {dropped} unreadable {field} node(s) from Linear"
+                )
+            nodes.extend(usable)
 
-            page = connection.get("pageInfo") or {}
+            page = connection.get("pageInfo")
+            if not isinstance(page, dict):
+                # No pageInfo means no way to know whether more exists, so treat
+                # it as the end of the connection rather than looping on a cursor
+                # that is not there.
+                return nodes, False
             if not page.get("hasNextPage"):
                 return nodes, False
             after = page.get("endCursor")
-            if not after:
-                # Says there's more but won't say where. Stop rather than ask
-                # for the same page forever.
+            if not after or after == previous:
+                # Says there's more but won't say where, or points at the page
+                # we just read. Stop rather than ask for the same page forever.
                 return nodes, True
+            previous = after
 
         # Out of budget with Linear still offering more.
         return nodes, True
@@ -365,13 +450,23 @@ class Linear:
         except ValueError as exc:
             raise LinearError("Linear sent back something that isn't JSON.") from exc
 
+        # The envelope is validated rather than assumed. A GraphQL response is
+        # 200 whatever it contains, and a proxy or a schema change can put
+        # anything in the body — `body.get` on a list raises AttributeError,
+        # `errors[0].get` on a string or a dict raises AttributeError or
+        # KeyError. None of those is a `LinearError`, so none of them reaches
+        # the handler that knows what to do about a query that didn't work.
+        if not isinstance(body, dict):
+            raise LinearError(
+                f"Linear sent back a {type(body).__name__} where JSON was expected."
+            )
+
         # GraphQL answers 200 and puts failures in an `errors` list, so the
         # status code alone doesn't tell us the query worked. The first message
         # is nearly always the one that explains it.
         errors = body.get("errors")
         if errors:
-            detail = errors[0].get("message") or "no detail given"
-            raise LinearError(f"Linear turned down the query: {one_line(detail)}")
+            raise LinearError(f"Linear turned down the query: {one_line(_detail(errors))}")
 
         data = body.get("data")
         if not isinstance(data, dict):
