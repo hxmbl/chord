@@ -57,10 +57,22 @@ LOCK_FILE = PROJECT_HOME / "chord.lock"
 # because it is an implementation detail, not something to type.
 SERVE_COMMAND = "_serve"
 
-# A watcher always has this in its command line, which is how `chord stop`
-# tells "our watcher that outlived its pid file" from an unrelated process
-# that inherited a recycled id.
-PROCESS_MARKER = "chord.cli"
+# The watcher's own argv. `start` runs `[python, "-m", "chord.cli", "_serve"]`,
+# and `chord stop` compares against that rather than looking for a substring.
+#
+# The substring version was `PROCESS_MARKER in ps_output`, and that matched any
+# process with `chord.cli` anywhere in its command line — verified against the
+# pre-fix code, where a stale pid file naming
+# `python -c 'import time; time.sleep(300)' chord.cli` got SIGTERMed. A grep
+# over the source tree matched too. `ps -o command=` renders the whole argv as
+# one string, so there is no way to tell `-m chord.cli _serve` from a trailing
+# argument that happens to say the same thing.
+#
+# So this is tokenised and matched as tokens. `-m` followed by `chord.cli`
+# followed by `_serve` is a watcher; a filename, an argument, or a grep pattern
+# is not.
+PROCESS_MODULE = "chord.cli"
+PROCESS_MARKER = PROCESS_MODULE
 
 
 class AlreadyRunning(Exception):
@@ -137,6 +149,12 @@ def is_our_process(pid: int) -> bool:
     listening" isn't the same as "it is ours". Sending SIGTERM to an unrelated
     process on the strength of a stale file is much worse than refusing, so this
     is only ever used to *veto* a kill, never to authorise one on its own.
+
+    Matched on argv *tokens*, not on a substring. `ps` renders the command line
+    as one string, so `"chord.cli" in output` was true for any process that
+    merely mentioned it anywhere -- including `python -c '...' chord.cli` and
+    `grep -r chord.cli .`, both of which were SIGTERMed off a stale pid file.
+    This checks for `-m chord.cli _serve`, in that order and as separate tokens.
     """
     try:
         finished = subprocess.run(
@@ -150,7 +168,31 @@ def is_our_process(pid: int) -> bool:
         return False  # No `ps`, or it wouldn't answer: don't signal blind.
     if finished.returncode != 0:
         return False
-    return PROCESS_MARKER in finished.stdout
+    return _is_watcher_argv(finished.stdout)
+
+
+def _is_watcher_argv(command: str) -> bool:
+    """Whether this command line is `python -m chord.cli _serve`.
+
+    `ps` gives one space-separated string, and quoting varies by platform and
+    shell, so this matches the module name and the serve command as adjacent
+    words anywhere in the line rather than demanding a specific shape. That is
+    narrower than a bare substring -- a file called `chord.cli.py`, a grep for
+    the string, or an argument that ends in it all fail -- while still working
+    across the quoting differences between `ps` implementations.
+
+    Deliberately does not require an exact word count or a leading interpreter
+    path: those vary (`/usr/bin/python3`, a venv, a wrapper) and requiring them
+    would mean refusing to stop our own watcher on a machine where the paths
+    differ, which is the failure that matters more.
+    """
+    words = command.split()
+    for index in range(len(words) - 1):
+        if words[index] == PROCESS_MODULE and words[index + 1] == SERVE_COMMAND:
+            return True
+        if words[index] == SERVE_COMMAND and words[index + 1] == PROCESS_MODULE:
+            return True
+    return False
 
 
 def started_at() -> float | None:
