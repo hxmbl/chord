@@ -1,0 +1,6 @@
+# Python tests: synthetic credentials in test_webhook.py. minesweep's
+# isTestFile() does not match the test_*.py prefix convention.
+test/
+
+# Example values in the commented-out starter config.
+.minesweep.yml

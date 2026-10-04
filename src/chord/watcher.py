@@ -8,13 +8,14 @@ backlog again.
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from chord import logging, notify, subscribe
 from chord.context import Issue, render
 from chord.harness import HarnessError
-from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError
+from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
 from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label
 from chord.subscribe import Subscription
 from chord.text import one_line
@@ -157,6 +158,7 @@ class Watcher:
         state_path: Path,
         subscription: Subscription | None = None,
         webhook: Webhook | None = None,
+        renew: Callable[[], str | None] | None = None,
     ) -> None:
         self._linear = linear
         self._router = router
@@ -166,11 +168,52 @@ class Watcher:
         self._last_problem: str | None = None
         self._subscription = subscription
         self._webhook = webhook
+        # How to re-read the token. Supplied rather than reached for, because the
+        # watcher has no business reading a keychain, and because a test needs
+        # to be able to say what the next token is.
+        self._renew = renew
+        # The last token this process adopted, so a keychain read that hands
+        # back the same dead string is recognised as not-a-renewal.
+        self._adopted: str | None = None
 
     @property
     def handed_over(self) -> int:
         """How many issues this Chord has offered a harness."""
         return len(self._seen)
+
+    def _renew_token(self) -> bool:
+        """Re-read the token and hand it to the client. Whether it changed.
+
+        Returns False when there is nothing to adopt — no `renew` supplied, the
+        keychain has no usable token, or it holds the one that just failed.
+
+        That last case is the one that matters. `renew` is a plain keychain
+        read, so a person who has not run `chord refresh` gets back the same
+        dead string every time. Treating that as a renewal meant asking Linear
+        again with the same credential, on every poll, forever — one wasted
+        round trip per interval for as long as the daemon runs. Comparing
+        against what we last adopted is what turns "nobody has refreshed this"
+        into one attempt instead of an unbounded number of them.
+        """
+        if self._renew is None:
+            return False
+        try:
+            token = self._renew()
+        except Exception as exc:  # a keychain that won't open is not fatal
+            self._problem(f"couldn't re-read the stored token: {one_line(str(exc))}")
+            return False
+        if not token or token == self._adopted:
+            return False
+        use = getattr(self._linear, "use_token", None)
+        if use is None:
+            return False
+        try:
+            use(token)
+        except Exception as exc:
+            self._problem(f"couldn't adopt the new token: {one_line(str(exc))}")
+            return False
+        self._adopted = token
+        return True
 
     async def run(self) -> None:
         """Poll until cancelled.
@@ -277,6 +320,29 @@ class Watcher:
             )
         except asyncio.CancelledError:
             raise
+        except Unauthorised as exc:
+            # The one failure that a retry on its own cannot fix: the token this
+            # process was started with is dead, and will stay dead until somebody
+            # runs `chord refresh`. Re-read it and try once more, so the common
+            # case — a person refreshed the token and left the daemon running —
+            # heals without anybody noticing there was anything to heal.
+            #
+            # Once per poll at most, and only when the token actually changed. A
+            # keychain read is not free and this runs every interval forever.
+            if not self._renew_token():
+                self._problem(
+                    f"{exc} Run `chord refresh`, then this Chord picks it up."
+                )
+                return
+            try:
+                page = await asyncio.wait_for(
+                    self._linear.issues_for(self._router.filter()), POLL_TIMEOUT
+                )
+            except (LinearError, TimeoutError) as retry:
+                self._problem(
+                    f"still couldn't read Linear after refreshing: {one_line(str(retry))}"
+                )
+                return
         except LinearError as exc:
             self._problem(str(exc))
             return

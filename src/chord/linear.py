@@ -129,6 +129,30 @@ class LinearError(Exception):
     """Linear didn't give us what we asked for."""
 
 
+class Unauthorised(LinearError):
+    """Linear refused the token, rather than the question.
+
+    Its own type because the remedy is different and the timing matters. Every
+    other `LinearError` is transient: the next poll tries again. This one is
+    permanent for the life of the process — an access token lasts 24 hours and
+    `_token()` read it once at startup — so the watcher has to re-read the
+    keychain and say what to run, not sit there logging Linear's own wording
+    once a minute until somebody works out what happened.
+
+    Linear's GraphQL errors are free text, so this is recognised by what it says
+    rather than by any status code: the endpoint answers 200 with an `errors`
+    list. `authenticate` and `authentication` cover the two wordings Linear uses
+    for the same refusal.
+    """
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__(
+            f"Linear rejected the access token ({detail})."
+            if detail
+            else "Linear rejected the access token."
+        )
+
+
 class Actor(NamedTuple):
     """Whoever applied a label: a person, or an integration acting for one.
 
@@ -175,6 +199,23 @@ def flatten(changes: list[LabelChange]) -> list[str]:
                 seen.add(name)
                 order.append(name)
     return order
+
+
+def _is_auth_failure(detail: str) -> bool:
+    """Whether an error message is a refused token rather than a refused query.
+
+    Matched on wording because the GraphQL endpoint reports this in an `errors`
+    string with a 200 status, and there is no field in the response to key on.
+    Kept narrow on purpose: a query that merely mentions authentication in its
+    own text should still be a `LinearError`, because the remedy for those is
+    different and pretending otherwise would send somebody to `chord refresh`
+    for a bug in a query.
+
+    Only the two wordings Linear uses for the refusal itself, both of which are
+    short enough that a false positive is implausible.
+    """
+    lowered = detail.lower()
+    return "authentication failed" in lowered or "authentication required" in lowered
 
 
 def _detail(errors: object) -> str:
@@ -258,6 +299,20 @@ class Linear:
         # The token lives only in this header. Nothing here logs a request, and
         # the failures below report status codes rather than bodies so a token
         # can't ride along into the log.
+        self._token = access_token
+        self._headers = {"Authorization": f"Bearer {access_token}"}
+
+    def use_token(self, access_token: str) -> None:
+        """Adopt a token issued after this client was built.
+
+        An access token lasts 24 hours and a daemon runs for days, so the one
+        read at startup is eventually always stale. Re-reading is the difference
+        between Chord recovering on its own after `chord refresh` and needing a
+        restart, which nobody remembers to do. The subscription's handshake
+        header is fixed at connect time and cannot be changed this way, so it
+        reconnects on its own after the same interval.
+        """
+        self._token = access_token
         self._headers = {"Authorization": f"Bearer {access_token}"}
 
     async def issues_for(self, filter: dict[str, Any]) -> IssuePage:
@@ -438,10 +493,7 @@ class Linear:
         if response.status_code in (401, 403):
             # The status and nothing more: the body can carry workspace detail,
             # and a rejected token is one `chord refresh` away from fine.
-            raise LinearError(
-                f"Linear rejected the token (HTTP {response.status_code}). "
-                "Run `chord refresh`."
-            )
+            raise Unauthorised(f"HTTP {response.status_code}")
         if response.status_code != 200:
             raise LinearError(f"Linear returned HTTP {response.status_code}.")
 
@@ -466,7 +518,14 @@ class Linear:
         # is nearly always the one that explains it.
         errors = body.get("errors")
         if errors:
-            raise LinearError(f"Linear turned down the query: {one_line(_detail(errors))}")
+            detail = _detail(errors)
+            if _is_auth_failure(detail):
+                # A 200 with an auth error is the same refusal as a 401, and it
+                # is what Linear actually returns for an expired access token on
+                # the GraphQL endpoint. Recognised here rather than in the
+                # watcher, because only this layer knows what a refusal is.
+                raise Unauthorised(one_line(detail))
+            raise LinearError(f"Linear turned down the query: {one_line(detail)}")
 
         data = body.get("data")
         if not isinstance(data, dict):

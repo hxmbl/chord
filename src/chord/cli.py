@@ -202,6 +202,11 @@ async def _watch() -> None:
             state_path=daemon.STATE_FILE,
             subscription=subscription,
             webhook=webhook,
+            # An access token lasts 24 hours and this daemon runs for days, so
+            # the token read at startup goes stale. Re-reading it when Linear
+            # refuses one is what lets a `chord refresh` heal a running daemon
+            # instead of needing a restart nobody remembers to do.
+            renew=lambda: _try_token(),
         )
     except StateError as exc:
         watcher.log(str(exc))
@@ -320,6 +325,21 @@ def _token() -> str:
     if not isinstance(content, dict):  # load() only succeeds with a dict.
         _fail("The keychain entry isn't a set of credentials. Run `chord setup`.")
     return content["access_token"]
+
+
+def _try_token() -> str | None:
+    """The stored token if there is a usable one, else None.
+
+    The difference from `_token()` is that this does not stop the process. It is
+    called from inside the running daemon, where exiting would be a worse
+    answer than carrying on and saying what is wrong — the watcher falls back
+    to reporting, and reports once rather than every poll.
+    """
+    code, content = credentials.load()
+    if code or not isinstance(content, dict):
+        return None
+    token = content.get("access_token")
+    return token if isinstance(token, str) and token else None
 
 
 def _linear_line() -> str:

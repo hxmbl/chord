@@ -243,14 +243,19 @@ def test_linear_rejects_an_expired_token():
     original = httpx.AsyncClient
     httpx.AsyncClient = Client
     try:
-        with pytest.raises(linear.LinearError) as caught:
+        with pytest.raises(linear.Unauthorised) as caught:
             asyncio.run(linear.Linear("token")._query("q {}", {}))
     finally:
         httpx.AsyncClient = original
 
     assert "401" in str(caught.value)
-    assert "chord refresh" in str(caught.value)
     assert "SECRET-BEARING-BODY" not in str(caught.value)
+    # A refusal is still a LinearError, so existing handling is unaffected.
+    assert isinstance(caught.value, linear.LinearError)
+    # The remedy is the watcher's to give, because the watcher knows whether a
+    # renewal is possible and what to say if it isn't. See
+    # test_webhook-style recovery tests in test_auth_expiry.py.
+    assert "token" in str(caught.value)
 
 
 def test_linear_survives_non_json():
