@@ -173,6 +173,17 @@ def _build(raw: dict, path: Path) -> Config:
     webhook_secret = raw.get("webhook_secret", base.webhook_secret)
     if not isinstance(webhook_secret, str):
         raise ConfigError(f"`webhook_secret` in {path} has to be a string.")
+    if webhook_secret and webhook_secret.strip() != webhook_secret:
+        # HTTP strips optional whitespace around a header value, so a sender
+        # cannot transmit a secret with a leading or trailing space — the value
+        # that arrives will not match the one configured here. Accepting it
+        # produces a setup that looks right and answers every request with 401,
+        # which is the worst of the three outcomes: not a clear failure at the
+        # point of the mistake, but a silent one at the point of use.
+        raise ConfigError(
+            f"`webhook_secret` in {path} has leading or trailing whitespace, "
+            "which cannot be sent in an HTTP header. Remove it."
+        )
 
     return Config(
         label=label,
