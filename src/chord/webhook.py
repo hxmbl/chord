@@ -124,12 +124,22 @@ class Webhook(EventSource):
 
     async def _respond(self, reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
         """The reply for one request. Raises on anything malformed."""
+        # No explicit header-size check here: `readuntil` raises
+        # `LimitOverrunError` first if the terminator has not arrived within
+        # MAX_HEAD, and that is caught as a bad request above. An earlier
+        # version returned 431 for this and could never reach it, because
+        # `readuntil` refuses to buffer that much in the first place.
         headers = await reader.readuntil(b"\r\n\r\n")
-        if len(headers) > MAX_HEAD:
-            return b"431 Request Header Fields Too Large", b"headers too large\n"
 
         lines = headers.split(b"\r\n")
-        method, path, _ = lines[0].decode("latin1").split(" ", 2)
+        request_line = lines[0].decode("latin1").split(" ")
+        # `split(" ", 2)` raises on a request line with fewer than three parts,
+        # which a malformed request has no trouble producing. Answered here as a
+        # bad request rather than falling through to the catch-all, which logged
+        # a traceback for what is ordinary garbage on a public socket.
+        if len(request_line) != 3:
+            return b"400 Bad Request", b"bad request\n"
+        method, path, _ = request_line
         length = 0
         secret = b""
         for line in lines[1:]:
@@ -139,7 +149,15 @@ class Webhook(EventSource):
             if name == b"content-length":
                 # Bounded before it is believed, so a client cannot make us
                 # reserve an arbitrary amount of memory by asserting a number.
-                length = min(int(value), MAX_BODY)
+                try:
+                    length = min(int(value), MAX_BODY)
+                except ValueError:
+                    return b"400 Bad Request", b"bad request\n"
+                if length < 0:
+                    # `readexactly` rejects a negative size, which reached the
+                    # catch-all and logged a traceback for a request that is
+                    # simply malformed.
+                    return b"400 Bad Request", b"bad request\n"
             elif name == SECRET_HEADER:
                 secret = value
 

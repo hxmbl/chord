@@ -423,3 +423,85 @@ def test_stopping_twice_is_harmless():
         await hook.stop()
 
     asyncio.run(scenario())
+
+# --- malformed requests are answered, not logged with a traceback ---
+
+
+@pytest.mark.parametrize(
+    "payload,why",
+    [
+        pytest.param(b"\x00\x01\x02\r\n\r\n", "no spaces at all", id="no-tokens"),
+        pytest.param(b"GET\r\n\r\n", "one token", id="one-token"),
+        pytest.param(b"POST /webhook HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+                     "a negative length", id="negative-length"),
+        pytest.param(b"POST /webhook HTTP/1.1\r\nContent-Length: 1e3\r\n\r\n",
+                     "a length that is not an integer", id="float-length"),
+    ],
+)
+def test_a_malformed_request_is_answered_without_a_traceback(payload, why, caplog):
+    """These reached the catch-all, which logged a traceback for ordinary garbage.
+
+    A public socket gets malformed requests from scanners. Logging a stack trace
+    for each one fills a daemon's log with noise that has nothing to do with the
+    watcher, and buries the lines somebody is looking for.
+
+    So the shapes that can be recognised are recognised and answered, and the
+    catch-all is left for genuinely unforeseen cases.
+    """
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="")
+        await hook.start()
+        try:
+            return await send(hook.port, payload, wait=READ_TIMEOUT + 5)
+        finally:
+            await hook.stop()
+
+    reply = asyncio.run(scenario())
+    assert b"400" in status_of(reply), f"{why}: {status_of(reply)!r}"
+    assert not caplog.records, [r.getMessage() for r in caplog.records]
+
+
+def test_a_normal_garbage_request_is_still_unlogged(caplog):
+    """And the ordinary malformed shapes never reach the catch-all either."""
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="")
+        await hook.start()
+        try:
+            for payload in (
+                b"\x00\x01\x02\r\n\r\n",
+                b"GET\r\n\r\n",
+                b"POST /webhook HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+                b"POST /webhook HTTP/1.1\r\nContent-Length: abc\r\n\r\n",
+            ):
+                await send(hook.port, payload, wait=READ_TIMEOUT + 5)
+        finally:
+            await hook.stop()
+
+    asyncio.run(scenario())
+    assert not caplog.records, [r.getMessage() for r in caplog.records]
+
+
+def test_the_request_line_needs_exactly_three_parts():
+    """A request line that is only a method is a bad request, not a crash."""
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="")
+        await hook.start()
+        try:
+            return await send(hook.port, b"POST\r\n\r\n", wait=READ_TIMEOUT + 5)
+        finally:
+            await hook.stop()
+
+    assert b"400" in status_of(asyncio.run(scenario()))
+
+
+def test_a_well_formed_request_still_answers_200():
+    """So the tolerance above has not broken the happy path."""
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="")
+        await hook.start()
+        try:
+            return await send(hook.port, post())
+        finally:
+            await hook.stop()
+
+    assert b"200 OK" in status_of(asyncio.run(scenario()))

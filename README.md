@@ -79,7 +79,9 @@ only works from your machine. To receive Linear webhooks, expose this port publi
 using a tunnel service (like ngrok, Cloudflare Tunnel, or Tailscale) and use
 that public URL. Run `chord info` to see the exact webhook URL Chord is listening on.
 
-If you skip this step, polling still works — webhooks are purely for speed.
+If you skip this step, polling still works — webhooks are purely for speed. See
+[Webhooks](#webhooks) for what the receiver does with a request, how to
+authenticate it, and how to tell whether it is working.
 
 ### 5. Start watching
 
@@ -137,6 +139,11 @@ interval = 60
 
 # Local webhook listener. Default: 23842; use 0 for an ephemeral test port.
 webhook_port = 23842
+
+# Shared secret for the webhook, sent as the X-Chord-Secret header. Default: ""
+# — no authentication. Set it to anything else and every request must carry a
+# matching header or get a 401. See "Webhooks" below before setting one.
+webhook_secret = ""
 
 # Who may trigger a run. Default: everyone in the workspace — read the
 # "Who can trigger a run" section below before leaving it that way.
@@ -256,17 +263,131 @@ typed in Linear will actually do. `chord start` builds every route before it
 spawns anything, so a curated harness naming a command that isn't installed is
 reported by the command rather than by the first issue that trips it.
 
-## How webhooks work
+## Webhooks
 
-If you set up a Linear webhook (see Setup step 4), the watcher receives instant
-notifications. The webhook payload is only a wake-up signal; Chord always re-fetches
-the full issue and discussion from Linear, so duplicate or malformed payloads
-are harmless.
+Polling is how Chord works. A webhook makes it faster; it never makes it
+correct on its own. Everything below follows from that.
 
-Polling continues at your configured `interval` as a reliable backup. You can
-set `interval` high (even hours) when webhooks are working — it only controls
-how long Chord waits to catch anything missed during a delivery outage, not how
-quickly you see new issues.
+### What the webhook actually is
+
+A wake-up signal. Chord does not read the payload, does not act on it, and
+does not trust it — it uses the arrival to re-read Linear through the normal
+path. So a duplicated delivery, a truncated body, or a payload that is not JSON
+at all costs one extra read of Linear and nothing else.
+
+The label filter, the de-duplication, the allowlist and the routing all happen
+in the poll, in one place. A webhook cannot bypass any of them, because none of
+them are on the path a webhook takes.
+
+### Setting one up
+
+In Linear: **Settings → Integrations → Webhooks → Add webhook**.
+
+- **URL** — your tunnel's public URL, plus `/webhook`
+- **Events** — Issue created, Issue updated
+- **Teams** — the teams whose issues you want to wake for
+
+Chord listens on `127.0.0.1:23842` by default, which nothing outside your
+machine can reach. You need a tunnel: ngrok, Cloudflare Tunnel, Tailscale,
+whatever you already use. `chord info` prints the exact URL to put in Linear.
+
+`webhook_port = 0` asks the operating system for a free port, which is what to
+use when something else already has 23842. `chord info` shows what you got.
+
+### What it replies with
+
+Chord answers every request, because a sender that gets silence does not know
+whether to retry.
+
+| Request                                     | Reply |
+| ------------------------------------------- | ----- |
+| `POST` to the configured path               | `200 OK` |
+| Any method other than `POST`                 | `404 Not Found` |
+| A path other than the configured one         | `404 Not Found` |
+| Malformed request line or headers            | `400 Bad Request` |
+| A body that stops short of its `Content-Length` | `400 Bad Request`, after a timeout |
+| Wrong or missing `X-Chord-Secret`            | `401 Unauthorized` |
+| Headers past 32 KiB                          | `400 Bad Request` |
+
+Only the first row wakes the watcher. The rest are answered so that whoever sent
+them learns something and stops.
+
+### Requests are bounded
+
+Every read has a 5-second ceiling and headers over 32 KiB are refused. Both
+exist because a listener on a public port is reachable by things that are not
+Linear, and one that announced a body it never sent would otherwise hold a
+connection open indefinitely — which used to be enough to stop `chord stop`
+finishing at all.
+
+### A burst is one poll
+
+If twenty deliveries arrive while Chord is busy, the next poll happens once, not
+twenty times. Linear's own activity while Chord is mid-harness is also absorbed
+into that one poll. So a noisy workspace does not turn into a rate-limit
+problem.
+
+### Authentication
+
+By default there is none, and the default is deliberate: every existing install
+is in that state, and failing closed would stop every working webhook on
+upgrade. With no secret, the worst an unauthorised caller can do is make Chord
+re-read Linear — spending rate limit on a machine that already holds a valid
+token, repeatedly, for free.
+
+If your tunnel is public, set one:
+
+```toml
+webhook_secret = "a-long-random-string"
+```
+
+Every request must then carry it, and the check happens before the body is read
+so an unauthorised caller cannot hold a connection open with bytes it may not
+send:
+
+```
+X-Chord-Secret: a-long-random-string
+```
+
+The comparison is constant-time. A secret with leading or trailing whitespace
+is rejected at load, because HTTP strips it and no sender could transmit it —
+which would otherwise be a setup that looks right and 401s forever.
+
+Linear cannot send a custom header, so a secret means you terminate the
+connection somewhere that can: most tunnels can add a header, and if yours
+cannot, the secret is not usable with Linear directly. Check before you rely
+on it. `chord info` says whether a secret is set.
+
+### Polling still runs
+
+`interval` is unaffected by any of this. It is how long Chord waits before
+checking again regardless, so a missed or misconfigured delivery costs at most
+one interval. Raise it when webhooks are working; it does not change how
+quickly you see something that arrived.
+
+### When it is not working
+
+`chord info` prints the URL Chord is listening on and whether a secret is set.
+
+Chord does not log each webhook arrival — a poll that finds nothing to do is
+silent, which is the same whether it was triggered by a webhook or by the
+interval. So there is nothing to watch for in `chord watch` to confirm the
+webhook path is alive. Check it directly instead:
+
+```bash
+curl -i -X POST http://127.0.0.1:23842/webhook
+```
+
+A `200 OK` means the listener is up and the path matches. With a secret set,
+add `-H "X-Chord-Secret: …"` and expect `401` without it. If the connection is
+refused or times out, the listener is not running — `chord start` prints
+`Webhook listening at …` when it is.
+
+If `curl` gets a `200` but Linear's deliveries never arrive, the problem is
+upstream of Chord: the tunnel, or Linear's own delivery log for that webhook.
+If deliveries arrive but issues are picked up only on the interval, the wake-up
+is not reaching the watcher — check `webhook_secret` is not set on one side
+only, and that the URL in Linear has the `/webhook` path on the end.
 
 ## Harnesses
 
