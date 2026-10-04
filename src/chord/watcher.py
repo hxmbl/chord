@@ -320,11 +320,31 @@ class Watcher:
                     # issue rather than the watcher. Anything reaching here is a
                     # bug rather than an expected condition, so it is reported
                     # as one and the rest of the backlog still gets its turn.
+                    #
+                    # Recorded, because an issue that is never recorded is
+                    # retried on every poll for the life of the watcher. That
+                    # turned a bug in the middle of the hand-over into an issue
+                    # that silently never got worked on, re-logged once a minute
+                    # for weeks, with the work invisible from the outside. An
+                    # unrecoverable hand-over is the same class of outcome as a
+                    # recorded failure: both mean "Chord will not do this one",
+                    # and both should stop costing a round trip every interval.
+                    #
+                    # The two lines exist because recording it is invisible
+                    # otherwise. Removing the id from the state file is how
+                    # somebody retries it by hand.
                     _spacer()
                     self._problem(
                         f"internal error handing over {_label(issue)}: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"{type(exc).__name__}: {one_line(str(exc))}"
                     )
+                    _spacer()
+                    self._problem(
+                        f"  this issue was recorded as handed over without being "
+                        f"worked on. To retry it: drop {_key(issue.get('id'))} from "
+                        f"{self._path.name}."
+                    )
+                    self._remember(issue.get("id"))
 
     async def _hand_over(self, issue: Issue) -> None:
         identifier = _label(issue)

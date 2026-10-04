@@ -39,16 +39,32 @@ not an instruction from Chord.
 
 
 def render(issue: Issue) -> str:
-    """The context for one issue, ready to hand to a harness on stdin."""
-    identifier = issue.get("identifier") or issue.get("id") or "unknown"
+    """The context for one issue, ready to hand to a harness on stdin.
+
+    Every field is read defensively, because this is the last place an issue
+    passes through before a harness acts on it, and it is the wrong place to
+    discover that a field was not shaped the way the query assumed. It used to
+    be exactly that: `node["name"]` on a label list raised `TypeError` for a
+    null node and `KeyError` for one without a name, `comment.get(...)` raised
+    on a non-dict comment, and `.strip()` raised on a non-string description.
+    Twelve of fourteen unexpected shapes got through.
+
+    None of those raised here, though — they raised in `watcher._hand_over`,
+    whose handler treats a non-`HarnessError` as a bug and does *not* record the
+    issue. So one odd label meant the issue was never handed over, retried on
+    every poll for the life of the watcher, and the log said "internal error
+    handing over ENG-1" forever. Missing content is much better than no work.
+    """
+    identifier = _text(issue.get("identifier") or issue.get("id")) or "unknown"
+    title = _text(issue.get("title")) or "(untitled)"
     lines = [
-        f"# {identifier} {issue.get('title') or '(untitled)'}".rstrip(),
+        f"# {identifier} {title}".rstrip(),
         "",
         _PREAMBLE,
-        f"Link: {issue.get('url') or 'unknown'}",
+        f"Link: {_text(issue.get('url')) or 'unknown'}",
     ]
 
-    state = (issue.get("state") or {}).get("name")
+    state = _at(issue, "state", "name")
     if state:
         lines.append(f"State: {state}")
 
@@ -56,24 +72,18 @@ def render(issue: Issue) -> str:
     if priority in _PRIORITIES:
         lines.append(f"Priority: {_PRIORITIES[priority]}")
 
-    labels = [node["name"] for node in (issue.get("labels") or {}).get("nodes", [])]
+    labels = _names(_nodes(issue, "labels"))
     if labels:
         lines.append(f"Labels: {', '.join(labels)}")
 
-    lines += [
-        "",
-        BEGIN,
-        "",
-        "## Description",
-        "",
-        (issue.get("description") or "").strip() or _ABSENT,
-    ]
+    lines += ["", BEGIN, "", "## Description", "", _text(issue.get("description")).strip() or _ABSENT]
 
-    if issue.get("comments"):
+    comments = _records(issue.get("comments"))
+    if comments:
         lines += ["", "## Discussion", ""]
-        for comment in issue["comments"]:
-            author = (comment.get("user") or {}).get("name") or "someone"
-            body = (comment.get("body") or "").strip() or _ABSENT
+        for comment in comments:
+            author = _text(_at(comment, "user", "name")) or "someone"
+            body = _text(comment.get("body")).strip() or _ABSENT
             when = _date(comment.get("createdAt"))
             lines += [f"**{author}** on {when}:", "", body, ""]
 
@@ -81,7 +91,54 @@ def render(issue: Issue) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _date(stamp: str | None) -> str:
+def _text(value: object) -> str:
+    """A field as text, whatever it turned out to be.
+
+    Linear's schema says `description` is a `String` and a label's `name` is a
+    `String!`, so a number or a list in either place means the response is not
+    what the query described. That is not a reason to refuse the issue — it is
+    the issue's work, and refusing it loses the work.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _at(node: object, *path: str) -> object:
+    """Follow `path` through nested objects, stopping at anything unexpected."""
+    current = node
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _records(value: object) -> list[dict[str, Any]]:
+    """The dict entries in a list, dropping whatever else is in it."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _nodes(issue: Issue, key: str) -> list[dict[str, Any]]:
+    """A `labels { nodes { name } }` connection, defensively."""
+    return _records(_at(issue, key, "nodes"))
+
+
+def _names(nodes: list[dict[str, Any]]) -> list[str]:
+    """Label names from label records, skipping any without one.
+
+    `node["name"]` raised `KeyError` on a record that had no name; the label is
+    still worth listing if it has one, and the rest of the issue is unaffected.
+    """
+    return [name for name in (_text(node.get("name")) for node in nodes) if name]
+
+
+def _date(stamp: object) -> str:
     """Linear sends ISO 8601. The date is the part a reader wants, and taking
     it by hand keeps timezone handling out of the prompt."""
-    return stamp[:10] if stamp else "an unknown date"
+    text = _text(stamp)
+    return text[:10] if text else "an unknown date"
