@@ -93,32 +93,94 @@ def test_the_serve_command_alone_is_not_enough():
 # --- against real processes ---
 
 
+_SPAWNED: list = []
+
+
 def spawn(argv):
     process = subprocess.Popen(
         argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
+    _SPAWNED.append(process)
     # Give the OS a moment to make the process visible to `ps`.
     time.sleep(0.4)
     return process
 
 
-def test_a_real_watcher_is_recognised():
-    """Spawned for real, not described. `-m chord.cli _serve` starts a daemon,
-    so it is stopped again immediately — the point is only what `ps` reports."""
-    process = spawn([sys.executable, "-m", "chord.cli", "no-such-command"])
-    try:
-        # A bad subcommand exits; what matters is the argv while it is alive.
-        assert daemon._is_watcher_argv(
-            subprocess.run(
-                ["ps", "-ww", "-p", str(process.pid), "-o", "command="],
-                capture_output=True,
-                text=True,
-            ).stdout
-        ) or process.poll() is not None
-    finally:
+@pytest.fixture(autouse=True)
+def reap_spawned():
+    """Nothing this file starts outlives it.
+
+    Several tests here assert on a live process, and a failing assertion would
+    otherwise skip the `finally` that kills it — leaving detached watchers
+    behind, which is exactly the sort of thing this repo's own findings are
+    about.
+    """
+    yield
+    for process in _SPAWNED:
         if process.poll() is None:
             process.kill()
-        process.wait()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    _SPAWNED.clear()
+
+
+def count_watchers() -> int:
+    """How many stand-in watchers are running right now."""
+    listing = subprocess.run(
+        ["ps", "-Ao", "command="], capture_output=True, text=True
+    ).stdout
+    return sum(
+        1
+        for line in listing.splitlines()
+        if daemon.PROCESS_MODULE in line and daemon.SERVE_COMMAND in line
+    )
+
+
+def test_a_real_watcher_is_recognised():
+    """Against a live process, not a description of one.
+
+    The argv is a real watcher's shape — `-m chord.cli _serve` — but the body is
+    a sleep, so nothing is watched and nothing is written. `is_our_process` only
+    ever reads `ps`, so what it is looking at is a real entry in the process
+    table either way.
+
+    Earlier this test spawned `chord.cli` with a bad subcommand and asserted
+    `recognised or already exited`, which passes whichever way it lands and
+    therefore checked nothing.
+    """
+    process = spawn(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            "-m",
+            daemon.PROCESS_MODULE,
+            daemon.SERVE_COMMAND,
+        ]
+    )
+    assert process.poll() is None, "the stand-in exited before it was checked"
+    reported = subprocess.run(
+        ["ps", "-ww", "-p", str(process.pid), "-o", "command="],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert daemon.PROCESS_MODULE in reported, "ps did not report the argv as expected"
+    assert daemon.is_our_process(process.pid) is True
+
+
+def test_nothing_this_file_spawned_is_left_running():
+    """A test that leaks watchers is a test that eventually hangs the machine.
+
+    Counted rather than asserted per-test, because the leaks happened in
+    `finally` blocks that ran after an assertion had already failed.
+    """
+    before = count_watchers()
+    spawn([sys.executable, "-c", "import time; time.sleep(60)", "-m",
+           daemon.PROCESS_MODULE, daemon.SERVE_COMMAND]).kill()
+    spawn([sys.executable, "-c", "import time; time.sleep(60)", "chord.cli"]).kill()
+    assert count_watchers() == before, "a helper spawned something it did not clean up"
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,12 @@ from chord.paths import project_root
 
 HOME = Path.home() / ".chord"
 
+# The one place this module spawns a process. Indirected through a module
+# attribute so a test can stand in for the child without patching
+# `subprocess.Popen` globally, which would also catch the subprocesses the
+# test runner spawns for its own output capture.
+_Popen = subprocess.Popen
+
 # How long `chord stop` waits for the watcher to go away. The watcher is
 # usually asleep between polls, so this is generous; a harness mid-run is the
 # slow case, and it gets killed rather than waited on indefinitely.
@@ -267,13 +273,28 @@ def start() -> int:
     with _start_lock():
         already = running_pid()
         if already is not None:
-            raise AlreadyRunning(already)
+            # `running_pid` is a liveness check, deliberately: `chord info` calls
+            # it constantly and a subprocess each time would be a poor trade for
+            # the sake of a more precise answer. The cost is that a pid file
+            # naming a live process that is not ours — a recycled id after a
+            # reboot, most often — makes `start` refuse with a pid that belongs
+            # to somebody else, and nothing tells the person which it is.
+            #
+            # `start` is not on a hot path, so it can afford the check, and here
+            # it matters: refusing to start because of an unrelated process is a
+            # dead end, and `chord stop` clearing the file is not something
+            # somebody discovers when they are trying to get Chord working.
+            # Only the file is cleared; the process is left alone, exactly as
+            # `stop` does.
+            if is_our_process(already):
+                raise AlreadyRunning(already)
+            PID_FILE.unlink(missing_ok=True)
 
         # Each start begins a new log. What you want after `chord start` is this
         # run, including anything that went wrong in the first second.
         log = _open_private(LOG_FILE)
         try:
-            process = subprocess.Popen(
+            process = _Popen(
                 [sys.executable, "-m", "chord.cli", SERVE_COMMAND],
                 stdin=subprocess.DEVNULL,
                 stdout=log,

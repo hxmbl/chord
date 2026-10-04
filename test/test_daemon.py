@@ -1,6 +1,7 @@
 """The daemon findings: per-project state, not signalling a stranger's pid, and
 two concurrent `chord start`s not orphaning a watcher."""
 
+import json
 import os
 import subprocess
 import time
@@ -144,7 +145,12 @@ daemon.LOCK_FILE = daemon.PROJECT_HOME / "chord.lock"
 daemon.LOG_FILE = daemon.PROJECT_HOME / "chord.log"
 daemon.project_root = lambda: pathlib.Path({root!r})
 import subprocess, os, time
-# A "watcher" that is really just a live sleep, so running_pid() accepts it.
+# A stand-in for the watcher. Two things it has to get right, both of which the
+# old `sleep 30` got wrong now that `start` verifies identity rather than just
+# liveness: the argv has to read like a real watcher's (`-m chord.cli _serve`),
+# and the patch must target `daemon._Popen` rather than `subprocess.Popen`,
+# because `is_our_process` runs `ps` through `subprocess.run` — which would
+# otherwise spawn another stand-in instead of `ps`, and report nothing.
 class Fake:
     returncode = None
     def __init__(self, p): self._p = p
@@ -152,22 +158,22 @@ class Fake:
     @property
     def pid(self): return self._p.pid
 real = subprocess.Popen
-def popen(argv, **kw):
-    if argv[1:3] == ["-m", "chord.cli"]:
-        return Fake(real(["sleep", "30"]))
-    return real(argv, **kw)
-daemon.subprocess.Popen = popen
-daemon.time.sleep = lambda s: None
+def popen(*args, **kw):
+    return Fake(real([sys.executable, "-c",
+                      "import time; time.sleep(30)", "-m",
+                      "chord.cli", daemon.SERVE_COMMAND]))
+daemon._Popen = popen
 try:
     pid = daemon.start()
     print(json.dumps({{"ok": True, "pid": pid}}))
+    # The stand-in watcher outlives this process. A real one is detached and
+    # does exactly that, and it matters here: the winner used to SIGKILL its
+    # own stand-in on the way out, so the loser would find a pid that was
+    # already gone, fail to identify it, and start a second watcher. That is
+    # the test destroying the evidence the race depends on, not a race.
+    time.sleep(4)
 except daemon.AlreadyRunning as exc:
     print(json.dumps({{"ok": False, "pid": exc.pid}}))
-finally:
-    pid = daemon.running_pid()
-    if pid:
-        try: os.kill(pid, 9)
-        except OSError: pass
 """
 
 
@@ -200,6 +206,16 @@ def test_concurrent_starts_leave_no_orphaned_watcher(tmp_path):
         out, _ = proc.communicate(timeout=60)
         results.append(out.strip().splitlines()[-1] if out.strip() else "")
 
+    # Each racer leaves its stand-in watcher running for four seconds so the
+    # other one can still identify it — see RACE_SCRIPT — and this test tidies
+    # them up rather than letting them be adopted by init.
+    for line in results:
+        if '"ok": true' in line:
+            try:
+                os.kill(json.loads(line)["pid"], 9)
+            except (OSError, ValueError):
+                pass
+
     winners = [r for r in results if '"ok": true' in r]
     assert len(winners) == 1, f"expected one winner, got {results}"
     assert any('"ok": false' in r for r in results), (
@@ -220,7 +236,10 @@ def test_pid_file_is_written_atomically(isolated_state, monkeypatch):
             return None
 
     monkeypatch.setattr(daemon, "running_pid", lambda: None)
-    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: FakeProcess())
+    # `_Popen`, not `subprocess.Popen`: the daemon spawns through its own module
+    # attribute so a test can replace the child without also catching the
+    # processes the test runner spawns for output capture.
+    monkeypatch.setattr(daemon, "_Popen", lambda *a, **k: FakeProcess())
     monkeypatch.setattr(daemon.time, "sleep", lambda _s: None)
 
     seen_during_write = []
