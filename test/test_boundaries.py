@@ -498,3 +498,111 @@ def test_a_missing_issue_is_empty_rather_than_an_error(monkeypatch):
 def test_a_missing_issue_key_is_empty_too(monkeypatch):
     client = _client(monkeypatch, {})
     assert asyncio.run(client.comments("gone")) == []
+
+# --- the limit is enforced, not requested ---
+
+
+def test_a_page_that_ignores_first_cannot_exceed_the_limit(monkeypatch):
+    """`limit` is Chord's ceiling, so it is applied rather than asked for.
+
+    `first` tells Linear how many to send, and a server that ignores it returns
+    whatever it likes. Verified against the pre-fix code, where a page of 50
+    against a limit of 10 produced 50 nodes — so `MAX_ISSUES_PER_POLL` was a
+    suggestion, and `truncated` (which is what makes the watcher tell a person
+    their backlog is capped) was reporting on a limit that had been passed.
+    """
+    calls = {"n": 0}
+
+    async def greedy(query, variables):
+        calls["n"] += 1
+        return {
+            "issues": {
+                "nodes": [{"id": str(i), "createdAt": "2026-01-01"} for i in range(50)],
+                "pageInfo": {"hasNextPage": True, "endCursor": "always-more"},
+            }
+        }
+
+    client = linear.Linear("token")
+    monkeypatch.setattr(client, "_query", greedy)
+    nodes, truncated = asyncio.run(client._paged("q", "issues", {}, 10))
+
+    assert len(nodes) == 10, f"got {len(nodes)} against a limit of 10"
+    assert truncated is True, "a capped page must say it was capped"
+    assert calls["n"] == 1, "should not have asked again once the limit was met"
+
+
+def test_the_limit_is_enforced_across_pages_not_just_within_one(monkeypatch):
+    """A walk that ends up over the limit must be cut back, not just a page."""
+    calls = {"n": 0}
+
+    async def chatty(query, variables):
+        calls["n"] += 1
+        return {
+            "issues": {
+                "nodes": [{"id": f"{calls['n']}-{i}"} for i in range(8)],
+                "pageInfo": {"hasNextPage": True, "endCursor": f"c{calls['n']}"},
+            }
+        }
+
+    client = linear.Linear("token")
+    monkeypatch.setattr(client, "_query", chatty)
+    nodes, truncated = asyncio.run(client._paged("q", "issues", {}, 12))
+
+    assert len(nodes) == 12, f"got {len(nodes)} against a limit of 12"
+    assert truncated is True
+    assert calls["n"] >= 2, "should have needed more than one page to reach the limit"
+
+
+def test_asking_for_exactly_what_is_left_asks_for_nothing_next_time(monkeypatch):
+    """The `first` argument must shrink, or the query is nonsense on the last page."""
+    asked = []
+
+    async def record(query, variables):
+        asked.append(variables["first"])
+        return {
+            "issues": {
+                "nodes": [{"id": "1"}, {"id": "2"}, {"id": "3"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "c"},
+            }
+        }
+
+    client = linear.Linear("token")
+    monkeypatch.setattr(client, "_query", record)
+    asyncio.run(client._paged("q", "issues", {}, 7))
+
+    # Each request asks only for what is still needed. They do not have to add
+    # up to the limit, because the server is free to send fewer than it was
+    # asked for -- here it sends 3 each time, so the walk stops after the third
+    # page with 6 of 7. What matters is that no request ever asks for more than
+    # is left, which is what would make the query nonsensical on the last page.
+    assert asked[0] == 7, "the first page should ask for the whole limit"
+    assert all(1 <= n <= 7 for n in asked), f"asked for {asked}"
+    assert asked == sorted(asked, reverse=True), f"never asked for more later: {asked}"
+
+
+def test_a_normal_multi_page_walk_is_untouched(monkeypatch):
+    """The enforcement must not cost anything on well-behaved data."""
+    pages = [
+        (["1", "2", "3"], True, "c1"),
+        (["4", "5", "6"], True, "c2"),
+        (["7"], False, None),
+    ]
+    calls = {"n": 0}
+
+    async def ok(query, variables):
+        nodes, more, cursor = pages[calls["n"]]
+        calls["n"] += 1
+        return {
+            "issues": {
+                "nodes": [{"id": n} for n in nodes],
+                "pageInfo": {"hasNextPage": more, "endCursor": cursor},
+            }
+        }
+
+    client = linear.Linear("token")
+    monkeypatch.setattr(client, "_query", ok)
+    page = asyncio.run(client.issues_for({"or": []}))
+
+    assert [i["id"] for i in page.issues] == ["1", "2", "3", "4", "5", "6", "7"]
+    assert page.truncated is False
+    assert calls["n"] == 3

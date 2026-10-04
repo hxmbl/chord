@@ -436,6 +436,18 @@ class Linear:
                 logging.warning(
                     f"skipped {dropped} unreadable {field} node(s) from Linear"
                 )
+            # `limit` is Chord's own ceiling and is enforced here rather than
+            # trusted to the query. `first` asks for at most what is left, but a
+            # server that ignores it returns whatever it likes, and `truncated`
+            # is how the watcher tells a person their backlog is capped. A limit
+            # that the response can exceed is not a limit.
+            room = limit - len(nodes)
+            if len(usable) > room:
+                logging.warning(
+                    f"Linear returned {len(usable)} {field} where at most {room} "
+                    f"were asked for; keeping the first {room}."
+                )
+                usable = usable[:room]
             nodes.extend(usable)
 
             page = connection.get("pageInfo")

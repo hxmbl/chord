@@ -64,7 +64,11 @@ def render(issue: Issue) -> str:
         f"Link: {_text(issue.get('url')) or 'unknown'}",
     ]
 
-    state = _at(issue, "state", "name")
+    # `_text` like every other field, so a `state.name` that came back as
+    # something other than a string reads as that value rather than as its
+    # repr. It cannot raise either way; this is about the prompt not carrying
+    # `{'nested': 'dict'}` into an agent's context.
+    state = _text(_at(issue, "state", "name"))
     if state:
         lines.append(f"State: {state}")
 
