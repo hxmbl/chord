@@ -296,13 +296,6 @@ def _authorisation(config: Config) -> list[str]:
         ]
 
     yours = credentials.viewer_id(_stored())
-    if not config.authorises:
-        return [
-            "  allowed    anyone in the workspace can trigger a run.",
-            "             Set allowed_actors in chord.toml to restrict that;",
-            f"             your Linear user id is {yours or '(run `chord setup` first)'}.",
-        ]
-
     lines = [f"  allowed    {len(config.allowed_actors)} Linear user id(s)"]
     if yours:
         # Printed whether or not it is in the list. The list is ids, Linear does
