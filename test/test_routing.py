@@ -13,7 +13,14 @@ from conftest import RecordingHarness
 from chord import config, harness
 from chord.harness import HarnessError
 from chord.linear import Actor, IssuePage, LabelChange, flatten
-from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label, route_of
+from chord.routing import (
+    DEFAULT_ROUTE,
+    EMPTY_NAME,
+    Router,
+    UnknownRoute,
+    route_label,
+    route_of,
+)
 
 # --- the grammar ---
 
@@ -44,15 +51,39 @@ def test_a_route_label_names_a_harness(candidate, expected):
         "ChordX",
         "Chord ",  # trailing space is a different label
         "",
-        # Typos rather than routes. Curation rejects these names too, so they
-        # can't be curated into matching.
-        "Chord/",
-        "Chord//x",
-        "Chord/x/",
     ],
 )
 def test_something_that_is_not_a_route_label_is_not_one(candidate):
     assert route_of("Chord", candidate) is None
+
+
+@pytest.mark.parametrize(
+    "candidate,expected",
+    [
+        # These match `filter()` and therefore have to name a harness, even
+        # though the name is a typo. Rejecting them here used to make them fall
+        # through to the default: the issue asked for one agent, got another.
+        ("Chord/", EMPTY_NAME),
+        ("Chord//x", "/x"),
+        ("Chord/x/", "x/"),
+        ("Chord//", "/"),
+        ("Chord///", "//"),
+    ],
+)
+def test_a_malformed_route_still_names_a_harness(candidate, expected):
+    """`route_of` is total over what `filter()` matches.
+
+    A label that reached the poll and produced no route is the silent-wrong-
+    harness case, so every `Chord/...` label resolves to *some* name. Whether
+    that name is usable is asked later, by `harness_for`.
+    """
+    assert route_of("Chord", candidate) == expected
+
+
+@pytest.mark.parametrize("name", ["", "/x", "x/", "/", "//"])
+def test_a_name_from_a_typo_can_never_be_curated(name):
+    """Which is why it can never match a harness and is skipped instead."""
+    assert not config.usable_harness_name(name)
 
 
 def test_a_custom_trigger_label_keeps_its_own_routes():

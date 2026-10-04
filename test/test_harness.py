@@ -13,9 +13,11 @@ pipe, because a harness that exits cleanly cannot reproduce any of this.
 """
 
 import asyncio
+import itertools
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -24,10 +26,20 @@ from chord.harness import CommandHarness, HarnessError
 
 # Rewrites argv[0] of the processes these tests spawn, so the whole tree is
 # identifiable in `ps` by something unique to this run.
-MARKER = "chord-harness-marker-xyz"
+#
+# Per-test, not shared. With one marker for the whole file, a process left over
+# from an earlier test is indistinguishable from this test's own, so a leftover
+# makes an unrelated test fail and a genuine regression in this one can hide
+# behind it. One marker per test makes every assertion attributable.
+_MARKER_SEQ = itertools.count()
 
 
-def harness_tree() -> set[str]:
+def a_marker() -> str:
+    """A marker no other test on this machine is using."""
+    return f"chord-harness-marker-{os.getpid()}-{next(_MARKER_SEQ)}"
+
+
+def harness_tree(marker: str) -> set[str]:
     """The pids of the harness and anything it left behind.
 
     Identified by a marker in the grandchild's *own* argv, which is the only
@@ -45,7 +57,7 @@ def harness_tree() -> set[str]:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    mine = {int(l.split()[0]) for l in listing if MARKER in l and "ps -ww" not in l}
+    mine = {int(l.split()[0]) for l in listing if marker in l and "ps -ww" not in l}
     # Anything descended from a marked pid is part of the tree, marker or not.
     frontier, found = set(mine), set(mine)
     while frontier:
@@ -58,6 +70,29 @@ def harness_tree() -> set[str]:
                     found.add(child)
                     frontier.add(child)
     return found
+
+
+def gone(marker: str, within: float = 5.0) -> set[str]:
+    """The tree, once it has finished leaving. Empty once nothing is left.
+
+    Signalling and exit are not the same moment. `_reap` sends SIGTERM, waits
+    `_REAP_TIMEOUT`, sends SIGKILL, and returns — but a killed process stays in
+    the process table until the kernel reaps it, which on macOS is not
+    instantaneous. Checking once, immediately, tests the scheduling of the
+    kernel rather than the thing under test, and failed about one run in five
+    while calling it a surviving grandchild.
+
+    So the invariant is polled to a deadline: the tree must empty within
+    `within` seconds. A process that genuinely outlives the signal is still
+    reported, and still fails — it just fails for the reason that is true rather
+    than for being two milliseconds early.
+    """
+    deadline = time.monotonic() + within
+    left = harness_tree(marker)
+    while left and time.monotonic() < deadline:
+        time.sleep(0.1)
+        left = harness_tree(marker)
+    return left
 
 
 @pytest.fixture
@@ -147,12 +182,13 @@ def test_cancellation_leaves_nothing_running():
     backgrounded grandchild survived `chord stop`, still pointed at somebody's
     repository.
     """
-    harness = CommandHarness(["sh", "-c", f"exec -a {MARKER} sleep 300 & wait"])
+    marker = a_marker()
+    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 300 & wait"])
 
     async def scenario():
         task = asyncio.create_task(harness.send("x"))
         await asyncio.sleep(0.8)
-        assert harness_tree(), "the harness tree was not running at all"
+        assert harness_tree(marker), "the harness tree was not running at all"
         task.cancel()  # exactly what `chord stop` does to the watcher
         # Bounded, because against the pre-fix code the reap does not return and
         # this test would hang rather than fail. A hang is the bug, so it has to
@@ -162,22 +198,23 @@ def test_cancellation_leaves_nothing_running():
 
     try:
         asyncio.run(scenario())
-        assert not harness_tree(), "the harness tree outlived `chord stop`"
+        assert not gone(marker), "the harness tree outlived `chord stop`"
     finally:
-        subprocess.run(["pkill", "-f", MARKER], capture_output=True)
+        subprocess.run(["pkill", "-f", marker], capture_output=True)
 
 
 def test_a_timeout_leaves_nothing_running(short_timeout):
-    harness = CommandHarness(["sh", "-c", f"exec -a {MARKER} sleep 300 & cat >/dev/null"])
+    marker = a_marker()
+    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
     try:
         with pytest.raises(HarnessError):
             asyncio.run(asyncio.wait_for(harness.send("x"), timeout=20))
-        assert not harness_tree(), (
+        assert not gone(marker), (
             "a timed-out harness kept running; the timeout stops the process but "
             "not the work it started"
         )
     finally:
-        subprocess.run(["pkill", "-f", MARKER], capture_output=True)
+        subprocess.run(["pkill", "-f", marker], capture_output=True)
 
 
 def test_shutdown_does_not_raise_a_second_time():
@@ -189,7 +226,7 @@ def test_shutdown_does_not_raise_a_second_time():
     """
 
     async def scenario():
-        harness = CommandHarness(["sh", "-c", f"exec -a {MARKER} sleep 300"])
+        harness = CommandHarness(["sh", "-c", f"exec -a {a_marker()} sleep 300"])
         task = asyncio.create_task(harness.send("x"))
         await asyncio.sleep(0.3)
         task.cancel()
@@ -311,24 +348,25 @@ def test_killpg_really_does_reach_a_grandchild():
     gone afterwards. A harness that leaves a worker running is the case the fix
     exists for, so it is the case worth asserting on.
     """
-    harness = CommandHarness(["sh", "-c", f"exec -a {MARKER} sleep 305 & wait"])
+    marker = a_marker()
+    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 305 & wait"])
 
     async def cancel_mid_flight():
         task = asyncio.create_task(harness.send("x"))
         await asyncio.sleep(0.6)
-        assert harness_tree(), "the harness tree was not running at all"
+        assert harness_tree(marker), "the harness tree was not running at all"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=15)
 
     try:
         asyncio.run(cancel_mid_flight())
-        assert not harness_tree(), (
+        assert not gone(marker), (
             "the grandchild survived; either the group signal missed it or the "
             "pgid was passed with the wrong sign"
         )
     finally:
-        subprocess.run(["pkill", "-f", MARKER], capture_output=True)
+        subprocess.run(["pkill", "-f", marker], capture_output=True)
 
 
 def test_a_missing_command_is_still_a_clean_error():
@@ -346,10 +384,11 @@ def test_sigkill_reaches_a_grandchild(monkeypatch):
     """
     monkeypatch.setattr(harnesses, "HARNESS_TIMEOUT", 1.0)
     monkeypatch.setattr(harnesses, "_REAP_TIMEOUT", 1.0)
-    harness = CommandHarness(["sh", "-c", f"exec -a {MARKER} sleep 300 & cat >/dev/null"])
+    marker = a_marker()
+    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
     try:
         with pytest.raises(HarnessError, match="timed out"):
             asyncio.run(asyncio.wait_for(harness.send("x"), timeout=20))
-        assert not harness_tree(), "the grandchild outlived the group SIGKILL"
+        assert not gone(marker), "the grandchild outlived the group SIGKILL"
     finally:
-        subprocess.run(["pkill", "-f", MARKER], capture_output=True)
+        subprocess.run(["pkill", "-f", marker], capture_output=True)

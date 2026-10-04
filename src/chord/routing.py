@@ -27,6 +27,13 @@ from chord.harness import Harness, HarnessError, build
 # the two happen to spell the same command.
 DEFAULT_ROUTE = ""
 
+# What `<label>/` with nothing after it names. Not `""`, because that is
+# `DEFAULT_ROUTE` — so returning the empty suffix would make a label that named
+# no harness indistinguishable from the bare trigger label, and it would run the
+# work on the default harness. Deliberately not a curatable name either, so it
+# lands in the same skip-and-report path as any other unknown route.
+EMPTY_NAME = SEPARATOR
+
 
 class UnknownRoute(HarnessError):
     """A route label named a harness that isn't curated.
@@ -63,18 +70,33 @@ def route_of(label: str, candidate: str) -> str | None:
     """The harness `candidate` asks for, or None if it isn't a Chord label.
 
     `""` for the bare trigger label, which asks for the default harness.
+
+    Total over what `filter()` matches. The filter accepts any label starting
+    with `<label>/`, so this must return a name for every one of those: a label
+    that matched the query and then produced no route here fell through to the
+    default harness and was worked on by an agent nobody asked for. `Chord//x`
+    and `Chord/x/` are spelling mistakes, but they are *somebody's* spelling
+    mistake and the answer is to tell them, not to run their work elsewhere.
+
+    Whether the name is one `harness_for` can build is a separate question, and
+    the one that answers it is `config.usable_harness_name` — the same predicate
+    curation applies, so the two sides of the grammar cannot drift apart again.
     """
     if candidate == label:
         return DEFAULT_ROUTE
     head = label + SEPARATOR
     if not candidate.startswith(head):
         return None
+    # The suffix, verbatim: `Chord//x` gives "/x", `Chord/x/` gives "x/", and
+    # neither can be curated, so both name a harness that does not exist.
+    #
+    # The empty suffix needs care, because "" *is* `DEFAULT_ROUTE` — the bare
+    # `Chord` label. So `Chord/` and `Chord` would resolve to the same route, and
+    # a label that named nothing would run work on the default harness. That is
+    # the whole bug, one character narrower. An empty suffix gets a name that is
+    # empty enough to be unusable and visible enough to log.
     name = candidate[len(head) :]
-    # `Chord//x` and `Chord/x/` are spelling mistakes rather than routes, and
-    # curation rejects those names too, so they can't match anything here.
-    if not name or name.startswith(SEPARATOR) or name.endswith(SEPARATOR):
-        return None
-    return name
+    return name if name else EMPTY_NAME
 
 
 class Router:

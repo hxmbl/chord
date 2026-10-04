@@ -252,18 +252,29 @@ def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:
     return result
 
 
-def _usable_name(name: object) -> bool:
+def usable_harness_name(name: object) -> bool:
     """Whether `name` can be spelled as the suffix of a route label.
 
-    `Chord//x` and `Chord/x/` are typos rather than routes. Rejecting them here
-    means curation and the label grammar agree, so a name that config accepts
-    is a name a label can actually select.
+    `Chord//x` and `Chord/x/` are typos rather than routes. Rejecting them in
+    config means curation and the label grammar agree about which names exist.
+
+    Public, and used by `routing` as well, because both sides of "is this a
+    route?" have to be the same question. When they were not — the filter matched
+    any `Chord/...` prefix while the parser rejected the malformed ones — an
+    issue labelled `Chord//claude` matched the filter, produced no candidates,
+    and fell through to the default harness. The issue asked for one agent and
+    got another, silently, which is the one outcome the routing exists to
+    prevent.
     """
     if not isinstance(name, str) or not name or name != name.strip():
         return False
     return not (
         name.startswith(SEPARATOR) or name.endswith(SEPARATOR) or SEPARATOR * 2 in name
     )
+
+
+# Kept as a private alias so the existing call site reads naturally.
+_usable_name = usable_harness_name
 
 
 def _spec(value: object, path: Path, where: str) -> HarnessSpec:
