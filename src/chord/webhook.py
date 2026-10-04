@@ -4,22 +4,48 @@ Linear (or a forwarding service such as a tunnel) POSTs an event here. The
 payload is intentionally only a wake-up signal: the watcher re-reads Linear,
 which keeps label filtering and deduplication in one place and makes malformed
 or duplicated webhook payloads harmless.
+
+Because the payload is only a wake-up signal, authenticating it is cheap and
+worthwhile: the worst an unauthorised caller can otherwise do is spend Linear
+rate limit on a machine that already has a valid token, repeatedly, for free.
+`webhook_secret` requires the `X-Chord-Secret` header to match, and is compared
+in constant time.
 """
 
 import asyncio
 import contextlib
+import hmac
+import logging
 
 from chord.event_source import EventSource
+
+_log = logging.getLogger(__name__)
+
+# Bounds on the request. Both reads had no timeout, which is what made `stop()`
+# hang below; the body read is the worse of the two because a client only has to
+# declare a `Content-Length` and then go quiet.
+READ_TIMEOUT = 5.0
+MAX_BODY = 1_000_000
+# Enough for a request line, a handful of headers, and their terminator. The
+# default 64KiB limit is generous enough and raising it is not needed.
+MAX_HEAD = 32 * 1024
+
+SECRET_HEADER = b"x-chord-secret"
 
 
 class Webhook(EventSource):
     def __init__(
-        self, host: str = "127.0.0.1", port: int = 23842, path: str = "/webhook"
+        self,
+        host: str = "127.0.0.1",
+        port: int = 23842,
+        path: str = "/webhook",
+        secret: str = "",
     ) -> None:
         super().__init__()
         self.host = host
         self.port = port
         self.path = path
+        self.secret = secret
         self._server: asyncio.AbstractServer | None = None
 
     @property
@@ -48,31 +74,39 @@ class Webhook(EventSource):
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        # Answer, rather than raise, for every way this can go wrong. `status` and
+        # `body` are set before the `try` now: they used to be assigned only inside
+        # it, so an exception the `except` clause did not name reached the
+        # `finally` with them unbound and raised `UnboundLocalError` from the
+        # cleanup itself — which skipped `writer.close()`, leaking the socket.
+        # That was reachable from anything not in the tuple below, cancellation
+        # (`chord stop`) among them.
+        status = b"400 Bad Request"
+        body = b"bad request\n"
         try:
-            headers = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
-            request = headers.split(b"\r\n", 1)[0].decode("latin1")
-            method, path, _ = request.split(" ", 2)
-            length = 0
-            for line in headers.split(b"\r\n")[1:]:
-                if line.lower().startswith(b"content-length:"):
-                    length = min(int(line.split(b":", 1)[1]), 1_000_000)
-            await reader.readexactly(length)
-            if method == "POST" and path == self.path:
-                self._wake()
-                status = b"200 OK"
-                body = b"ok\n"
-            else:
-                status = b"404 Not Found"
-                body = b"not found\n"
-        except (
-            asyncio.IncompleteReadError,
-            asyncio.LimitOverrunError,
-            TimeoutError,
-            ValueError,
-        ):
-            status = b"400 Bad Request"
-            body = b"bad request\n"
-        finally:
+            async with asyncio.timeout(READ_TIMEOUT):
+                status, body = await self._respond(reader)
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
+            pass
+        except asyncio.CancelledError:
+            # `chord stop`. Reply as best we can, then let it continue.
+            raise
+        except (ConnectionError, OSError):
+            # The client went away mid-request. Nothing to reply to.
+            with contextlib.suppress(ConnectionError, OSError):
+                writer.close()
+            return
+        except Exception:
+            # Never take the listener down over one request. `warning` rather
+            # than `error`: a malformed request is expected traffic from
+            # something that is not Linear, and the log is a long-lived daemon's
+            # log that a person reads when the watcher misbehaves. The
+            # traceback is kept because reaching here means the request was not
+            # one of the shapes handled below, which is the interesting part.
+            _log.warning("unexpected error handling a webhook request", exc_info=True)
+            status, body = b"400 Bad Request", b"bad request\n"
+
+        try:
             writer.write(
                 b"HTTP/1.1 "
                 + status
@@ -81,7 +115,54 @@ class Webhook(EventSource):
                 + b"\r\nConnection: close\r\n\r\n"
                 + body
             )
-            with contextlib.suppress(ConnectionError):
+            with contextlib.suppress(ConnectionError, OSError):
                 await writer.drain()
+        finally:
             writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(ConnectionError, OSError):
+                await writer.wait_closed()
+
+    async def _respond(self, reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
+        """The reply for one request. Raises on anything malformed."""
+        headers = await reader.readuntil(b"\r\n\r\n")
+        if len(headers) > MAX_HEAD:
+            return b"431 Request Header Fields Too Large", b"headers too large\n"
+
+        lines = headers.split(b"\r\n")
+        method, path, _ = lines[0].decode("latin1").split(" ", 2)
+        length = 0
+        secret = b""
+        for line in lines[1:]:
+            name, _, value = line.partition(b":")
+            name = name.strip().lower()
+            value = value.strip()
+            if name == b"content-length":
+                # Bounded before it is believed, so a client cannot make us
+                # reserve an arbitrary amount of memory by asserting a number.
+                length = min(int(value), MAX_BODY)
+            elif name == SECRET_HEADER:
+                secret = value
+
+        if method != "POST" or path != self.path:
+            return b"404 Not Found", b"not found\n"
+
+        if not self._authorised(secret):
+            # Checked before the body is read, so an unauthorised caller cannot
+            # make us wait on bytes it is not allowed to send.
+            return b"401 Unauthorized", b"unauthorized\n"
+
+        await reader.readexactly(length)
+        self._wake()
+        return b"200 OK", b"ok\n"
+
+    def _authorised(self, offered: bytes) -> bool:
+        """Whether `offered` is the shared secret.
+
+        `hmac.compare_digest` rather than `==`: this is a secret, and a
+        byte-by-byte comparison leaks how much of a guess was right. That is not
+        a practical attack over a local socket, but it costs one function call to
+        not do it and the alternative is a comparison that reads like a mistake.
+        """
+        if not self.secret:
+            return True
+        return hmac.compare_digest(offered, self.secret.encode())

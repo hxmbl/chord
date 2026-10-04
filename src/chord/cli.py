@@ -140,7 +140,13 @@ def info():
     for line in _routes(config):
         typer.echo(line)
     typer.echo(f"  interval   {config.interval}s")
-    typer.echo(f"  webhook    http://127.0.0.1:{config.webhook_port}/webhook")
+    webhook_line = f"http://127.0.0.1:{config.webhook_port}/webhook"
+    if config.webhook_secret:
+        # The secret is Chord's, to tell the user. It is already in a file they
+        # wrote and there is nothing here that does not go in their tunnel config
+        # too, so hiding it helps nobody and makes the setup harder to follow.
+        webhook_line += "  (requires X-Chord-Secret)"
+    typer.echo(f"  webhook    {webhook_line}")
     typer.echo(f"  linear     {_linear_line()}")
     typer.echo(f"  config     {_config_line(config)}")
     if count is not None:
@@ -183,7 +189,7 @@ async def _watch() -> None:
 
     # Webhooks are the fast path. The interval poll remains the correctness
     # backup for dropped, delayed, or misconfigured deliveries.
-    webhook = Webhook(port=config.webhook_port)
+    webhook = Webhook(port=config.webhook_port, secret=config.webhook_secret)
     subscription = None
     if subscribe.available():
         subscription = subscribe.Subscription(token)

@@ -39,7 +39,15 @@ SEPARATOR = "/"
 HarnessSpec: TypeAlias = str | list[str]
 
 _SETTINGS = frozenset(
-    {"label", "harness", "harnesses", "interval", "webhook_port", "allowed_actors"}
+    {
+        "label",
+        "harness",
+        "harnesses",
+        "interval",
+        "webhook_port",
+        "webhook_secret",
+        "allowed_actors",
+    }
 )
 _HARNESS_KEYS = frozenset({"command"})
 
@@ -60,6 +68,7 @@ class Config:
     harnesses: dict[str, HarnessSpec] = field(default_factory=dict)
     interval: int = DEFAULT_INTERVAL
     webhook_port: int = DEFAULT_WEBHOOK_PORT
+    webhook_secret: str = ""
     allowed_actors: tuple[str, ...] = ()
     path: Path = field(default_factory=lambda: config_path()[0])
     from_file: bool = False
@@ -88,6 +97,7 @@ def defaults(path: Path | None = None) -> Config:
         harnesses={},
         interval=DEFAULT_INTERVAL,
         webhook_port=DEFAULT_WEBHOOK_PORT,
+        webhook_secret="",
         allowed_actors=(),
         path=path or config_path()[0],
         from_file=False,
@@ -160,12 +170,17 @@ def _build(raw: dict, path: Path) -> Config:
             f"`webhook_port` in {path} has to be an integer from 0 to 65535."
         )
 
+    webhook_secret = raw.get("webhook_secret", base.webhook_secret)
+    if not isinstance(webhook_secret, str):
+        raise ConfigError(f"`webhook_secret` in {path} has to be a string.")
+
     return Config(
         label=label,
         harness=_spec(raw.get("harness", base.harness), path, "`harness`"),
         harnesses=_harnesses(raw.get("harnesses", {}), path),
         interval=interval,
         webhook_port=webhook_port,
+        webhook_secret=webhook_secret,
         allowed_actors=_allowed_actors(raw.get("allowed_actors", []), path),
         path=path,
         from_file=True,
