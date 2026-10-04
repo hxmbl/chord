@@ -250,11 +250,12 @@ def test_linear_rejects_an_expired_token():
 
     assert "401" in str(caught.value)
     assert "SECRET-BEARING-BODY" not in str(caught.value)
-    # A refusal is still a LinearError, so existing handling is unaffected.
+    # A refusal is its own type, but still a LinearError, so handling that
+    # catches LinearError is unaffected.
     assert isinstance(caught.value, linear.LinearError)
-    # The remedy is the watcher's to give, because the watcher knows whether a
-    # renewal is possible and what to say if it isn't. See
-    # test_webhook-style recovery tests in test_auth_expiry.py.
+    # The remedy is the watcher's to give, because only the watcher knows
+    # whether a renewal is possible. Asserted in test_auth_expiry.py; this is
+    # the classification, not the wording.
     assert "token" in str(caught.value)
 
 

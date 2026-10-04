@@ -59,3 +59,8 @@ pythonVersion = "3.11"
 [tool.pytest.ini_options]
 testpaths = ["test"]
 addopts = "--cov=src --cov-report=term-missing:skip-covered --cov-report=xml --cov-fail-under=70"
+# `slow` is for tests that spawn real processes and wait on them. They are not
+# skipped by default -- the ones using it are the ones that catch the failures
+# worth catching -- but they can be deselected with `-m "not slow"` when a fast
+# inner loop matters more than the process-tree checks.
+markers = ["slow: spawns real processes and waits on them"]
