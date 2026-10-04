@@ -155,7 +155,45 @@ async def main(label: str) -> int:
             print(f"  -> accepted. {len(entries)} entr(ies), newest first:")
             for entry in entries:
                 added = [a["name"] for a in (entry.get("addedLabels") or [])]
-                print(f"       {entry.get('createdAt')} added={added}")
+                # `actor` is null when an integration applied the label, in which
+                # case `botActor` says who. Chord's `allowed_actors` check leans on
+                # this, so it is worth seeing it populated.
+                actor = entry.get("actor")
+                who = f"actor={actor.get('name')!r}" if actor else (
+                    f"bot={(entry.get('botActor') or {}).get('name')!r}"
+                    if entry.get("botActor")
+                    else "actor=null (neither a person nor a bot?)"
+                )
+                print(f"       {entry.get('createdAt')} added={added} {who}")
+            stamps = [e.get("createdAt") for e in entries if e.get("createdAt")]
+            if len(stamps) > 1:
+                order = (
+                    "newest first, as Chord assumes"
+                    if stamps == sorted(stamps, reverse=True)
+                    else "OLDEST FIRST -- Chord's assumption is wrong"
+                    if stamps == sorted(stamps)
+                    else "unordered?"
+                )
+                print(f"  -> order: {order}")
+
+            # `first: N` must take the NEWEST N, or `MAX_HISTORY` is reading the
+            # wrong end of the audit trail and `_newest_route` silently falls
+            # back to specificity on any busy issue.
+            deep = await ask(
+                LABEL_HISTORY, {"id": nodes[0].get("id"), "first": 200}, token
+            )
+            deep_entries = (
+                (deep.get("issue") or {}).get("history") or {}
+            ).get("nodes") or []
+            deep_stamps = [e.get("createdAt") for e in deep_entries if e.get("createdAt")]
+            print(f"  -> first:50 gave {len(stamps)}, first:200 gave {len(deep_stamps)}")
+            if deep_stamps:
+                print(
+                    "  -> first:N takes the NEWEST N"
+                    if not stamps or deep_stamps[0] >= max(stamps)
+                    else "  -> first:N appears to take the OLDEST N -- investigate"
+                )
+
             issue_labels = [
                 n["name"] for n in (nodes[0].get("labels") or {}).get("nodes", [])
             ]

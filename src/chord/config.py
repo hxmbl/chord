@@ -8,6 +8,7 @@ named harnesses are.
 
 import shlex
 import tomllib
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
@@ -37,7 +38,9 @@ SEPARATOR = "/"
 # from stdin is a harness, so supporting a new tool needs no change in here.
 HarnessSpec: TypeAlias = str | list[str]
 
-_SETTINGS = frozenset({"label", "harness", "harnesses", "interval", "webhook_port"})
+_SETTINGS = frozenset(
+    {"label", "harness", "harnesses", "interval", "webhook_port", "allowed_actors"}
+)
 _HARNESS_KEYS = frozenset({"command"})
 
 
@@ -57,6 +60,7 @@ class Config:
     harnesses: dict[str, HarnessSpec] = field(default_factory=dict)
     interval: int = DEFAULT_INTERVAL
     webhook_port: int = DEFAULT_WEBHOOK_PORT
+    allowed_actors: tuple[str, ...] = ()
     path: Path = field(default_factory=lambda: config_path()[0])
     from_file: bool = False
 
@@ -64,6 +68,17 @@ class Config:
     def harness_name(self) -> str:
         """How to talk about the default harness in a sentence."""
         return spell(self.harness)
+
+    @property
+    def authorises(self) -> bool:
+        """Whether Chord checks who asked for the work before running it.
+
+        Empty means no. An unset allowlist is the state every existing install
+        is in, and turning it on silently would stop every hand-over the day
+        this shipped. So the default is permissive and `chord start` says so
+        out loud, rather than the control being useless by default.
+        """
+        return bool(self.allowed_actors)
 
 
 def defaults(path: Path | None = None) -> Config:
@@ -73,6 +88,7 @@ def defaults(path: Path | None = None) -> Config:
         harnesses={},
         interval=DEFAULT_INTERVAL,
         webhook_port=DEFAULT_WEBHOOK_PORT,
+        allowed_actors=(),
         path=path or config_path()[0],
         from_file=False,
     )
@@ -150,9 +166,55 @@ def _build(raw: dict, path: Path) -> Config:
         harnesses=_harnesses(raw.get("harnesses", {}), path),
         interval=interval,
         webhook_port=webhook_port,
+        allowed_actors=_allowed_actors(raw.get("allowed_actors", []), path),
         path=path,
         from_file=True,
     )
+
+
+def _allowed_actors(value: object, path: Path) -> tuple[str, ...]:
+    """The Linear user ids allowed to trigger a hand-over.
+
+    Matched on user id and nothing else, deliberately. Linear lets anyone
+    rewrite their own `displayName` and `name` through the API, and neither is
+    unique, so an allowlist keyed on either could be satisfied by someone who
+    merely types a name they were not given. `User.email` is not in
+    `UserUpdateInput` and is the identity Linear's own OAuth uses, so it would
+    do — but it churns when someone's address changes, and a churn here fails
+    closed, which reads as Chord being broken. The id is immutable and unique.
+
+    Which means the config holds UUIDs, so `chord info` prints yours: that is
+    the only way to write this setting down without a copy-paste from the
+    Linear UI.
+    """
+    if not isinstance(value, list):
+        raise ConfigError(
+            f"`allowed_actors` in {path} has to be a list of Linear user ids, "
+            "even for one of them: `allowed_actors = [\"<id>\"]`. "
+            "`chord info` prints yours."
+        )
+
+    seen: dict[str, str] = {}
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ConfigError(
+                f"`allowed_actors` in {path} has to be a list of Linear user ids, "
+                f"and {entry!r} isn't one. `chord info` prints yours."
+            )
+        try:
+            # Canonical form, so the same id written two ways is one entry.
+            seen.setdefault(str(uuid.UUID(entry.strip())), entry.strip())
+        except (ValueError, AttributeError, TypeError):
+            raise ConfigError(
+                f"`allowed_actors` in {path} holds {entry.strip()!r}, which is not "
+                "a Linear user id. Use the id, not an email or a display name: "
+                "`chord info` prints yours, and a display name would be something "
+                "any workspace member could set to match yours."
+            ) from None
+
+    # Sorted so the setting reads the same way twice and `chord info` can
+    # compare it against what is stored in the keychain.
+    return tuple(sorted(seen))
 
 
 def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:

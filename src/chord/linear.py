@@ -65,6 +65,7 @@ query IssuesByRoute($filter: IssueFilter!, $first: Int!, $after: String) {
       createdAt
       state { name }
       labels { nodes { name } }
+      creator { id name }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -76,6 +77,12 @@ query IssuesByRoute($filter: IssueFilter!, $first: Int!, $after: String) {
 # `labels { nodes { name } }` comes back as an unordered set with no timestamps,
 # so an issue carrying both `Chord` and `Chord/opencode/tiny` cannot be resolved
 # from the issue alone. `addedLabels` says who put which label on and when.
+#
+# `actor` is who did it, which is what `allowed_actors` is checked against. It is
+# null when an integration applied the label, and `botActor` says which one, so
+# both are asked for: a label nobody's fingers were on is a real case, not a
+# hypothetical, and it has to be reportable rather than indistinguishable from
+# "we could not find out".
 LABEL_HISTORY = """
 query LabelHistory($id: String!, $first: Int!) {
   issue(id: $id) {
@@ -83,6 +90,8 @@ query LabelHistory($id: String!, $first: Int!) {
       nodes {
         createdAt
         addedLabels { name }
+        actor { id name }
+        botActor { id name }
       }
     }
   }
@@ -112,6 +121,77 @@ class LinearError(Exception):
     """Linear didn't give us what we asked for."""
 
 
+class Actor(NamedTuple):
+    """Whoever applied a label: a person, or an integration acting for one.
+
+    `id` is what `allowed_actors` is matched against, because it is the only
+    field on a Linear user that a user cannot rewrite themselves — `name` and
+    `displayName` are both in `UserUpdateInput`, and neither is unique.
+
+    `name` is here for the log. It is never rendered into a prompt: an issue
+    goes to an agent, and an agent has no business carrying a list of your
+    colleagues' names or addresses.
+    """
+
+    id: str
+    name: str
+
+
+class LabelChange(NamedTuple):
+    """One entry of an issue's audit trail.
+
+    Newest first, because that is the order a caller wants to scan: the first
+    route label found is the one asked for most recently, and `who` says who
+    asked. Kept as one record per history entry rather than flattened into a
+    list of names, because the actor belongs to the *event*, so a flattened
+    list would lose exactly the attribution the allowlist needs.
+    """
+
+    at: str
+    labels: list[str]
+    who: Actor | None
+
+
+def flatten(changes: list[LabelChange]) -> list[str]:
+    """Label names across `changes`, newest first, each name once.
+
+    The first time a name appears is its most recent addition, so that is the
+    one kept: a label added, removed and added again is worth one look, at the
+    time it was last put on.
+    """
+    seen: set[str] = set()
+    order: list[str] = []
+    for change in changes:
+        for name in change.labels:
+            if name and name not in seen:
+                seen.add(name)
+                order.append(name)
+    return order
+
+
+def _actor(entry: dict[str, Any]) -> Actor | None:
+    """Who applied the labels in one history entry, if the answer is knowable.
+
+    Three cases, and the third is the reason this is not one lookup:
+    a person did it, an integration did it, or Linear sent neither. An
+    integration shows up as `actor: null` with `botActor` set, so without the
+    second field a bot-applied label is indistinguishable from an unreadable
+    one — and both mean "no person authorised this", which the caller has to be
+    able to say out loud rather than guess at.
+    """
+    for field_name in ("actor", "botActor"):
+        node = entry.get(field_name)
+        if isinstance(node, dict) and node.get("id"):
+            name = str(node.get("name") or "").strip()
+            return Actor(
+                id=str(node["id"]),
+                # An integration's `name` is its slug; this reads better in a log
+                # and never reaches a prompt either way.
+                name=name or "an integration",
+            )
+    return None
+
+
 class IssuePage(NamedTuple):
     """One poll's worth of labelled issues.
 
@@ -128,7 +208,7 @@ class IssuePage(NamedTuple):
 class LinearClient(Protocol):
     async def issues_for(self, filter: dict[str, Any]) -> IssuePage: ...
 
-    async def label_history(self, issue_id: str) -> list[str]: ...
+    async def label_history(self, issue_id: str) -> list[LabelChange]: ...
 
     async def comments(self, issue_id: str) -> list[dict[str, Any]]: ...
 
@@ -146,39 +226,45 @@ class Linear:
         )
         return IssuePage(nodes, truncated)
 
-    async def label_history(self, issue_id: str) -> list[str]:
-        """Label names added to an issue, most recently added first.
+    async def label_history(self, issue_id: str) -> list[LabelChange]:
+        """One record per audit-trail entry, newest first.
 
-        Newest first because that is the order a caller wants to scan: the first
-        name that is one of an issue's route labels is the route that was asked
-        for most recently. Duplicates are dropped because a label added, removed
-        and added again should only be worth one look.
+        Newest first because that is the order a caller wants to scan, and
+        because Linear's own order for `history` was verified against a live
+        workspace rather than assumed — it is newest-first and `first: N` takes
+        the newest N. It is still sorted here, because the answer decides which
+        harness runs and who is allowed to ask, and a silent reordering would be
+        a silent misrouting. ISO 8601 in UTC sorts correctly as text, which is
+        what every Linear timestamp is.
         """
         data = await self._query(LABEL_HISTORY, {"id": issue_id, "first": MAX_HISTORY})
         entries = ((data.get("issue") or {}).get("history") or {}).get("nodes") or []
 
-        # Linear sends this newest-first, but the answer decides which harness
-        # runs, so it is sorted here rather than trusted. ISO 8601 in UTC sorts
-        # correctly as text, which is what every Linear timestamp is.
-        stamped = sorted(
-            (
-                (str(entry.get("createdAt") or ""), entry.get("addedLabels") or [])
-                for entry in entries
-                if isinstance(entry, dict)
-            ),
-            key=lambda entry: entry[0],
+        # Sorted here rather than trusted, because the answer decides which
+        # harness runs and who is allowed to ask, and a silent reordering would
+        # be a silent misrouting. ISO 8601 in UTC sorts correctly as text,
+        # which is what every Linear timestamp is.
+        ordered = sorted(
+            (entry for entry in entries if isinstance(entry, dict)),
+            key=lambda entry: str(entry.get("createdAt") or ""),
             reverse=True,
         )
 
-        seen: set[str] = set()
-        order: list[str] = []
-        for _, added in stamped:
-            for label in added:
-                name = str(label.get("name") or "") if isinstance(label, dict) else ""
-                if name and name not in seen:
-                    seen.add(name)
-                    order.append(name)
-        return order
+        changes: list[LabelChange] = []
+        for entry in ordered:
+            labels = [
+                str(label.get("name") or "")
+                for label in entry.get("addedLabels") or []
+                if isinstance(label, dict)
+            ]
+            changes.append(
+                LabelChange(
+                    at=str(entry.get("createdAt") or ""),
+                    labels=[name for name in labels if name],
+                    who=_actor(entry),
+                )
+            )
+        return changes
 
     async def comments(self, issue_id: str) -> list[dict[str, Any]]:
         nodes, _ = await self._paged(

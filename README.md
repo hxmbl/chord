@@ -136,6 +136,10 @@ interval = 60
 # Local webhook listener. Default: 23842; use 0 for an ephemeral test port.
 webhook_port = 23842
 
+# Who may trigger a run. Default: everyone in the workspace — read the
+# "Who can trigger a run" section below before leaving it that way.
+allowed_actors = ["11111111-1111-1111-1111-111111111111"]
+
 # Extra named harnesses. A `Chord/<name>` label routes an issue to the one
 # called `<name>` instead of the default. See "Routing" below.
 #
@@ -155,6 +159,48 @@ Chord looks for `chord.toml` in the directory you run it from and then upward,
 so `chord start` works the same from a subdirectory. The nearest one wins. That
 directory is also what identifies the project to the rest of Chord — see
 [State on disk](#state-on-disk).
+
+## Who can trigger a run
+
+Adding a `Chord` label runs a command on your machine. With no configuration,
+anyone whose Linear account can label an issue can do that — which is a much
+lower bar than "may run code here". It is the default because every existing
+install is in that state and changing it silently would stop every hand-over,
+but it is worth closing.
+
+`allowed_actors` is the list of Linear user ids allowed to trigger a run.
+`chord info` prints yours, because Linear's UI does not:
+
+```
+$ chord info
+  ...
+  allowed    1 Linear user id(s)
+             yours: 11111111-1111-1111-1111-111111111111
+```
+
+It is a list of **ids**, and that is deliberate. Linear lets anyone rewrite their
+own `name` and `displayName` through its API, and neither is unique, so an
+allowlist keyed on either could be satisfied by somebody who merely typed a name
+they were not given. `User.email` is not self-editable and would work, but it
+churns when someone's address changes, and a churn here fails *closed* — the
+issue is skipped, and it reads as Chord being broken. The id never changes.
+
+Chord checks the person who added the **routing label**, because that is the act
+which caused the run. An issue narrowed from `Chord` to `Chord/claude` is
+authorised by whoever narrowed it, not by whoever filed it.
+
+Two cases fall back rather than checking, and both say so in the log:
+
+- **The label-add has fallen off Linear's 50-entry history page.** The issue's
+  creator stands in.
+- **An integration applied the label.** Linear reports no actor for a bot, and
+  Chord refuses — an automated rule applying `Chord` is code execution
+  triggered by a rule rather than by a person, which is the thing this setting
+  exists to make deliberate.
+
+A refusal is recorded like every other hand-over that did not happen, so it is
+not re-examined on every poll. The log says which person and which id, and how
+to allow them.
 
 ## Routing
 

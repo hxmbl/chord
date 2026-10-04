@@ -133,6 +133,33 @@ def obtained_at(credentials: dict) -> float | None:
     return None
 
 
+def viewer_id(credentials: object) -> str | None:
+    """The Linear user id this token belongs to, if we recorded it.
+
+    `allowed_actors` is a list of these, and this is how a person finds their
+    own: `chord info` prints it, from the keychain, without asking Linear
+    anything. That matters because the setting is unusable otherwise — nobody
+    knows their Linear user id, and Linear's UI does not show it.
+    """
+    if not isinstance(credentials, dict):
+        return None
+    ident = credentials.get("viewer_id")
+    return ident.strip() if isinstance(ident, str) and ident.strip() else None
+
+
+def _carry_identity(new: dict, old: dict) -> dict:
+    """Keep who this token belongs to across a refresh.
+
+    Linear's token response has no idea who asked, and without this a single
+    `chord refresh` would silently wipe the one field that makes
+    `chord info` able to tell you your own user id.
+    """
+    for key in ("viewer_id", "viewer_name"):
+        if key not in new and old.get(key):
+            new[key] = old[key]
+    return new
+
+
 def _store(credentials: dict) -> Outcome:
     """Store credentials in keychain. Use keyring here."""
     import keyring
@@ -259,7 +286,7 @@ async def refresh() -> Outcome:
         except OAuthError as exc:
             return FAILED, f"Linear refused the refresh: {_printable(str(exc))}"
 
-    rotated = dict(token)
+    rotated = _carry_identity(dict(token), credentials)
     code, content = _store(rotated)
     if code:
         return code, content
@@ -435,10 +462,17 @@ async def authenticate(store: bool) -> Outcome:
         except ValueError:
             return FAILED, "Linear sent back something that isn't JSON."
 
-        if not data.get("viewer"):
+        viewer = data.get("viewer")
+        if not isinstance(viewer, dict) or not viewer.get("id"):
             return FAILED, "No viewer came back for that token."
 
-        return OK, "Credentials validated."
+        # Email is deliberately not kept. The id is what `allowed_actors` is
+        # matched against and the name is what the log shows; the address is
+        # neither, and Chord has no use for it.
+        return OK, {
+            "viewer_id": str(viewer["id"]),
+            "viewer_name": str(viewer.get("name") or "").strip(),
+        }
 
     code, content = await _obtain()
     if code:
@@ -451,6 +485,8 @@ async def authenticate(store: bool) -> Outcome:
     code, content = await _confirm(credentials)
     if code:
         return code, content
+    if isinstance(content, dict):
+        credentials.update(content)
 
     if store:
         code, content = _store(credentials)

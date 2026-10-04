@@ -1,44 +1,36 @@
-# MineSweep configuration
-# Every option is optional - delete anything you do not need.
-# Command-line flags override values in this file.
+# MineSweep: the pre-commit secret gate.
+#
+# Three settings, each earning its place. Everything else is a default.
+#
+#   profile: public-github   This repo's source is published, so a credential
+#                            that reaches a commit has reached the world. The
+#                            strictest built-in profile is the honest one.
+#   fail_on: high            Only a definite finding stops a commit. Below that
+#                            this becomes a tool people learn to bypass, and a
+#                            bypassed gate is worse than an absent one.
+#   min_confidence: 0.7      The knob that makes the gate usable. Measured on
+#                            this repo: every finding below 0.7 confidence is
+#                            code-shaped noise — `client_secret = client_secret`,
+#                            `token = content["access_token"]`, a test function
+#                            name, a uuid-shaped fixture. Raising the threshold
+#                            removed 100% of that noise and dropped no real
+#                            finding: GitHub PATs, RSA/SSH keys and PEM
+#                            certificates all still block at 0.5 and at 0.7.
+#
+# There is deliberately no baseline file. The one that was here recorded two
+# false positives on `client_secret = client_secret`, and a baseline exists to
+# mark findings as accepted — spending that on noise would also have silenced
+# anything real that later appeared on the same content.
+#
+# Known limitation: this build does not reliably detect an AWS access key id in
+# a Python assignment. It was measured, not assumed, and no threshold here fixes
+# it. `gh`, PEM/SSH keys and high-entropy API keys are covered; AWS is not.
 
-# Policy profile used to decide whether findings block, warn, or redact.
-# Built-in profiles: default, developer, enterprise, public-github
-profile: default
+profile: public-github
 
-# Minimum severity that makes the scanner exit non-zero (useful as a CI gate).
-# One of: info, low, medium, high, critical
+# Only a finding at or above this severity exits non-zero.
 fail_on: high
 
-# Only report findings at or above this severity.
-# min_severity: low
-
-# Hide findings whose confidence is below this threshold (0.0 - 1.0).
-# min_confidence: 0.5
-
-# Only include findings tagged with one of these labels.
-# tags: [aws, gcp]
-
-# Scan test files too (they are skipped by default).
-include_test_files: false
-
-# Base branch used by "minesweep --diff" (pull-request scanning).
-# diff_base: main
-
-# Record known findings here so only NEW ones are reported later.
-# Create once with: minesweep --update-baseline --baseline .minesweep-baseline.json .
-baseline_file: .minesweep-baseline.json
-
-# Ignore specific findings listed in a suppression file.
-# suppress_file: .minesweep-suppress.yml
-
-# Directories with custom detection rules, policies, and profiles.
-# On-disk directories take precedence over the built-ins shipped in the binary.
-# rules_dir: rules
-# policy_dir: policy
-# profiles_dir: profiles
-
-# Performance tuning (rarely needed; defaults scale with your machine).
-# workers: 8
-# max_files: 0              # 0 = unlimited
-# max_file_size_mb: 50      # files larger than this are skipped
+# Hide findings the detector is unsure about. The floor for a real secret is
+# 0.8, so 0.7 keeps headroom without admitting code-shaped noise.
+min_confidence: 0.7

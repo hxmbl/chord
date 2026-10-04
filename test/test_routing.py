@@ -5,13 +5,14 @@ issue that carries more than one of them.
 """
 
 import asyncio
+import uuid
 
 import pytest
 from conftest import RecordingHarness
 
 from chord import config, harness
 from chord.harness import HarnessError
-from chord.linear import IssuePage
+from chord.linear import Actor, IssuePage, LabelChange, flatten
 from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label, route_of
 
 # --- the grammar ---
@@ -303,6 +304,21 @@ class StubLinear:
         return []
 
 
+def change(at, *names, who=None):
+    """One audit-trail entry, newest first, as `Linear.label_history` returns it."""
+    return LabelChange(at=at, labels=list(names), who=who)
+
+
+# Who added a routing label is the actor of the entry that added it, so a history
+# fixture has to say so to be a realistic one.
+def _actor(n: int, name: str) -> Actor:
+    return Actor(id=str(uuid.UUID(int=n)), name=name)
+
+
+BY_ALICE = _actor(1, "Alice")
+BY_BOB = _actor(2, "Bob")
+
+
 def issue(n, *label_names):
     return {
         "id": str(n),
@@ -336,7 +352,11 @@ def test_the_newest_route_label_is_the_one_that_runs(tmp_path, capsys):
     spy = RecordingHarness()
     stub = StubLinear(
         [issue(1, "Chord", "Chord/opencode", "Chord/opencode/space-bunny-free")],
-        history=["Chord/opencode/space-bunny-free", "Chord/opencode", "Chord"],
+        history=[
+            change("2026-03-01", "Chord/opencode/space-bunny-free", who=BY_BOB),
+            change("2026-02-01", "Chord/opencode", who=BY_ALICE),
+            change("2026-01-01", "Chord", who=BY_ALICE),
+        ],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -351,7 +371,8 @@ def test_history_decides_which_of_several_labels_is_newest(tmp_path, capsys):
     """Not "most specific": the newest label added, whatever it happens to be."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")], history=["Chord/opencode", "Chord"]
+        [issue(1, "Chord", "Chord/opencode")], history=[change("2026-03-01", "Chord/opencode", who=BY_BOB),
+                change("2026-01-01", "Chord", who=BY_ALICE)]
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -366,7 +387,8 @@ def test_a_bare_trigger_label_loses_to_a_narrower_older_one(tmp_path, capsys):
     stub = StubLinear(
         [issue(1, "Chord", "Chord/opencode")],
         # `Chord` added after `Chord/opencode`: the issue was handed back.
-        history=["Chord", "Chord/opencode"],
+        history=[change("2026-03-01", "Chord", who=BY_ALICE),
+                change("2026-01-01", "Chord/opencode", who=BY_BOB)],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -404,7 +426,7 @@ def test_history_that_mentions_no_route_falls_back_too(tmp_path, capsys):
     """A route applied long enough ago to be off the history page."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")], history=["Bug", "Research"]
+        [issue(1, "Chord", "Chord/opencode")], history=[change("2026-03-01", "Bug"), change("2026-01-01", "Research")]
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -416,7 +438,7 @@ def test_an_uncured_route_is_skipped_and_says_which_label(tmp_path, capsys):
     """Not run on the default: doing the work wrong is worse than not."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/typo-here")], history=["Chord/typo-here"]
+        [issue(1, "Chord", "Chord/typo-here")], history=[change("2026-03-01", "Chord/typo-here", who=BY_ALICE)]
     )
     w = build(tmp_path, stub, spy, CURATED)
     asyncio.run(w.poll())
@@ -637,7 +659,7 @@ def test_label_history_is_newest_first():
             }
         }
     )
-    assert asyncio.run(client.label_history("1")) == ["New", "Mid", "Old"]
+    assert flatten(asyncio.run(client.label_history("1"))) == ["New", "Mid", "Old"]
 
 
 def test_label_history_drops_a_label_that_came_back_around():
@@ -660,7 +682,7 @@ def test_label_history_drops_a_label_that_came_back_around():
             }
         }
     )
-    assert asyncio.run(client.label_history("1")) == ["A"]
+    assert flatten(asyncio.run(client.label_history("1"))) == ["A"]
 
 
 def test_label_history_survives_entries_that_added_nothing():
@@ -680,7 +702,7 @@ def test_label_history_survives_entries_that_added_nothing():
             }
         }
     )
-    assert asyncio.run(client.label_history("1")) == ["A"]
+    assert flatten(asyncio.run(client.label_history("1"))) == ["A"]
 
 
 def test_label_history_of_an_issue_with_no_history():

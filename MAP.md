@@ -17,8 +17,11 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Reads `chord.toml` from project directory (searches upward)
 - Falls back to user config `~/.chord/chord.toml`
 - Falls back to defaults if no config exists
-- Settings: `label`, `harness`, `harnesses`, `interval`, `webhook_port`
+- Settings: `label`, `harness`, `harnesses`, `interval`, `webhook_port`,
+  `allowed_actors`
 - `harnesses` is the curation table: `<name>` to a command
+- `allowed_actors` is a list of Linear **user ids**; ids and not names because
+  Linear lets anyone rewrite their own display name
 - All settings have defaults, so Chord works without a config file
 
 ### Routing
@@ -35,11 +38,21 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Polls Linear for routed issues at configured interval
 - Picks a route per issue; with several route labels, asks Linear's audit
   trail which was added most recently, falling back to the most specific
+- Checks who added that label against `allowed_actors` when one is configured
 - Tracks which issues have been handed over in `state.json`
 - Processes issues oldest-first (by `createdAt`)
 - Hands each issue to the harness its labels select
 - Never raises: logs problems and continues
 - Integrates with webhooks and subscriptions for faster response
+
+**`src/chord/linear.py`** - GraphQL API interactions
+- Reads issues matching a route filter with pagination (up to 1000 per poll)
+- Reads an issue's label history as `LabelChange` records, newest first, each
+  carrying the `Actor` (person or integration) who added those labels
+- Fetches comments for each issue (up to 200 comments)
+- Uses `httpx` for async HTTP requests
+- Never writes to Linear (read-only)
+- Handles GraphQL errors and reports them cleanly
 
 ### Process Management
 **`src/chord/daemon.py`** - Background process handling
@@ -51,14 +64,6 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Validates process is actually a Chord watcher before stopping
 
 ### Linear API Client
-**`src/chord/linear.py`** - GraphQL API interactions
-- Reads issues matching a route filter with pagination (up to 1000 per poll)
-- Reads an issue's label history, newest first, to decide "newest route label"
-- Fetches comments for each issue (up to 200 comments)
-- Uses `httpx` for async HTTP requests
-- Never writes to Linear (read-only)
-- Handles GraphQL errors and reports them cleanly
-
 ### Harness Execution
 **`src/chord/harness.py`** - Running external tools
 - Built-in: `print` harness (writes to log for debugging/inspection)
@@ -155,6 +160,8 @@ Harness output (logged to chord.log)
 ## Key Design Decisions
 
 1. **Read-only Linear**: Chord never writes back, so Linear stays the source of truth
+13. **Trigger authority is explicit, and permissive by default**: `allowed_actors`
+    exists and is off unless configured; `chord start` says which state it is in
 2. **State in process-external file**: Restarting doesn't re-offer entire backlog
 3. **Polling is the source of truth**: Webhooks/subscriptions are just accelerators
 4. **Never automatic token refresh**: Linear rotates refresh tokens, so this is a user decision

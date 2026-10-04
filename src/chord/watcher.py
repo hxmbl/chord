@@ -9,14 +9,15 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from chord import logging, notify, subscribe
 from chord.context import Issue, render
 from chord.harness import HarnessError
-from chord.linear import LinearClient, LinearError
+from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError
 from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label
 from chord.subscribe import Subscription
+from chord.text import one_line
 from chord.webhook import Webhook
 
 # The most hand-overs to remember, and no smaller than the number of issues
@@ -55,6 +56,47 @@ def _label(issue: Issue) -> str:
     """How to name an issue in the log, when Linear may not have given us a
     title or an identifier."""
     return str(issue.get("identifier") or issue.get("id") or "(unidentified issue)")
+
+
+def _name(node: object) -> str:
+    """A person's or a bot's name for the log, never for a prompt.
+
+    Linear may not have sent one, and `allowed_actors` is matched on the id, so
+    this is presentation only. Falling back to the id keeps a refusal actionable
+    when the name is missing, which is the case where the reader most needs it.
+    """
+    if isinstance(node, dict):
+        name = str(node.get("name") or "").strip()
+        if name:
+            return name
+        ident = str(node.get("id") or "").strip()
+        if ident:
+            return f"user id {ident}"
+    return "someone Linear didn't name"
+
+
+# Where a routing decision came from. Kept as values rather than booleans so the
+# log can say which of several fallbacks actually applied, instead of every
+# failure looking the same.
+UNAMBIGUOUS = "one route label, no choice to make"
+FROM_HISTORY = "the newest matching label in Linear's audit trail"
+OFF_THE_PAGE = "no route label on Linear's audit page"
+UNREADABLE = "the audit trail could not be read"
+NO_LABEL = "no route label on the issue"
+
+
+class Routed(NamedTuple):
+    """One issue's routing decision, and who made it.
+
+    `who` is the actor of the history entry that added the routing label, which
+    is the act that caused the run — so it is the right thing to check an
+    allowlist against. None means "not knowable", which callers must treat as
+    "ask nobody" rather than "ask anyone".
+    """
+
+    route: str
+    who: Actor | None
+    source: str
 
 
 def log(message: str) -> None:
@@ -118,6 +160,15 @@ class Watcher:
         else:
             log("  (no harness is curated, so every issue goes to the default)")
         log(f"Handing each one to {self._router.harness_for(DEFAULT_ROUTE).name}.")
+        if not self._router.authorises:
+            # Said once, in the log, at startup, because it is the difference
+            # between "a label decides where the work goes" and "a label decides
+            # whether your machine runs a command", and the default is the
+            # permissive one. Silence would read as "everything is fine".
+            self._problem(
+                "anyone in the Linear workspace can trigger a run; set allowed_actors "
+                "in chord.toml to restrict that (`chord info` prints your user id)"
+            )
         if self._webhook is not None:
             try:
                 await self._webhook.start()
@@ -236,14 +287,13 @@ class Watcher:
             log("  skipped: no id from Linear, so Chord can't record it.")
             return
 
-        chosen = await self._route_for(issue, identifier, issue_id)
-        if chosen is None:
-            # No route label at all. `_route_for` has already said so, and there
-            # is no harness to complain about, so the default runs it.
-            chosen = DEFAULT_ROUTE
+        chosen = await self._resolve(issue, identifier, issue_id)
+
+        if not await self._authorise(issue, identifier, issue_id, chosen):
+            return
 
         try:
-            harness = self._router.harness_for(chosen)
+            harness = self._router.harness_for(chosen.route)
         except UnknownRoute as exc:
             # Not run on the default instead. Doing the work with a harness
             # nobody asked for — on the wrong arguments, in the wrong place —
@@ -277,15 +327,15 @@ class Watcher:
             _spacer()
             self._problem(
                 f"{identifier} didn't finish: "
-                f"{route_label(self._router.label, chosen)} {exc}"
+                f"{route_label(self._router.label, chosen.route)} {exc}"
             )
             self._remember(issue_id)
             return
 
-        if chosen != DEFAULT_ROUTE:
+        if chosen.route != DEFAULT_ROUTE:
             # Only for a narrowed route. `run()` already said what the default
             # is, and repeating it on every issue would be noise.
-            log(f"  route      {route_label(self._router.label, chosen)}")
+            log(f"  route      {route_label(self._router.label, chosen.route)}")
 
         comments: list[dict[str, Any]] = []
         try:
@@ -314,15 +364,22 @@ class Watcher:
         self._remember(issue_id)
         await notify.send("Chord done", f"{identifier} finished")
 
-    async def _route_for(
-        self, issue: Issue, identifier: str, issue_id: str
-    ) -> str | None:
-        """Which route this issue is routed to, or None if it carries none.
+    async def _resolve(
+        self, issue: Issue, identifier: str, issue_id: Any
+    ) -> Routed:
+        """Which harness this issue is routed to, and who routed it.
 
-        Choosing the route and building the harness are kept apart on purpose.
-        Picking a route can only fail by asking Linear a question; building one
-        can fail because a command isn't installed, and that belongs with the
-        other "didn't finish" reporting rather than inside a routing decision.
+        Both questions come out of one read of Linear's audit trail, because
+        both are answered by the same entry: the one that added the routing
+        label decides where the work goes, and the actor of that entry is the
+        person whose name is on the decision. Reading it twice would cost two
+        round trips to learn two halves of one fact.
+
+        `who` is None whenever the answer is not knowable — the entry has
+        fallen off the audit page, Linear sent neither an actor nor a bot, or
+        the read failed. Callers treat that as "ask nobody", never as "ask
+        anyone": a permissive fallback here would turn the allowlist off
+        silently on exactly the issues it is hardest to reason about.
         """
         candidates = self._router.candidates(issue)
         if not candidates:
@@ -333,38 +390,112 @@ class Watcher:
                 f"{identifier} has no {self._router.default_name!r} label on it, "
                 "so Chord can't tell what it was routed to. Using the default."
             )
-            return None
-        if len(candidates) == 1:
-            return candidates[0]
-        return await self._newest_route(issue_id, identifier, candidates)
+            return Routed(DEFAULT_ROUTE, None, NO_LABEL)
 
-    async def _newest_route(
-        self, issue_id: str, identifier: str, candidates: list[str]
-    ) -> str:
-        """Which of several route labels was added to the issue most recently.
+        # One round trip is spent on the routing choice when there is one, and
+        # unconditionally when there is an allowlist, because then the actor is
+        # needed even for an issue whose route is not in doubt.
+        ambiguous = len(candidates) > 1
+        if not ambiguous and not self._router.authorises:
+            return Routed(candidates[0], None, UNAMBIGUOUS)
 
-        Linear sends an issue's labels as an unordered set, so an issue carrying
-        both `Chord` and `Chord/opencode` genuinely does not say which one wins
-        from the issue alone. Linear's own audit trail does say, which is what
-        this reads. When it can't be read the most specific label wins, which is
-        the better guess: someone narrows `Chord` to `Chord/opencode/tiny`
-        because they want that one.
-        """
         try:
-            added = await self._linear.label_history(issue_id)
-        except LinearError as exc:
-            self._problem(
-                f"couldn't read the label history for {identifier} ({exc}); "
-                f"using the most specific of {len(candidates)} route labels"
-            )
-            return candidates[0]
+            changes = await self._linear.label_history(str(issue_id))
+        except Exception as exc:
+            # Attribution and routing degrade differently, and both are said out
+            # loud: a routing guess runs the work somewhere that may not be what
+            # was asked for, so it is reported; attribution falling back to the
+            # issue's creator is a documented approximation, so it is reported
+            # too rather than being invisible.
+            if ambiguous:
+                self._problem(
+                    f"couldn't read the label history for {identifier} "
+                    f"({one_line(str(exc))}); using the most specific of "
+                    f"{len(candidates)} route labels"
+                )
+            else:
+                self._problem(
+                    f"couldn't read who added the routing label for {identifier} "
+                    f"({one_line(str(exc))}); falling back to the issue's creator"
+                )
+            return Routed(candidates[0], None, UNREADABLE)
 
         names = {route_label(self._router.label, route): route for route in candidates}
-        for label in added:
-            route = names.get(label)
-            if route is not None:
-                return route
-        return candidates[0]
+        for change in changes:
+            for name in change.labels:
+                route = names.get(name)
+                if route is not None:
+                    if ambiguous and change.who is None:
+                        self._problem(
+                            f"couldn't tell who added {name!r} to {identifier}; "
+                            "using the most specific route label it carries"
+                        )
+                    return Routed(route, change.who, FROM_HISTORY)
+
+        # The trail was readable and simply doesn't mention any of this issue's
+        # route labels: the label was applied long enough ago to be off the page.
+        if ambiguous:
+            self._problem(
+                f"{identifier}'s label history doesn't mention any of its "
+                f"{len(candidates)} route labels; using the most specific"
+            )
+        return Routed(candidates[0], None, OFF_THE_PAGE)
+
+    async def _authorise(
+        self, issue: Issue, identifier: str, issue_id: Any, routed: Routed
+    ) -> bool:
+        """Whether the person who routed this issue may have it run.
+
+        The act that causes code to run is adding the routing label, so that is
+        what is checked against `allowed_actors`. When that cannot be attributed
+        — the entry is off the audit page, or an integration applied the label —
+        the issue's creator stands in, and the log names which of the two was
+        used. A fallback that was invisible would not be a fallback you could
+        reason about at the moment it mattered.
+
+        Refusals are recorded, like every other hand-over that did not happen,
+        so one unapproved issue is not re-examined on every poll for the life of
+        the watcher. Which is why the second line exists: removing the label
+        won't bring the issue back, and a message that doesn't say so sends
+        someone looking for a fix that isn't one.
+        """
+        if not self._router.authorises:
+            return True
+
+        actor_id = routed.who.id if routed.who else None
+        asked = f"added {self._router.default_name!r}" if routed.who else "created the issue"
+        if routed.who is None:
+            creator = issue.get("creator")
+            actor_id = str(creator.get("id")) if isinstance(creator, dict) else None
+            actor_id = actor_id or None
+            asked = "created the issue"
+
+        if actor_id and self._router.authorises_actor(actor_id):
+            # Named, because which of the two attributions was used is the
+            # difference between a check and an approximation.
+            who = routed.who.name if routed.who else _name(issue.get("creator"))
+            log(f"  allowed     {who}, who {asked}")
+            return True
+
+        if routed.who is not None:
+            subject = f"{routed.who.name} {asked}"
+        elif actor_id:
+            subject = f"{_name(issue.get('creator'))} {asked}"
+        else:
+            subject = (
+                f"nobody Chord can identify {asked} (the routing label's history "
+                f"is off Linear's {MAX_HISTORY}-entry page, and the issue has no creator)"
+            )
+
+        _spacer()
+        self._problem(f"{identifier} skipped: {subject}, and that is not in allowed_actors.")
+        _spacer()
+        self._problem(
+            f"  to allow them: add their Linear user id to allowed_actors in chord.toml "
+            f"(see `chord info` for yours), then drop {_key(issue_id)} from {self._path.name}."
+        )
+        self._remember(issue_id)
+        return False
 
     def _remember(self, issue_id: object) -> None:
         self._seen[_key(issue_id)] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

@@ -92,12 +92,36 @@ class Router:
         default: HarnessSpec,
         harnesses: Mapping[str, HarnessSpec] | None = None,
         factory: Callable[[HarnessSpec], Harness] = build,
+        allowed_actors: tuple[str, ...] = (),
     ) -> None:
         self.label = label
         self._default = default
         self._specs: dict[str, HarnessSpec] = dict(harnesses or {})
         self._factory = factory
         self._built: dict[str, Harness] = {}
+        self._allowed = frozenset(actor.strip().lower() for actor in allowed_actors)
+
+    @property
+    def authorises(self) -> bool:
+        """Whether Chord checks who asked before running the work.
+
+        The watcher reads this to decide whether a hand-over has to ask Linear
+        who applied the routing label. With nothing allowed, nobody is asked and
+        nobody is refused.
+        """
+        return bool(self._allowed)
+
+    def authorises_actor(self, actor_id: str | None) -> bool:
+        """Whether `actor_id` may trigger a hand-over.
+
+        An id nobody can supply means the answer was not knowable — an
+        integration applied the label, or the event has fallen off the audit
+        page. Both are refused, because a control that guesses in the
+        permissive direction is not a control.
+        """
+        if not self._allowed:
+            return True
+        return bool(actor_id) and actor_id.strip().lower() in self._allowed
 
     @property
     def names(self) -> list[str]:

@@ -147,6 +147,8 @@ def info():
         typer.echo(f"  handed     {_plural(count, 'issue')} so far")
     if state_note:
         typer.echo(f"  note       {state_note}")
+    for line in _authorisation(config):
+        typer.echo(line)
 
     if not config.from_file:
         typer.echo("")
@@ -226,7 +228,12 @@ def _config() -> Config:
 
 
 def _router(config: Config) -> Router:
-    return Router(config.label, config.harness, config.harnesses)
+    return Router(
+        config.label,
+        config.harness,
+        config.harnesses,
+        allowed_actors=config.allowed_actors,
+    )
 
 
 def _check_routes(router: Router) -> None:
@@ -259,6 +266,45 @@ def _routes(config: Config) -> list[str]:
         f"{route.label.ljust(width)}  {route.spelling}"
         for index, route in enumerate(routes)
     ]
+
+
+def _authorisation(config: Config) -> list[str]:
+    """The allowlist, and yours, because the setting is a list of ids.
+
+    Nobody knows their own Linear user id — Linear's UI does not show it — so a
+    config that is a list of them would be unwritable if `chord info` were not
+    the place that hands it over. It also says whether Chord is currently
+    checking at all, because an empty allowlist is the permissive default and
+    silence about that would read as "everything is fine".
+    """
+    if not config.authorises:
+        return [
+            "  allowed    anyone in the workspace can trigger a run.",
+            "             Set allowed_actors in chord.toml to restrict that;",
+            "             `chord info` prints your Linear user id.",
+        ]
+
+    yours = credentials.viewer_id(_stored())
+    if not config.authorises:
+        return [
+            "  allowed    anyone in the workspace can trigger a run.",
+            "             Set allowed_actors in chord.toml to restrict that;",
+            f"             your Linear user id is {yours or '(run `chord setup` first)'}.",
+        ]
+
+    lines = [f"  allowed    {len(config.allowed_actors)} Linear user id(s)"]
+    if yours:
+        # Printed whether or not it is in the list. The list is ids, Linear does
+        # not show you yours, and `chord info` is the only place that can.
+        lines.append(f"             yours: {yours}")
+        if yours not in config.allowed_actors:
+            lines.append("             which is NOT in allowed_actors — Chord won't run your work")
+    return lines
+
+
+def _stored() -> object:
+    code, content = credentials.read()
+    return None if code else content
 
 
 def _token() -> str:
