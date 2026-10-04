@@ -304,8 +304,16 @@ needs a nudge, or wants a PR opened is doing that on its own. Chord waits for
 the command to exit and writes down what it printed.
 
 Command harnesses have a 30-minute execution timeout. Set `HARNESS_TIMEOUT`
-in the environment to use a different value in seconds. Long-running work
-should checkpoint so it can be resumed after a timeout.
+in the environment to use a different value in seconds. It has to be a positive
+number of seconds — a negative or non-numeric value is reported in the log and
+the default is used, because a timeout that fires immediately would mark your
+whole backlog as done without running any of it. Long-running work should
+checkpoint so it can be resumed after a timeout.
+
+On a timeout, and on `chord stop`, Chord kills the whole process group rather
+than just the command it started — a harness with a worker pool, a background
+server, or anything else it spawned goes too. Nothing it started is left
+running against your checkout.
 
 ## Adding Built-in Harnesses
 

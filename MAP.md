@@ -73,6 +73,10 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Issues sent via stdin to avoid command-line length limits
 - Captures stdout/stderr and logs them
 - Non-zero exit codes are reported as failures
+- Each harness runs in its own session, so a timeout or `chord stop` kills the
+  whole process group rather than leaving the work it started running
+- The timeout is validated, not merely parsed: `float()` accepts `-1`, `nan`
+  and `inf`, and each of those loses work quietly
 
 ### Issue Rendering
 **`src/chord/context.py`** - Formatting Linear issues
