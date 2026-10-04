@@ -351,6 +351,20 @@ file rather than in the process, so restarting Chord doesn't offer your whole
 backlog again. To start over, stop Chord and delete that file. Chord remembers
 the most recent 1000 hand-overs, matching the most a single poll can offer.
 
+This is at-least-once, not exactly-once, and the difference is worth being
+precise about. The record is written *after* the harness has run, because
+writing it first would mean an issue that never got worked on is never offered
+again — and losing your work is worse than doing it twice. So if Chord is killed
+in the instant between your agent finishing and the record landing, that issue
+is offered again next time. That window is small and it is deliberate; closing
+it is not possible without trading it for the opposite failure.
+
+Everything else in that window is already closed. A crash, an interrupt, or an
+error part-way through is recorded before it can propagate, and the record is
+flushed to disk rather than left in memory, so a power cut does not lose it
+either. What is left is only the case where the process is gone before it can
+say anything at all.
+
 **A backlog works oldest first**, so issues are picked up in the order they
 were written.
 

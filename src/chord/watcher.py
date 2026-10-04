@@ -7,6 +7,7 @@ backlog again.
 
 import asyncio
 import json
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -496,6 +497,24 @@ class Watcher:
             self._remember(issue_id)
             await notify.send("Chord done", f"{identifier} did not finish: {exc}")
             return
+        except BaseException:
+            # `CancelledError` is meant to travel: it is how `chord stop` reaches
+            # the watcher, and swallowing it here would make the watcher
+            # unstoppable. Every other `BaseException` — `KeyboardInterrupt`, a
+            # library raising something outside `Exception`, a `SystemExit` from
+            # a harness — leaves the issue unrecorded, which means the same work
+            # is handed to the agent again on the next poll, and the one after
+            # that, for as long as the process lives.
+            #
+            # Recording it and letting the exception on its way closes that. It
+            # does not change the at-least-once contract: the agent may still
+            # have done the work before the exception, and re-running it is the
+            # documented behaviour rather than a bug. The alternative, an
+            # in-progress marker written before the run, would trade this
+            # duplicate for the possibility of never running the work at all,
+            # which is the worse of the two.
+            self._remember(issue_id)
+            raise
 
         _spacer()
         log("  handed over.")
@@ -645,7 +664,21 @@ class Watcher:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             body = json.dumps({"handed_over": trimmed}, indent=2) + "\n"
             pending = self._path.with_suffix(self._path.suffix + ".tmp")
-            pending.write_text(body)
+            with pending.open("w") as handle:
+                handle.write(body)
+                # Flushed to the device, not just to the page cache. `replace` is
+                # atomic as a rename, so a reader never sees half a file — but a
+                # rename of data still sitting in the cache is lost if the
+                # machine loses power, and that costs the same thing a lost
+                # write always costs: the work is done again.
+                #
+                # This is the one place Chord can widen that window without
+                # changing what it promises. Writing the record *before* the
+                # harness runs would close it entirely, and would also mean an
+                # issue that never got worked on is never offered again — the
+                # opposite trade, and the worse one.
+                handle.flush()
+                os.fsync(handle.fileno())
             pending.replace(self._path)
         except OSError as exc:
             # Losing this costs a duplicate hand-over after a restart, which
