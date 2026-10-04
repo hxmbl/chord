@@ -17,6 +17,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from chord.paths import project_root
 
@@ -95,6 +96,59 @@ class NotOurs(Exception):
 
 def _ensure_home() -> None:
     PROJECT_HOME.mkdir(parents=True, exist_ok=True)
+    # 0700, not the umask's default. Everything under here is about this project
+    # and nobody else's: the log holds issue titles, comment bodies and Linear's
+    # own error text, and the state file holds which issues have been worked on.
+    # None of that is a secret, but it is not anybody else's business either.
+    #
+    # The lock file was already opened 0600, which is the inconsistency this
+    # fixes: the code treats these as private in one place and not in the rest.
+    # It is also worth doing because the mode is explicit rather than inherited,
+    # so it does not change with the umask -- a stricter shell leaves the log
+    # 0600 and a laxer one used to leave it 0644.
+    with contextlib.suppress(OSError):
+        PROJECT_HOME.chmod(0o700)
+
+
+def _open_private(path: Path, mode: str = "w") -> Any:
+    """Open `path` for writing, readable only by its owner.
+
+    The mode passed to `os.open` is only honoured when the file does *not*
+    already exist, so an older Chord's 0644 log stays 0644 through it. The
+    `chmod` afterwards is what actually fixes an existing file, and it is why
+    upgrading tightens the permissions rather than only applying to new ones.
+    """
+    handle = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(handle, 0o600)
+    except OSError:
+        # A filesystem without permission bits still works; it just cannot be
+        # made private, which is not a reason to refuse to write the log.
+        os.close(handle)
+        handle = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        return os.fdopen(handle, mode)
+    except BaseException:
+        os.close(handle)
+        raise
+
+
+def _write_private(path: Path, body: str) -> None:
+    """Replace `path` with `body`, privately."""
+    pending = path.with_suffix(path.suffix + ".tmp")
+    with _open_private(pending) as handle:
+        handle.write(body)
+        handle.flush()
+        # Flushed to the device, not just to the page cache. `replace` is atomic
+        # as a rename, so a reader never sees half a file — but a rename of data
+        # still in the cache does not survive losing power, and that costs the
+        # same thing a lost write always costs: the work is done again.
+        os.fsync(handle.fileno())
+    pending.replace(path)
+    # `replace` carries the new file's mode across, so this is belt and braces —
+    # and it is what fixes a file left behind by an older Chord.
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
 
 
 @contextlib.contextmanager
@@ -217,7 +271,7 @@ def start() -> int:
 
         # Each start begins a new log. What you want after `chord start` is this
         # run, including anything that went wrong in the first second.
-        log = LOG_FILE.open("w")
+        log = _open_private(LOG_FILE)
         try:
             process = subprocess.Popen(
                 [sys.executable, "-m", "chord.cli", SERVE_COMMAND],
@@ -241,9 +295,7 @@ def start() -> int:
 
         # Replace rather than truncate, so a concurrent reader never sees a
         # half-written file and decides the watcher isn't running.
-        pending = PID_FILE.with_suffix(".pid.tmp")
-        pending.write_text(f"{process.pid}\n{time.time()}\n")
-        os.replace(pending, PID_FILE)
+        _write_private(PID_FILE, f"{process.pid}\n{time.time()}\n")
         return process.pid
 
 

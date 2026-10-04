@@ -7,13 +7,12 @@ backlog again.
 
 import asyncio
 import json
-import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from chord import logging, notify, subscribe
+from chord import daemon, logging, notify, subscribe
 from chord.context import Issue, render
 from chord.harness import HarnessError
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
@@ -663,23 +662,7 @@ class Watcher:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             body = json.dumps({"handed_over": trimmed}, indent=2) + "\n"
-            pending = self._path.with_suffix(self._path.suffix + ".tmp")
-            with pending.open("w") as handle:
-                handle.write(body)
-                # Flushed to the device, not just to the page cache. `replace` is
-                # atomic as a rename, so a reader never sees half a file — but a
-                # rename of data still sitting in the cache is lost if the
-                # machine loses power, and that costs the same thing a lost
-                # write always costs: the work is done again.
-                #
-                # This is the one place Chord can widen that window without
-                # changing what it promises. Writing the record *before* the
-                # harness runs would close it entirely, and would also mean an
-                # issue that never got worked on is never offered again — the
-                # opposite trade, and the worse one.
-                handle.flush()
-                os.fsync(handle.fileno())
-            pending.replace(self._path)
+            daemon._write_private(self._path, body)
         except OSError as exc:
             # Losing this costs a duplicate hand-over after a restart, which
             # is a much smaller problem than a watcher that stops working.
