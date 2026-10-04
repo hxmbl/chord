@@ -3,6 +3,16 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
+# The throwaway file that `edited_overnight_log.md` records almost getting
+# committed. It was caught in the index and never committed, but nothing stopped
+# it: a file named `*secret*.txt` has no reason to be committed, and the next
+# person reproducing something has no reason to remember. Ignore the shape
+# rather than the one filename.
+*secret*.txt
+.env.*
+*.pem
+*.key
+
 # Test and coverage output. `pyproject.toml` writes coverage.xml on every run.
 .pytest_cache/
 .coverage
