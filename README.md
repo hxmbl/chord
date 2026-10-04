@@ -160,6 +160,23 @@ so `chord start` works the same from a subdirectory. The nearest one wins. That
 directory is also what identifies the project to the rest of Chord — see
 [State on disk](#state-on-disk).
 
+### Whose chord.toml is it?
+
+**Running `chord start` in a repository runs that repository's `harness`
+command.** This is the same trust model as a `Makefile`, a `package.json`
+script, or a `.env` your shell loads: the config in a directory is code you have
+agreed to run by being in that directory. Chord does not prompt, because
+prompting on every start would be worse than the thing it protects against.
+
+So the practical rule is the one you already apply to build files: read it
+before you run it, and don't run `chord start` in a repository you just cloned
+to look around. Nothing here is a Chord bug to be fixed — a project config that
+didn't configure the project would not be a project config.
+
+`.env` is read the same way and for the same reason. It supplies your Linear
+client id and secret, which are how Chord obtains a token — it holds no token
+itself, because those live in your OS keychain.
+
 ## Who can trigger a run
 
 Adding a `Chord` label runs a command on your machine. With no configuration,
