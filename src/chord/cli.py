@@ -14,8 +14,8 @@ from typing import NoReturn
 import typer
 import typer.core
 
-from chord import credentials, daemon, subscribe, watcher
-from chord.config import Config, ConfigError, load
+from chord import credentials, daemon, notify, subscribe, watcher
+from chord.config import SEPARATOR, Config, ConfigError, load
 from chord.harness import HarnessError
 from chord.linear import Linear
 from chord.routing import Router
@@ -134,11 +134,16 @@ def info():
 
     typer.echo("Chord")
     typer.echo(f"  daemon     {_daemon_line(pid)}")
+    # The grammar, not the routing: this is every label the poll can match,
+    # which is a wider set than the lines below, and the difference is the
+    # point. `Router.filter()` asks Linear for the bare label and anything
+    # starting with the prefix, so a `Chord/...` label nobody curated still
+    # arrives — to be reported and skipped, never run on the default harness.
     typer.echo(
         f"  watching   issues labelled {config.label!r} "
-        f"or {config.label}/<harness>"
+        f"or anything starting {config.label}{SEPARATOR}"
     )
-    for line in _routes(config):
+    for line in _labels(config):
         typer.echo(line)
     typer.echo(f"  interval   {config.interval}s")
     webhook_line = f"http://127.0.0.1:{config.webhook_port}/webhook"
@@ -148,6 +153,8 @@ def info():
         # too, so hiding it helps nobody and makes the setup harder to follow.
         webhook_line += "  (requires X-Chord-Secret)"
     typer.echo(f"  webhook    {webhook_line}")
+    for line in _notify():
+        typer.echo(line)
     typer.echo(f"  linear     {_linear_line()}")
     typer.echo(f"  config     {_config_line(config)}")
     if count is not None:
@@ -325,21 +332,72 @@ def _check_routes(router: Router) -> None:
         _fail(str(exc))
 
 
-def _routes(config: Config) -> list[str]:
-    """The label grammar as it stands, one line per route.
+def _labels(config: Config) -> list[str]:
+    """The labels Chord runs work for, one per line, and what each one starts.
 
-    A curated harness is a command, and commands are long. One route per line
-    with the labels in a column keeps a dozen of them readable, which is the
-    whole point of listing them: `chord info` is where you check what a label
-    in Linear will actually do.
+    This is the list somebody has to create in Linear by hand — Chord never
+    creates a label — so it is printed as the list it is: exact strings, in a
+    column, next to the command each one starts. `chord info` is where you check
+    what a label in Linear will actually do, and it is also the only place the
+    set can be read *before* it matters.
+
+    The closing lines are not decoration. Adding one of these labels is what
+    makes this machine run a harness, so the labels are a trigger surface rather
+    than a naming convention, and somebody auditing their workspace wants to know
+    both halves: what does run something, and what happens to everything else.
+    The answer is that it stops the issue — never a run on the default harness,
+    which is the mistake a widened grammar would otherwise make. The prefix is
+    named by the `watching` line above rather than repeated here, so the two
+    cannot drift apart and the note wraps to the same width whatever the label
+    is called.
+
+    A curated harness is a command, and commands are long, so one label per line
+    keeps a dozen of them readable.
     """
     routes = _router(config).routes()
     width = max(len(route.label) for route in routes)
-    lead = "  routes     "
-    return [
+    lead = "  labels     "
+    lines = [
         f"{lead if index == 0 else ' ' * len(lead)}"
         f"{route.label.ljust(width)}  {route.spelling}"
         for index, route in enumerate(routes)
+    ]
+    return lines + [
+        "             Add these in Linear by hand — Chord never creates a",
+        "             label. Adding one is what makes this machine run a",
+        "             harness, so this list is the whole trigger surface.",
+        "             Anything else under that prefix is reported and",
+        "             skipped, never run on the default harness.",
+    ]
+
+
+def _notify() -> list[str]:
+    """Which notifier a banner would go through on this machine.
+
+    Asked rather than assumed, because the failure is invisible by
+    construction: a notification that reaches no daemon raises nothing, so a
+    watcher can hand over a hundred issues and never once have said that it had
+    been trying to say something.
+
+    Two lines rather than one, because the osascript case carries a workaround
+    and the workaround is a single `brew install`: the symptom — banners
+    labelled Script Editor — reads as somebody else's software rather than as a
+    missing dependency, and is worth naming the fix for.
+    """
+    backend = notify.backend()
+    if backend == "terminal-notifier":
+        return ["  notify     terminal-notifier (Notification Centre)"]
+    if backend == "osascript":
+        return [
+            "  notify     osascript (Notification Centre, attributed to",
+            "             Script Editor — `brew install terminal-notifier`",
+            "             gives the banners their own name instead)",
+        ]
+    if backend == "desktop_notifier":
+        return ["  notify     desktop_notifier (the session daemon)"]
+    return [
+        "  notify     nothing, so no notifications are sent.",
+        "             Nothing else here can report that, so watch `chord watch`.",
     ]
 
 

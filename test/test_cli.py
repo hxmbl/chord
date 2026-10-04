@@ -1,6 +1,7 @@
 """The command layer, and the harnesses — both changed, and both easy to get
 wrong in ways the other tests can't see."""
 
+import re
 import time
 
 import pytest
@@ -337,6 +338,33 @@ def test_start_accepts_curated_harnesses_that_can_run(
     assert result.exit_code == 0, result.output
 
 
+def _strip_lead(line: str) -> str:
+    """One line of `chord info` with its 13-column indent removed."""
+    return line[len("  labels     ") :] if line.startswith("  labels     ") else line[13:]
+
+
+def label_column(out: str) -> list[str]:
+    """The labels in the `labels` block, in order.
+
+    Read off the aligned column rather than by taking the first word of every
+    line: the block is a label column followed by prose, and the prose is
+    full sentences. A label is the only line whose first token is followed by the
+    column's padding.
+    """
+    labels = []
+    for line in out.splitlines():
+        rest = _strip_lead(line)
+        match = re.match(r"^(\S+)\s{2,}\S", rest)
+        if match:
+            labels.append(match.group(1))
+    return labels
+
+
+def flatten(out: str) -> str:
+    """The output as one line, so an assertion survives being re-wrapped."""
+    return " ".join(out.split())
+
+
 def test_info_lists_every_route(keyring_backend, no_env, monkeypatch, tmp_path):
     """`chord info` is where you check what a label in Linear will do."""
     config = tmp_path / ".config" / "chord" / "chord.toml"
@@ -373,7 +401,104 @@ def test_info_says_what_the_default_is_when_nothing_is_curated(
 
     assert result.exit_code == 0, result.output
     assert "Chord  opencode" in result.stdout, "the default route should still be listed"
-    assert result.stdout.count("Chord/") == 1, "only the watching line should mention a route"
+    assert label_column(result.stdout) == ["Chord"], "and it is the only route"
+
+
+def test_info_showcases_the_labels_it_accepts(keyring_backend, no_env, monkeypatch, tmp_path):
+    """The list somebody has to create in Linear by hand, as a list.
+
+    Chord never creates a label, so this set and the labels in the workspace are
+    two things kept in step by hand. `chord info` is the only place the first can
+    be read before it matters.
+    """
+    (tmp_path / "chord.toml").write_text(
+        'label = "Chord"\nharness = "opencode"\n'
+        '[harnesses.claude]\ncommand = ["claude", "-p"]\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    assert label_column(result.stdout) == ["Chord", "Chord/claude"]
+
+
+def test_info_says_that_adding_a_label_is_the_trigger(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
+    """The security half, stated where the list is.
+
+    The labels are the trigger surface: adding one is what makes this machine run
+    a harness. And the honest answer to "what about everything else that starts
+    with the prefix" is that it stops the issue — not that it quietly runs
+    somewhere. Silence about that would leave the grammar looking wider than the
+    routes.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    out = flatten(result.stdout)
+    assert "Add these in Linear by hand" in out
+    assert "makes this machine run a harness" in out
+    assert "never run on the default harness" in out
+
+
+def test_info_names_the_prefix_the_watch_actually_uses(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
+    """The watched set is wider than the routable set, and says so.
+
+    `Router.filter()` asks Linear for the bare label *and anything starting with
+    the prefix*, curated or not. Printing `<label>/<harness>` there implied the
+    two sets were the same, which is exactly the assumption that would let a
+    label nobody curated look harmless.
+    """
+    (tmp_path / "chord.toml").write_text('label = "Pick"\nharness = "opencode"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    assert "issues labelled 'Pick' or anything starting Pick/" in result.stdout
+    assert "<harness>" not in result.stdout
+
+
+def test_info_says_where_notifications_go(keyring_backend, no_env, monkeypatch, tmp_path):
+    """Asked before one is sent, because the failure is invisible by
+    construction: a notification that reaches no daemon raises nothing."""
+    from chord import notify
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+    monkeypatch.setattr(notify, "backend", lambda: "terminal-notifier")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    assert "notify     terminal-notifier" in result.stdout
+
+
+def test_info_admits_when_no_notifier_exists(keyring_backend, no_env, monkeypatch, tmp_path):
+    from chord import notify
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+    monkeypatch.setattr(notify, "backend", lambda: "none")
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    assert "no notifications are sent" in result.stdout
 
 
 def test_info_rejects_a_curation_typo(no_env, monkeypatch, tmp_path):

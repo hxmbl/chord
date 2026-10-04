@@ -5,10 +5,16 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 
 ## Entry Point
 **`src/chord/cli.py`** - The command-line interface
-- Six commands: `setup`, `refresh`, `start`, `stop`, `watch`, `info`
+- Seven commands: `setup`, `refresh`, `start`, `stop`, `watch`, `info`, `help`
+  (`help` forwards to the command you name, and `_serve` is hidden)
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
 - All commands are thin wrappers that validate state before calling other modules
+- `chord info` stays offline: daemon state, the labels Chord will act on, and
+  which notification route is in use, without touching the network
+- `chord info` prints the accepted labels as a list, because Chord never
+  creates a label and the set is kept in step by hand — adding one is what makes
+  the machine run a harness
 
 ## Core Modules
 
@@ -32,6 +38,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - `candidates()` reads an issue's route labels, most specific first
 - `harness_for()` resolves a name to a built harness, memoized
 - `validate()` builds every route so `chord start` can report a broken one
+- The watched set is wider than the routable set, and `chord info` says so: the
+  labels are the trigger surface, and `chord info` lists the ones that run work
 
 ### The Watcher Loop
 **`src/chord/watcher.py`** - Main polling logic
@@ -42,6 +50,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Tracks which issues have been handed over in `state.json`
 - Processes issues oldest-first (by `createdAt`)
 - Hands each issue to the harness its labels select
+- Announces one banner per issue: received, failed, skipped, or refused — the
+  paths that used to be log-only now say so out loud
 - Never raises: logs problems and continues
 - Integrates with webhooks and subscriptions for faster response
 
@@ -114,15 +124,37 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 ### Utilities
 
 **`src/chord/notify.py`** - Desktop notifications
-- Best-effort notifications via `desktop-notifier`
-- Notifies when Chord starts/finishes working on an issue
-- Silent if desktop notifications unavailable
+- **One banner per issue, whichever way it went** — four verbs, exactly one of
+  which fires per issue, and nothing at all for a step along the way
+- Four verbs (`received`, `failed`, `skipped`, `refused`) rather than one
+  free-form `send`, so the title cannot contradict the body
+- macOS asks the daemon by a route that needs no app bundle, because Chord is a
+  bare unsigned `python3` and `UNUserNotificationCenter` is unreachable from one:
+  `terminal-notifier` if installed, otherwise `osascript`
+- Linux and Windows keep using `desktop-notifier`, which works from a script there
+- Text goes over as arguments, never concatenated into a script
+- One group per issue, so a later outcome replaces an earlier one rather than
+  stacking under it
+- Bounded, killed rather than abandoned, and every failure silent
+- `backend()` reports the route for `chord info`, which is the only way to find
+  out a notification was going nowhere
 
 **`src/chord/text.py`** - Text sanitization
 - Flattens untrusted text to one safe line
 - Removes control characters and terminal escapes
 - Prevents log injection and terminal redraw attacks
 - Called at log boundary, not at each source
+
+**`src/chord/logging.py`** - Log output
+- Dependency-free, `CHORD_LOG_LEVEL`-controlled, one timestamped line per event
+- Everything goes through `text.one_line`, so a message cannot forge a line
+- `write()` passes harness output through unchanged
+
+**`src/chord/event_source.py`** - Shared live-event plumbing
+- The base class behind `Webhook` and `Subscription`: one place that knows how to
+  wait for a wake-up and how to count one
+- A generation counter rather than a bare event, so an event that arrives while
+  the watcher is mid-poll is not lost
 
 **`src/chord/paths.py`** - File path resolution
 - Finds config files by searching upward from CWD
@@ -191,23 +223,44 @@ Harness output (logged to chord.log)
 - `httpx` - HTTP client
 - `keyring` - Secure credential storage
 - `python-dotenv` - Environment variables
-- `desktop-notifier` - Desktop notifications
+- `desktop-notifier` - Desktop notifications on Linux and Windows only; on
+  macOS its backend cannot reach Notification Centre from a script (see
+  `notify.py`), so that platform goes through `terminal-notifier` or
+  `osascript` instead
 
 **Optional**:
 - `gql[websockets]` - WebSocket subscriptions for live updates
+- `terminal-notifier` (Homebrew, macOS) - Optional. Gives the banners
+  terminal-notifier's name instead of Script Editor's. Nothing breaks without
+  it; `chord info` reports which route is in use
 
 ## Testing
 
 Tests are in `test/` directory:
-- `test_cli.py` - CLI commands
+- `test_at_least_once.py` - The at-least-once contract, and the margin around it
+- `test_auth_expiry.py` - Token refresh across a long-running daemon
+- `test_authorise.py` - The `allowed_actors` allowlist and attribution
+- `test_boundaries.py` - Linear answers that are not what the query asked for
+- `test_cli.py` - CLI commands, including the `chord info` label showcase
 - `test_config.py` - Configuration loading, including the curation table
 - `test_daemon.py` - Process management
+- `test_delivery.py` - The path from a Linear issue to a harness, and one
+  banner per issue
 - `test_findings.py` - Issue handling
+- `test_harness.py` - Running an external command without letting it run away
+- `test_log_safety.py` - What untrusted text is allowed to do to the log
+- `test_notify.py` - Notification shape, platform routing, injection safety, and
+  the one-banner-per-issue rule
 - `test_pagination.py` - Linear pagination
+- `test_permissions.py` - What Chord writes to disk, and who can read it
+- `test_process_identity.py` - `chord stop` signalling only Chord's own processes
 - `test_routing.py` - Label grammar, curation, and which harness runs
+- `test_stale_pid.py` - A stale pid file not wedging `chord start`
 - `test_subscribe.py` - WebSocket subscriptions
 - `test_watcher.py` - Main polling loop
 - `test_webhook.py` - Webhook handling
+- `test_webhook_secret.py` - The webhook shared secret
+- `test_wrong_harness.py` - An issue only ever worked on by the harness its label named
 
 `tools/probe_linear.py` is a read-only live check: it asks Linear the same
 questions Chord does, so a query shape can be verified without a test account.

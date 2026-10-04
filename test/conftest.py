@@ -8,6 +8,7 @@ import keyring
 import pytest
 from keyring.backend import KeyringBackend
 
+from chord import notify
 from chord.routing import Router
 
 
@@ -63,6 +64,25 @@ def no_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CHORD_MAX_AGE", raising=False)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def no_notifications(monkeypatch):
+    """Keep the suite from spawning real notifiers.
+
+    Delivery was a no-op on macOS for as long as it went through
+    `desktop_notifier`, so this was never a problem. It is a subprocess now, at
+    a few hundred milliseconds a pop, and the watcher's own tests run on a
+    wall-clock budget measured in hundredths of a second — so an unstubbed
+    notification stops the hand-over from finishing, which reads as the harness
+    never being called.
+
+    Patched at the lookup rather than at `_deliver`, so the tests that are about
+    delivery still exercise it — including the ones that call `_deliver`
+    directly with their own argv.
+    """
+    monkeypatch.setattr(notify, "_find", lambda name: None)
+    monkeypatch.setattr(notify, "OSASCRIPT", "/nonexistent/osascript")
 
 
 class RecordingHarness:

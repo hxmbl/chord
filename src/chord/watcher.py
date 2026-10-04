@@ -454,6 +454,11 @@ class Watcher:
                 f"  to retry it: add [harnesses.\"{exc.name}\"] to chord.toml, then "
                 f"drop {_key(issue_id)} from {self._path.name}."
             )
+            await notify.skipped(
+                identifier,
+                f"{route_label(self._router.label, exc.name)!r} names a harness "
+                f"chord.toml doesn't define.",
+            )
             self._remember(issue_id)
             return
         except HarnessError as exc:
@@ -466,6 +471,9 @@ class Watcher:
             self._problem(
                 f"{identifier} didn't finish: "
                 f"{route_label(self._router.label, chosen.route)} {exc}"
+            )
+            await notify.skipped(
+                identifier, f"{route_label(self._router.label, chosen.route)}: {exc}"
             )
             self._remember(issue_id)
             return
@@ -483,7 +491,11 @@ class Watcher:
             # the conversation around it, and the log says so.
             self._problem(f"no discussion for {identifier}: {exc}")
 
-        await notify.send("Chord started", f"Working on {identifier}")
+        # One banner for the whole hand-over rather than one for each end, fired as
+        # it happens: a harness can run for half an hour, and the news is that
+        # work started where you didn't start it. Naming the harness is also the
+        # point of the body — it is the only place you get told where it went.
+        await notify.received(identifier, harness.name)
         try:
             await harness.send(render({**issue, "comments": comments}))
         except HarnessError as exc:
@@ -494,9 +506,9 @@ class Watcher:
             _spacer()
             self._problem(f"{identifier} didn't finish: {exc}")
             self._remember(issue_id)
-            await notify.send("Chord done", f"{identifier} did not finish: {exc}")
+            await notify.failed(identifier, exc)
             return
-        except BaseException:
+        except BaseException as exc:
             # `CancelledError` is meant to travel: it is how `chord stop` reaches
             # the watcher, and swallowing it here would make the watcher
             # unstoppable. Every other `BaseException` — `KeyboardInterrupt`, a
@@ -512,13 +524,18 @@ class Watcher:
             # in-progress marker written before the run, would trade this
             # duplicate for the possibility of never running the work at all,
             # which is the worse of the two.
+            #
+            # Announced, except for the cancellation: a `chord stop` is the
+            # person's own doing and needs no banner, and the notification would
+            # otherwise be the last thing the watcher says on its way out.
+            if not isinstance(exc, asyncio.CancelledError):
+                await notify.failed(identifier, f"{type(exc).__name__}: {exc}")
             self._remember(issue_id)
             raise
 
         _spacer()
         log("  handed over.")
         self._remember(issue_id)
-        await notify.send("Chord done", f"{identifier} finished")
 
     async def _resolve(
         self, issue: Issue, identifier: str, issue_id: Any
@@ -650,6 +667,11 @@ class Watcher:
             f"  to allow them: add their Linear user id to allowed_actors in chord.toml "
             f"(see `chord info` for yours), then drop {_key(issue_id)} from {self._path.name}."
         )
+        # Announced, and it is the one banner here that is not really about an
+        # issue at all: it is the only record that somebody asked this machine to
+        # run a command and was refused. The log has it, but the log is only read
+        # when somebody already suspects something.
+        await notify.refused(identifier, f"{subject}, and that is not in allowed_actors.")
         self._remember(issue_id)
         return False
 

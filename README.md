@@ -111,7 +111,7 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 | `chord start`      | Watch in the background.                                |
 | `chord stop`       | Stop watching.                                          |
 | `chord watch`      | Follow the log, live.                                   |
-| `chord info`       | Show the connection, the settings, and the state.       |
+| `chord info`       | Show the settings, the labels Chord acts on, and the state. |
 | `chord refresh`    | Renew the token. You'll need this about once a day.     |
 | `chord help`       | The same as `chord --help`.                             |
 
@@ -258,10 +258,98 @@ would hand it to an agent nobody asked for, on arguments nobody chose. So the
 issue is skipped, the log names the label and how to fix it, and the issues
 behind it still get their turn.
 
-`chord info` lists every route, which is the place to check what a label you
-typed in Linear will actually do. `chord start` builds every route before it
-spawns anything, so a curated harness naming a command that isn't installed is
-reported by the command rather than by the first issue that trips it.
+`chord info` is where you check what a label you typed in Linear will actually
+do. It prints every label Chord runs work for, one per line, next to the command
+it starts — because **Chord never creates a label**. The set of labels in your
+workspace and the set Chord answers to are two things you keep in step by hand,
+so `chord info` is the only place the second can be read before it matters:
+
+```
+  labels     Chord                            opencode
+             Chord/claude                     claude -p
+             Add these in Linear by hand — Chord never creates a
+             label. Adding one is what makes this machine run a
+             harness, so this list is the whole trigger surface.
+             Anything else under that prefix is reported and
+             skipped, never run on the default harness.
+```
+
+Treat that list as a trigger surface rather than a naming convention. Adding one
+of those labels to an issue is what makes your machine run a command, which is
+the same thing `allowed_actors` restricts and the same thing a stranger with
+access to your workspace could do on purpose.
+
+`chord start` builds every route before it spawns anything, so a curated harness
+naming a command that isn't installed is reported by the command rather than by
+the first issue that trips it.
+
+## Notifications
+
+**One banner per issue, whichever way it went.** Four outcomes, four verbs:
+
+| What happened                 | Title              | Body                                          |
+| ----------------------------- | ------------------ | --------------------------------------------- |
+| Picked up and sent            | `ENG-201 received` | `Sent to opencode.`                           |
+| The harness didn't finish     | `ENG-201 failed`   | `` `opencode` exited 1. ``                    |
+| Stopped before it started     | `ENG-201 skipped`  | `'Chord/typo' names a harness chord.toml doesn't define.` |
+| Asked by someone not allowed  | `ENG-201 refused`  | `sam added 'Chord', and that is not in allowed_actors.` |
+
+Each is a title saying what happened over a line saying why, because a banner is
+read at a glance by somebody who did not ask for it. The two are separate
+functions rather than one you fill in with two strings, because the failure is
+the case where the halves disagree — and they used to: a hand-over that raised
+sent "Chord done" over "ENG-201 did not finish", which is the one banner nobody
+can act on.
+
+`refused` has its own verb on purpose. It isn't a malfunction; the allowlist did
+the one thing it's there for, and you want to know it fired.
+
+**Nothing is announced for a step along the way.** A hand-over used to say
+"started" and then "finished" — two banners to say one thing, and a backlog of
+ten issues is twenty banners, which is how a notification gets ignored. One
+banner per issue is the whole rule: a queue with nothing wrong with it is silent.
+
+Everything announced is a case where an issue was going to be worked on and
+wasn't, or where work was going to happen and something stopped it. Those used
+to be log-only, and an issue that quietly stops looks exactly like an issue
+being worked on — right up until somebody opens the ticket and finds nothing has
+happened for a week. The log still has all of it; the banner is what saves you
+from reaching for the log first.
+
+All outcomes for one issue share a group, so the newest replaces the rest. If a
+skipped issue gets its fix and is handed over, the banner that says so replaces
+the one saying it was skipped, rather than sitting under it.
+
+**Where they go depends on the platform, and Chord asks rather than assumes.**
+macOS attributes every banner to a bundle identity, and the only Apple API that
+takes a title and a body reads that identity off whatever is running — so it
+works inside a signed `.app` and nowhere else. Chord is `python3` in a
+virtualenv: a bare, unsigned executable in no bundle at all, so it asks the
+notification daemon by a route that needs none:
+
+- **`terminal-notifier`** if you have it (`brew install terminal-notifier`). It is
+  itself a signed app bundle, so the banner is attributed to it rather than to
+  Script Editor.
+- **`osascript`** otherwise. It is in every macOS and installs nothing. The banner
+  is attributed to Script Editor, which is cosmetic — the alternative is no
+  banner.
+
+Linux and Windows go through `desktop_notifier`, which works from a script
+there: on Linux it is a D-Bus call to the session's own daemon.
+
+`chord info` reports which of these is in play, because the failure is invisible
+by construction — a notification that reaches no daemon raises nothing, so the
+only way to know one is going somewhere is to ask before sending it:
+
+```
+  notify     osascript (Notification Centre, attributed to
+             Script Editor — `brew install terminal-notifier`
+             gives the banners their own name instead)
+```
+
+Notifications are best-effort and always will be. Nothing about a desktop
+notification is worth an issue not being worked on, so every failure ends in
+silence — including a notifier that hangs, which is killed rather than waited on.
 
 ## Webhooks
 
