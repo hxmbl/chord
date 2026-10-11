@@ -668,3 +668,7 @@ act on them. Trigger modes come one at a time — label first, assignment next,
 agent sessions later — and they stay mutually exclusive.
 
 Start small. Build outward.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
