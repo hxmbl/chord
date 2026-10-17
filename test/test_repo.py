@@ -99,7 +99,7 @@ def test_a_repository_line_in_the_description_is_used(tmp_path):
     start = repo_at(tmp_path / "workspace")
     elsewhere = repo_at(tmp_path / "elsewhere" / "billing")
 
-    issue = {"project": None, "description": f"Repository: {elsewhere}"}
+    issue = {"project": None, "description": f"[Chord_Working_Path: {elsewhere}]"}
 
     found = resolve(issue, start)
 
@@ -112,7 +112,7 @@ def test_a_relative_repository_line_is_read_from_the_project_root(tmp_path):
     start = repo_at(tmp_path / "workspace")
     repo_at(start / "billing")
 
-    issue = {"project": None, "description": "Repository: billing"}
+    issue = {"project": None, "description": "[Chord_Working_Path: billing]"}
 
     found = resolve(issue, start)
 
@@ -130,7 +130,7 @@ def test_a_named_repository_that_is_not_a_repository_is_an_error(tmp_path):
 
     issue = {
         "project": None,
-        "description": f"Repository: {tmp_path / 'elsewhere' / 'billing'}",
+        "description": f"[Chord_Working_Path: {tmp_path / 'elsewhere' / 'billing'}]",
     }
 
     with pytest.raises(ResolutionError, match="isn't a Git repository"):
@@ -158,7 +158,7 @@ def test_a_tilde_in_the_repository_line_is_expanded(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     repo_at(home / "billing")
 
-    issue = {"project": None, "description": "Repository: ~/billing"}
+    issue = {"project": None, "description": "[Chord_Working_Path: ~/billing]"}
 
     found = resolve(issue, start)
 
@@ -175,7 +175,7 @@ def test_the_project_title_wins_over_the_description(tmp_path):
     named = repo_at(start / "billing")
     other = repo_at(tmp_path / "elsewhere" / "billing")
 
-    issue = {"project": {"name": "billing"}, "description": f"Repository: {other}"}
+    issue = {"project": {"name": "billing"}, "description": f"[Chord_Working_Path: {other}]"}
 
     found = resolve(issue, start)
 
@@ -244,7 +244,7 @@ def test_a_linked_worktree_counts_as_a_repository(tmp_path):
 
     assert (linked / ".git").is_file(), "expected the linked form, not a directory"
 
-    found = resolve({"project": None, "description": f"Repository: {linked}"}, main)
+    found = resolve({"project": None, "description": f"[Chord_Working_Path: {linked}]"}, main)
 
     assert found.path == linked.resolve()
     assert found.source == FROM_DESCRIPTION
@@ -256,7 +256,7 @@ def test_a_directory_that_only_looks_like_a_repository_is_not_one(tmp_path):
     fake = plain_at(tmp_path / "fake")
     (fake / ".git").mkdir()
 
-    issue = {"project": None, "description": f"Repository: {fake}"}
+    issue = {"project": None, "description": f"[Chord_Working_Path: {fake}]"}
 
     with pytest.raises(ResolutionError, match="isn't a Git repository"):
         resolve(issue, start)
@@ -266,7 +266,7 @@ def test_a_path_that_does_not_exist_is_not_a_repository(tmp_path):
     """The message names the path, so a typo is findable."""
     start = repo_at(tmp_path / "workspace")
 
-    issue = {"project": None, "description": f"Repository: {tmp_path / 'nope'}"}
+    issue = {"project": None, "description": f"[Chord_Working_Path: {tmp_path / 'nope'}]"}
 
     with pytest.raises(ResolutionError, match="nope"):
         resolve(issue, start)

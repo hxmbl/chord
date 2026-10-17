@@ -5,7 +5,7 @@ directory the harness is launched in. In order:
 
 1. The project title, matched against the two places it can plausibly be: the
    directory Chord is rooted at, and a directory of that name inside it.
-2. An explicit `Repository: /path/to/repo` line in the issue description.
+2. An explicit `[Chord_Working_Path: /path/to/repo` line in the issue description.
 3. Chord's own project root, as a fallback — loudly.
 
 The fallback is the part that matters. Plenty of issues carry no project and no
@@ -34,7 +34,7 @@ from chord.text import one_line
 
 # The line in an issue description that explicitly names a repository.
 # Relative paths resolve from the directory Chord is rooted at.
-EXPLICIT_PATH_PREFIX = "Repository:"
+EXPLICIT_PATH_PREFIX = "[Chord_Working_Path:"
 
 # How the repository was chosen, named in the log line for every hand-over.
 FROM_PROJECT = "project title"
@@ -136,7 +136,7 @@ def _find_by_project_name(project_name: str, start_dir: Path) -> Path | None:
 
 
 def _explicit_path(description: object) -> Path | None:
-    """The path from a `Repository:` line, or None when there isn't one.
+    """The path from a `[Chord_Working_Path:` line, or None when there isn't one.
 
     Relative, so that a description stays portable between machines. The first
     such line wins; a second one is a contradiction rather than a preference,
@@ -152,6 +152,8 @@ def _explicit_path(description: object) -> Path | None:
         line = line.strip()
         if line.startswith(EXPLICIT_PATH_PREFIX):
             text = line[len(EXPLICIT_PATH_PREFIX) :].strip()
+            if text.endswith("]"):
+                text = text[:-1].rstrip()
             if text:
                 # `~` first, because it is what a person writes and pathlib
                 # treats it as an ordinary directory name. A description is

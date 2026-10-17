@@ -92,12 +92,12 @@ def test_the_harness_is_given_the_project_root(tmp_path):
 
 
 def test_a_named_repository_reaches_the_harness(tmp_path):
-    """A `Repository:` line moves the work, not just the log."""
+    """A `[Chord_Working_Path:]` line moves the work, not just the log."""
     start = git_repo(tmp_path / "workspace")
     elsewhere = git_repo(tmp_path / "elsewhere" / "billing")
     spy = RecordingHarness("spy")
 
-    stub = LinearStub([issue(1, description=f"Repository: {elsewhere}")])
+    stub = LinearStub([issue(1, description=f"[Chord_Working_Path: {elsewhere}]")])
     w = build(tmp_path, stub, spy, start_dir=start)
     asyncio.run(w.poll())
 
@@ -130,12 +130,12 @@ def test_a_wrong_repository_is_refused_and_retried(tmp_path, monkeypatch, banner
     spy = RecordingHarness("spy")
     said = banners
 
-    stub = LinearStub([issue(1, description=f"Repository: {tmp_path / 'nope'}")])
+    stub = LinearStub([issue(1, description=f"[Chord_Working_Path: {tmp_path / 'nope'}]")])
     w = build(tmp_path, stub, spy, start_dir=start)
     asyncio.run(w.poll())
 
     assert spy.prompts == []
-    assert "isn't a Git repository" in said.bodies[-1]
+    assert "isn't a Git rep" in said.bodies[-1]
 
     # Still offered on the next poll, once the directory exists.
     git_repo(tmp_path / "nope")

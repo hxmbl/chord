@@ -62,7 +62,7 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Linear project name, matched against the project root and a directory of that
   name directly inside it — deliberately bounded, because an unbounded ancestor
   walk matched `$HOME` for a project called `home`
-- A `Repository:` line in the issue description, the fallback for a repository
+- A `[Chord_Working_Path:]` line in the issue description, the fallback for a repository
   that is not a child of the project root; `~` is expanded, relative paths read
   from the project root
 - Falls back to the project root when the issue names nothing, because most

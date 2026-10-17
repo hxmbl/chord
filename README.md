@@ -291,11 +291,11 @@ happened to be started from. Chord decides which one, in this order:
 1. **The Linear project name.** Matched against the directory Chord is rooted
    at, and against a directory of that name directly inside it. Both, and
    nothing else — a project called `home` will not match `$HOME`.
-2. **A `Repository:` line in the issue description.** Write it on its own line;
+2. **A `[Chord_Working_Path:]` line in the issue description.** Write it on its own line;
    relative paths are read from the directory Chord was started in.
 
    ```
-   Repository: ~/Projects/billing
+   [Chord_Working_Path: ~/Projects/billing]
    ```
 3. **The project root**, which is where you started Chord.
 
@@ -309,14 +309,14 @@ of the three it used:
 
 Falling back is what lets Chord work on issues that have no Linear project,
 which is most of them. But the fallback is only used when *nothing* named a
-repository. If a project name or a `Repository:` line points somewhere that
+repository. If a project name or a `[Chord_Working_Path:]` line points somewhere that
 isn't a Git repository, the issue is **skipped, not relocated** — somebody wrote
 that location down, and working somewhere else instead would be worse than not
 working at all. A skipped issue is not recorded as handed over, so it is picked
 up again as soon as the directory is there.
 
 Because that only searches two levels, a repository somewhere else on the
-machine needs the `Repository:` line. That is the whole configuration surface;
+machine needs the `[Chord_Working_Path:]` line. That is the whole configuration surface;
 there is no `chord.toml` setting for it.
 
 ## Notifications
