@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from chord import daemon, harness, watcher
 from chord.cli import app
+from chord.config import load
 
 runner = CliRunner()
 
@@ -340,7 +341,9 @@ def test_start_accepts_curated_harnesses_that_can_run(
 
 def _strip_lead(line: str) -> str:
     """One line of `chord info` with its 13-column indent removed."""
-    return line[len("  labels     ") :] if line.startswith("  labels     ") else line[13:]
+    return (
+        line[len("  labels     ") :] if line.startswith("  labels     ") else line[13:]
+    )
 
 
 def label_column(out: str) -> list[str]:
@@ -400,11 +403,15 @@ def test_info_says_what_the_default_is_when_nothing_is_curated(
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.output
-    assert "Chord  opencode" in result.stdout, "the default route should still be listed"
+    assert "Chord  opencode" in result.stdout, (
+        "the default route should still be listed"
+    )
     assert label_column(result.stdout) == ["Chord"], "and it is the only route"
 
 
-def test_info_showcases_the_labels_it_accepts(keyring_backend, no_env, monkeypatch, tmp_path):
+def test_info_showcases_the_labels_it_accepts(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
     """The list somebody has to create in Linear by hand, as a list.
 
     Chord never creates a label, so this set and the labels in the workspace are
@@ -471,7 +478,9 @@ def test_info_names_the_prefix_the_watch_actually_uses(
     assert "<harness>" not in result.stdout
 
 
-def test_info_says_where_notifications_go(keyring_backend, no_env, monkeypatch, tmp_path):
+def test_info_says_where_notifications_go(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
     """Asked before one is sent, because the failure is invisible by
     construction: a notification that reaches no daemon raises nothing."""
     from chord import notify
@@ -487,7 +496,9 @@ def test_info_says_where_notifications_go(keyring_backend, no_env, monkeypatch, 
     assert "notify     terminal-notifier" in result.stdout
 
 
-def test_info_admits_when_no_notifier_exists(keyring_backend, no_env, monkeypatch, tmp_path):
+def test_info_admits_when_no_notifier_exists(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
     from chord import notify
 
     monkeypatch.chdir(tmp_path)
@@ -553,7 +564,9 @@ def test_help_hides_the_internal_command():
     assert "_serve" not in result.stdout
 
 
-@pytest.mark.parametrize("command", ["setup", "refresh", "start", "stop", "watch", "info"])
+@pytest.mark.parametrize(
+    "command", ["setup", "refresh", "start", "stop", "watch", "info"]
+)
 def test_help_with_a_command_matches_that_command_s_help_flag(command):
     """`chord help start` is what people type when they have forgotten the flags."""
     assert (
@@ -572,7 +585,9 @@ def test_help_for_a_command_names_that_command_in_the_usage():
 @pytest.mark.parametrize("flag", ["--help", "-h"])
 def test_help_with_a_help_flag_is_the_same_request_as_bare_help(flag):
     """`chord help --help` should not report a missing command called `--help`."""
-    assert runner.invoke(app, ["help", flag]).output == runner.invoke(app, ["help"]).output
+    assert (
+        runner.invoke(app, ["help", flag]).output == runner.invoke(app, ["help"]).output
+    )
 
 
 def test_help_for_an_unknown_command_says_so_and_lists_the_real_ones():
@@ -603,3 +618,105 @@ def test_bare_help_succeeds():
 def test_the_help_command_lists_itself():
     """It is a command, so it appears like one. Not hidden, not a special case."""
     assert "help" in runner.invoke(app, ["help"]).stdout
+
+
+# --- init ---
+
+
+def test_init_writes_the_stock_config(no_env, tmp_path):
+    result = runner.invoke(app, ["init"])
+
+    assert result.exit_code == 0, result.output
+    path = tmp_path / ".config" / "chord" / "chord.toml"
+    assert path.is_file()
+    assert "label" in path.read_text() and "harness" in path.read_text()
+    # It must parse as the defaults, not merely as TOML.
+    config = load(path)
+    assert config.from_file
+    assert config.label == "Chord" and config.harness == "opencode"
+    assert config.harnesses == {}
+
+
+def test_init_refuses_to_overwrite(no_env, tmp_path):
+    (tmp_path / ".config" / "chord" / "chord.toml").parent.mkdir(parents=True)
+    (tmp_path / ".config" / "chord" / "chord.toml").write_text('label = "mine"\n')
+
+    result = runner.invoke(app, ["init"])
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert (
+        tmp_path / ".config" / "chord" / "chord.toml"
+    ).read_text() == 'label = "mine"\n'
+
+
+# --- harness add ---
+
+
+def test_harness_add_writes_a_route(no_env, tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "harness",
+            "add",
+            "big-pickle",
+            "--",
+            "opencode",
+            "run",
+            "--model",
+            "big-pickle",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    config = load()
+    assert config.harnesses == {
+        "big-pickle": ["opencode", "run", "--model", "big-pickle"]
+    }
+    assert "Chord/big-pickle" in result.output, "must say which label to create"
+
+
+def test_harness_add_appends_to_an_existing_config(no_env, tmp_path):
+    (tmp_path / "chord.toml").write_text('label = "Ready"\n')
+
+    result = runner.invoke(app, ["harness", "add", "review", "--", "cat"])
+
+    assert result.exit_code == 0, result.output
+    config = load()
+    assert config.label == "Ready", "the rest of the file must survive"
+    assert config.harnesses == {"review": ["cat"]}
+
+
+def test_harness_add_refuses_a_duplicate(no_env):
+    runner.invoke(app, ["harness", "add", "tiny", "--", "cat"])
+
+    result = runner.invoke(app, ["harness", "add", "tiny", "--", "cat"])
+
+    assert result.exit_code == 1
+    assert "already curated" in result.output
+
+
+def test_harness_add_rejects_an_unusable_name(no_env):
+    result = runner.invoke(app, ["harness", "add", "/oops", "--", "cat"])
+
+    assert result.exit_code == 1
+    assert "usable harness name" in result.output
+
+
+def test_harness_add_requires_a_command(no_env):
+    result = runner.invoke(app, ["harness", "add", "tiny"])
+
+    assert result.exit_code != 0
+
+
+def test_harness_add_writes_a_config_that_chord_reads(no_env, monkeypatch, tmp_path):
+    """The point of the command: the route shows up in `chord info`."""
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+    runner.invoke(app, ["harness", "add", "big-pickle", "--", "cat"])
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0, result.output
+    assert "Chord/big-pickle" in result.output
+    assert "cat" in result.output

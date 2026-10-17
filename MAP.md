@@ -5,7 +5,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 
 ## Entry Point
 **`src/chord/cli.py`** - The command-line interface
-- Seven commands: `setup`, `refresh`, `start`, `stop`, `watch`, `info`, `help`
+- Nine commands: `setup`, `init`, `harness add`, `refresh`, `start`, `stop`,
+  `watch`, `info`, `help`
   (`help` forwards to the command you name, and `_serve` is hidden)
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
@@ -29,6 +30,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - `allowed_actors` is a list of Linear **user ids**; ids and not names because
   Linear lets anyone rewrite their own display name
 - All settings have defaults, so Chord works without a config file
+- `init_file()` writes the stock annotated config; `curate()` appends a
+  `[harnesses."<name>"]` table (appending is safe because TOML tables come
+  last), proving the result parses before it lands on disk
 
 ### Routing
 **`src/chord/routing.py`** - Which harness an issue goes to

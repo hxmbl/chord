@@ -15,7 +15,15 @@ import typer
 import typer.core
 
 from chord import credentials, daemon, notify, subscribe, watcher
-from chord.config import SEPARATOR, Config, ConfigError, load
+from chord.config import (
+    SEPARATOR,
+    AlreadyCurated,
+    Config,
+    ConfigError,
+    curate,
+    init_file,
+    load,
+)
 from chord.harness import HarnessError
 from chord.linear import Linear
 from chord.paths import project_root
@@ -38,6 +46,53 @@ def setup():
         _fail(message)
     typer.echo("Connected to Linear.")
     typer.echo("Next: `chord start` to begin watching.")
+
+
+@app.command()
+def init():
+    """Write the stock `.config/chord/chord.toml` for this directory."""
+    try:
+        path = init_file()
+    except ConfigError as exc:
+        _fail(str(exc))
+    typer.echo(f"Wrote {path}.")
+    typer.echo("Every setting is there at its default, with a comment. Commit it.")
+
+
+harness_app = typer.Typer(
+    help="Curated harnesses in chord.toml.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(harness_app, name="harness")
+
+
+@harness_app.command("add")
+def harness_add(
+    name: str = typer.Argument(..., help="What a `Chord/<name>` label routes to."),
+    command: list[str] = typer.Argument(
+        ..., help="The command to run, with the issue on stdin. Use `--` first."
+    ),
+):
+    """Add `[harnesses."<name>"]` to chord.toml.
+
+    Creates the stock chord.toml if there isn't one. The name is what a
+    `Chord/<name>` Linear label selects — you still create that label by
+    hand, because Chord never creates one.
+    """
+    try:
+        path, created = curate(name, command)
+    except AlreadyCurated as exc:
+        _fail(str(exc))
+    except ConfigError as exc:
+        _fail(str(exc))
+    verb = "Wrote" if created else "Added to"
+    label = SEPARATOR.join([load(path).label, name])
+    typer.echo(f"{verb} {path}.")
+    typer.echo(
+        f"Create the label {label!r} in Linear by hand — Chord never creates one."
+    )
+    typer.echo("`chord info` lists every label Chord acts on.")
 
 
 @app.command()
@@ -78,8 +133,8 @@ def start():
 
     if not config.from_file:
         typer.echo(
-            f"No {config.path} here, so those are Chord's defaults. Write that "
-            "file to change them; the README has the annotated version."
+            f"No {config.path} here, so those are Chord's defaults. "
+            "`chord init` writes that file."
         )
 
     typer.echo(f"Watching in the background (pid {pid}).")
@@ -168,8 +223,8 @@ def info():
     if not config.from_file:
         typer.echo("")
         typer.echo(
-            f"No {config.path} here, so those are Chord's defaults. Write that "
-            "file to change them; the README has the annotated version."
+            f"No {config.path} here, so those are Chord's defaults. "
+            "`chord init` writes that file."
         )
 
     if pid is None:
@@ -428,7 +483,9 @@ def _authorisation(config: Config) -> list[str]:
         # not show you yours, and `chord info` is the only place that can.
         lines.append(f"             yours: {yours}")
         if yours not in config.allowed_actors:
-            lines.append("             which is NOT in allowed_actors — Chord won't run your work")
+            lines.append(
+                "             which is NOT in allowed_actors — Chord won't run your work"
+            )
     return lines
 
 

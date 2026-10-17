@@ -6,6 +6,7 @@ yours: which label triggers a run, what should do the work, and what the extra
 named harnesses are.
 """
 
+import json
 import shlex
 import tomllib
 import uuid
@@ -59,6 +60,94 @@ class ConfigError(Exception):
 def spell(spec: HarnessSpec) -> str:
     """How to name a harness in a sentence or a log line."""
     return spec if isinstance(spec, str) else " ".join(spec)
+
+
+# What `chord init` writes: every setting, at its default, annotated. It holds
+# no secrets, so it is safe to commit — which is the point, since the curation
+# table is per-project and belongs with the code.
+STOCK = """\
+# Chord's settings. Every entry is optional — the comments say what each one
+# does and what the default is. Commit this file; it holds no secrets.
+
+# The label that triggers a run. Default: "Chord".
+label = "Chord"
+
+# What does the work by default. Default: "opencode".
+harness = "opencode"
+
+# Seconds between checks of Linear. Default: 60, floor 5.
+interval = 60
+
+# Local webhook listener. Default: 23842; use 0 for an ephemeral test port.
+webhook_port = 23842
+
+# Shared secret for the webhook, sent as the X-Chord-Secret header. Default:
+# "" — no authentication. See "Webhooks" in the README before setting one.
+webhook_secret = ""
+
+# Who may trigger a run. Default: everyone in the workspace — read "Who can
+# trigger a run" in the README before leaving it that way. `chord info`
+# prints your Linear user id.
+# allowed_actors = ["11111111-1111-1111-1111-111111111111"]
+
+# Extra named harnesses: a `Chord/<name>` label routes to the one called
+# `<name>`. `chord harness add` writes these for you. Tables come last —
+# everything after a `[table]` header belongs to it, so the settings above
+# must be written before the first one of these.
+#
+# [harnesses."opencode/big-pickle"]
+# command = ["opencode", "run", "--model", "big-pickle"]
+"""
+
+
+class AlreadyCurated(Exception):
+    """The name already has a harness behind it."""
+
+
+def init_file() -> Path:
+    """Write the stock chord.toml for this directory. Refuses to overwrite."""
+    path, exists = config_path()
+    if exists:
+        raise ConfigError(f"{path} already exists — this would overwrite it.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(STOCK)
+    return path
+
+
+def curate(name: str, argv: list[str]) -> tuple[Path, bool]:
+    """Add `[harnesses."<name>"]` to the project config, writing the stock
+    file first if there isn't one. Returns (path, whether the file was new).
+
+    The table is appended, which is safe because TOML tables come last:
+    everything after a `[table]` header belongs to that table, so a new one
+    at the end of the file cannot disturb what is already there.
+    """
+    if not usable_harness_name(name):
+        raise ConfigError(
+            f"{name!r} isn't a usable harness name: a non-empty string with "
+            f'no leading, trailing or doubled {SEPARATOR!r}, like "big-pickle" '
+            f'or "opencode/tiny".'
+        )
+    if not argv or not any(part.strip() for part in argv):
+        raise ConfigError("The harness command is empty.")
+
+    path, exists = config_path()
+    if exists and name in load(path).harnesses:
+        raise AlreadyCurated(f"{name!r} is already curated in {path}.")
+    text = path.read_text() if exists else STOCK
+    quoted = ", ".join(json.dumps(part) for part in argv)
+    block = f"\n[harnesses.{json.dumps(name)}]\ncommand = [{quoted}]\n"
+    text = text.rstrip("\n") + "\n" + block
+    # Prove the result parses before it lands on disk: a name or argument
+    # that can't be spelled in TOML is a mistake now, not a config error
+    # that stops `chord start` later.
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:  # pragma: no cover - defensive
+        raise ConfigError(f"Writing {name!r} would make {path} invalid: {exc}.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path, not exists
 
 
 @dataclass(frozen=True)
@@ -216,7 +305,7 @@ def _allowed_actors(value: object, path: Path) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ConfigError(
             f"`allowed_actors` in {path} has to be a list of Linear user ids, "
-            "even for one of them: `allowed_actors = [\"<id>\"]`. "
+            'even for one of them: `allowed_actors = ["<id>"]`. '
             "`chord info` prints yours."
         )
 

@@ -105,10 +105,12 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 
 ## Commands
 
-| Command            | What it does                                            |
-| ------------------ | ------------------------------------------------------- |
-| `chord setup`      | Connect Chord to Linear. Once.                          |
-| `chord start`      | Watch in the background.                                |
+| Command                  | What it does                                            |
+| ------------------------ | ------------------------------------------------------- |
+| `chord setup`            | Connect Chord to Linear. Once.                          |
+| `chord init`             | Write the stock `chord.toml`, annotated.               |
+| `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
+| `chord start`            | Watch in the background.                                |
 | `chord stop`       | Stop watching.                                          |
 | `chord watch`      | Follow the log, live.                                   |
 | `chord info`       | Show the settings, the labels Chord acts on, and the state. |
@@ -122,10 +124,18 @@ to reach for when something isn't happening.
 
 ## chord.toml
 
-Chord runs with no config file. Write `.config/chord/chord.toml` in your
-project when you want to change the harness, the curated harnesses, the label,
-or the webhook port. A user config at `~/.chord/chord.toml` is also supported;
-the project config wins.
+Chord runs with no config file. `chord init` writes
+`.config/chord/chord.toml` in your project — every setting at its default,
+each with a comment — and `chord harness add NAME -- CMD ...` curates a
+harness for you, creating the file if there isn't one:
+
+```bash
+uv run chord harness add big-pickle -- opencode run --model big-pickle
+```
+
+It prints the `Chord/<name>` label to create in Linear, because Chord never
+creates a label itself. A user config at `~/.chord/chord.toml` is also
+supported; the project config wins.
 
 ```toml
 # The label that triggers a run. Default: "Chord".
