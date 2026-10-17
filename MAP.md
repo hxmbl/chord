@@ -50,10 +50,28 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Tracks which issues have been handed over in `state.json`
 - Processes issues oldest-first (by `createdAt`)
 - Hands each issue to the harness its labels select
+- Resolves the repository after authorisation, and hands it to the harness as
+  its working directory (`repo.py`)
 - Announces one banner per issue: received, failed, skipped, or refused — the
   paths that used to be log-only now say so out loud
 - Never raises: logs problems and continues
 - Integrates with webhooks and subscriptions for faster response
+
+### Repository Resolution
+**`src/chord/repo.py`** - Which repository a Linear issue is worked on in
+- Linear project name, matched against the project root and a directory of that
+  name directly inside it — deliberately bounded, because an unbounded ancestor
+  walk matched `$HOME` for a project called `home`
+- A `Repository:` line in the issue description, the fallback for a repository
+  that is not a child of the project root; `~` is expanded, relative paths read
+  from the project root
+- Falls back to the project root when the issue names nothing, because most
+  issues carry no Linear project; every hand-over logs which rule was used
+- A location that is named but is not a Git repository is an error, not a
+  reason to try somewhere else — and such an issue is not recorded as handed
+  over, so it is retried once the directory is there
+- Detects repositories by asking Git for its top level rather than looking for a
+  `.git` entry, which is a file in a linked worktree and a directory elsewhere
 
 **`src/chord/linear.py`** - GraphQL API interactions
 - Reads issues matching a route filter with pagination (up to 1000 per poll)

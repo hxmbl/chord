@@ -283,6 +283,42 @@ access to your workspace could do on purpose.
 naming a command that isn't installed is reported by the command rather than by
 the first issue that trips it.
 
+## Where the work happens
+
+A harness is launched **in a repository**, not in whatever directory the daemon
+happened to be started from. Chord decides which one, in this order:
+
+1. **The Linear project name.** Matched against the directory Chord is rooted
+   at, and against a directory of that name directly inside it. Both, and
+   nothing else — a project called `home` will not match `$HOME`.
+2. **A `Repository:` line in the issue description.** Write it on its own line;
+   relative paths are read from the directory Chord was started in.
+
+   ```
+   Repository: ~/Projects/billing
+   ```
+3. **The project root**, which is where you started Chord.
+
+The third one is the common case, not a failure, and every hand-over says which
+of the three it used:
+
+```
+  repository /Users/you/Projects/billing (project title)
+  repository /Users/you/Projects/chord (project root (fallback))
+```
+
+Falling back is what lets Chord work on issues that have no Linear project,
+which is most of them. But the fallback is only used when *nothing* named a
+repository. If a project name or a `Repository:` line points somewhere that
+isn't a Git repository, the issue is **skipped, not relocated** — somebody wrote
+that location down, and working somewhere else instead would be worse than not
+working at all. A skipped issue is not recorded as handed over, so it is picked
+up again as soon as the directory is there.
+
+Because that only searches two levels, a repository somewhere else on the
+machine needs the `Repository:` line. That is the whole configuration surface;
+there is no `chord.toml` setting for it.
+
 ## Notifications
 
 **One banner per issue, whichever way it went.** Four outcomes, four verbs:

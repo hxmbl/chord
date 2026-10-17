@@ -63,7 +63,7 @@ def run_once(tmp_path, label_names):
         def __init__(self, spec):
             self.name = spec
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             ran.append(self.name)
 
     router = Router("Chord", "DEFAULT", CURATED, factory=Harness)

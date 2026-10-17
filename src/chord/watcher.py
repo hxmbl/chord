@@ -16,6 +16,8 @@ from chord import daemon, logging, notify, subscribe
 from chord.context import Issue, render
 from chord.harness import HarnessError
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
+from chord.paths import project_root
+from chord.repo import ResolutionError, resolve
 from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label
 from chord.subscribe import Subscription
 from chord.text import one_line
@@ -159,6 +161,7 @@ class Watcher:
         subscription: Subscription | None = None,
         webhook: Webhook | None = None,
         renew: Callable[[], str | None] | None = None,
+        start_dir: Path | None = None,
     ) -> None:
         self._linear = linear
         self._router = router
@@ -175,6 +178,9 @@ class Watcher:
         # The last token this process adopted, so a keychain read that hands
         # back the same dead string is recognised as not-a-renewal.
         self._adopted: str | None = None
+        # The directory where Chord was started, used as the base for repository
+        # resolution. Falls back to the project root if not specified.
+        self._start_dir = start_dir or project_root()
 
     @property
     def handed_over(self) -> int:
@@ -478,10 +484,30 @@ class Watcher:
             self._remember(issue_id)
             return
 
+        # Where the work happens. After authorisation and after the route is
+        # known, because neither of those can act without it and an issue
+        # refused on either ground shouldn't have its repository touched.
+        try:
+            where = resolve(issue, self._start_dir)
+        except ResolutionError as exc:
+            # Not recorded, unlike every other skip here. Those are about the
+            # issue — a bad label, a missing harness — and recording them stops
+            # a retry loop. This one is about the machine: a directory is
+            # missing or isn't a repository, and that gets fixed, so recording
+            # the issue as handed over would throw away work nobody had done.
+            # `_problem` only logs the first time in a row, so polling on it is
+            # quiet and picks the issue up as soon as the directory is there.
+            _spacer()
+            self._problem(f"{identifier} skipped: {one_line(str(exc))}")
+            await notify.skipped(identifier, str(exc))
+            return
+
         if chosen.route != DEFAULT_ROUTE:
             # Only for a narrowed route. `run()` already said what the default
             # is, and repeating it on every issue would be noise.
             log(f"  route      {route_label(self._router.label, chosen.route)}")
+
+        log(f"  repository {where.path} ({where.source})")
 
         comments: list[dict[str, Any]] = []
         try:
@@ -495,9 +521,11 @@ class Watcher:
         # it happens: a harness can run for half an hour, and the news is that
         # work started where you didn't start it. Naming the harness is also the
         # point of the body — it is the only place you get told where it went.
+        # It is announced before the harness runs, so a launch that fails is
+        # superseded by `notify.failed` below rather than standing on its own.
         await notify.received(identifier, harness.name)
         try:
-            await harness.send(render({**issue, "comments": comments}))
+            await harness.send(render({**issue, "comments": comments}), cwd=where.path)
         except HarnessError as exc:
             # Recorded as handed over even though it wasn't, on purpose. A
             # harness that is simply missing would otherwise be retried on

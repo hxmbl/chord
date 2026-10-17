@@ -223,7 +223,7 @@ def test_an_unexpected_failure_records_the_issue_and_says_how_to_retry(
     class Exploding:
         name = "boom"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise ValueError("something nobody predicted")
 
     class Stub:
@@ -261,7 +261,7 @@ def test_the_rest_of_the_backlog_still_gets_its_turn(tmp_path):
     class Flaky:
         name = "flaky"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             issue = prompt.split()[1]
             calls.append(issue)
             if issue == "ENG-1":
@@ -303,7 +303,7 @@ def test_a_harness_failure_is_still_recorded_as_before(tmp_path, capsys):
     class Missing:
         name = "missing"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise HarnessError("`nope` isn't on your PATH.")
 
     class Stub:
@@ -331,7 +331,7 @@ def test_the_failure_reason_cannot_forge_a_log_line(tmp_path, capsys):
     class Hostile:
         name = "hostile"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise ValueError("\x1b[2J\x1b[H 2026-01-01 00:00:00  handed over.")
 
     class Stub:
@@ -357,26 +357,6 @@ def test_the_failure_reason_cannot_forge_a_log_line(tmp_path, capsys):
 # --- one banner per issue, whichever way it went ---
 
 
-class Banners:
-    """Records the banners a run would have posted.
-
-    Patched at `notify.send` rather than at the four verbs, because the verbs
-    take `(thing, why)` and the thing worth asserting on is the title and body a
-    person actually reads — the whole point of `send` is that those two halves
-    cannot be assembled wrongly at the call site.
-    """
-
-    def __init__(self):
-        self.said: list[tuple[str, str]] = []
-
-    async def send(self, title, message, *, group=None):
-        self.said.append((title, message))
-
-    @property
-    def titles(self) -> list[str]:
-        return [title for title, _ in self.said]
-
-
 def stub_linear(issue):
     class Stub:
         async def issues_for(self, filter):
@@ -389,12 +369,6 @@ def stub_linear(issue):
             return []
 
     return Stub()
-
-
-def banners(monkeypatch):
-    rec = Banners()
-    monkeypatch.setattr(notify, "send", rec.send)
-    return rec
 
 
 def spy_router(allowed_actors=(), harnesses=None, fail=None):
@@ -412,7 +386,7 @@ def spy_router(allowed_actors=(), harnesses=None, fail=None):
     )
 
 
-def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path):
+def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path, banners):
     """Received and sent, in one banner.
 
     It announced the hand-over twice — "started", then "finished" — which is two
@@ -420,7 +394,7 @@ def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path):
     That is how a notification gets ignored, and the second banner only ever
     repeated that the first one had already said.
     """
-    said = banners(monkeypatch)
+    said = banners
 
     async def scenario():
         w = watcher.Watcher(
@@ -451,7 +425,7 @@ def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path):
 )
 def test_every_way_an_issue_does_not_get_worked_on_says_so(
     monkeypatch, tmp_path, case
-):
+, banners):
     """The paths that used to only write to the log.
 
     An issue that stops without a banner looks exactly like an issue being worked
@@ -459,7 +433,7 @@ def test_every_way_an_issue_does_not_get_worked_on_says_so(
     for a week. The log has all of this, but the log is read by somebody who
     already suspects something.
     """
-    said = banners(monkeypatch)
+    said = banners
 
     def factory(spec):
         if case.get("factory") == "raises":
@@ -489,7 +463,7 @@ def test_every_way_an_issue_does_not_get_worked_on_says_so(
     assert body, "a bare title tells nobody what went wrong"
 
 
-def test_a_failure_supersedes_the_banner_that_said_it_had_started(monkeypatch, tmp_path):
+def test_a_failure_supersedes_the_banner_that_said_it_had_started(monkeypatch, tmp_path, banners):
     """Two outcomes for one issue, not two problems to read.
 
     A hand-over announces itself before the harness runs, because a run can take
@@ -498,7 +472,7 @@ def test_a_failure_supersedes_the_banner_that_said_it_had_started(monkeypatch, t
     announcement rather than joining it — they share a group, and the newest is
     the one still true.
     """
-    said = banners(monkeypatch)
+    said = banners
 
     async def scenario():
         router = Router(
@@ -516,14 +490,14 @@ def test_a_failure_supersedes_the_banner_that_said_it_had_started(monkeypatch, t
     assert said.titles == ["ENG-1 received", "ENG-1 failed"]
 
 
-def test_a_refusal_names_who_and_why(monkeypatch, tmp_path):
+def test_a_refusal_names_who_and_why(monkeypatch, tmp_path, banners):
     """The one banner that is not really about the issue.
 
     It is the only record that somebody asked this machine to run a command and
     was stopped, so it has to say who asked — a refusal with no subject is just
     an issue that mysteriously didn't run.
     """
-    said = banners(monkeypatch)
+    said = banners
 
     class Stub:
         async def issues_for(self, filter):
@@ -557,7 +531,7 @@ def test_a_refusal_names_who_and_why(monkeypatch, tmp_path):
     assert "stranger" in body and "allowed_actors" in body
 
 
-def test_nothing_being_handed_over_is_still_quiet(monkeypatch, tmp_path):
+def test_nothing_being_handed_over_is_still_quiet(monkeypatch, tmp_path, banners):
     """The rule has a boundary, and it is worth having.
 
     One banner per *issue that had its chance*, not one per poll. A watcher
@@ -568,7 +542,7 @@ def test_nothing_being_handed_over_is_still_quiet(monkeypatch, tmp_path):
         async def issues_for(self, filter):
             return IssuePage([], False)
 
-    said = banners(monkeypatch)
+    said = banners
 
     async def scenario():
         w = watcher.Watcher(
@@ -582,14 +556,14 @@ def test_nothing_being_handed_over_is_still_quiet(monkeypatch, tmp_path):
     assert said.said == []
 
 
-def test_an_issue_with_no_id_is_not_announced(monkeypatch, tmp_path):
+def test_an_issue_with_no_id_is_not_announced(monkeypatch, tmp_path, banners):
     """There is no identifier to name it by, and the log already has it.
 
     Linear handing back an issue with no id is a malformed answer, not an event
     in the backlog, and it is logged as such. A banner with an empty title would
     be worse than none.
     """
-    said = banners(monkeypatch)
+    said = banners
 
     async def scenario():
         w = watcher.Watcher(
@@ -605,13 +579,13 @@ def test_an_issue_with_no_id_is_not_announced(monkeypatch, tmp_path):
     assert said.said == []
 
 
-def test_a_discussion_that_could_not_be_read_is_not_announced(monkeypatch, tmp_path):
+def test_a_discussion_that_could_not_be_read_is_not_announced(monkeypatch, tmp_path, banners):
     """Work still happened, so there is nothing to announce.
 
     The missing comments are a degradation and the log says so. A banner for it
     would be noise on top of the one that says the work started.
     """
-    said = banners(monkeypatch)
+    said = banners
 
     class Stub:
         async def issues_for(self, filter):
@@ -658,7 +632,7 @@ def test_an_odd_issue_still_reaches_the_harness(tmp_path, mutation):
     class Harness:
         name = "spy"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             seen.append(prompt)
 
     class Stub:

@@ -18,6 +18,7 @@ from chord import credentials, daemon, notify, subscribe, watcher
 from chord.config import SEPARATOR, Config, ConfigError, load
 from chord.harness import HarnessError
 from chord.linear import Linear
+from chord.paths import project_root
 from chord.routing import Router
 from chord.watcher import StateError
 from chord.webhook import Webhook
@@ -278,6 +279,9 @@ async def _watch() -> None:
             # refuses one is what lets a `chord refresh` heal a running daemon
             # instead of needing a restart nobody remembers to do.
             renew=lambda: _try_token(),
+            # The directory where Chord was started, used as the base for
+            # repository resolution.
+            start_dir=project_root(),
         )
     except StateError as exc:
         watcher.log(str(exc))

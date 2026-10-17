@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import signal
+from pathlib import Path
 from typing import Protocol
 
 from chord import logging
@@ -67,7 +68,7 @@ class HarnessError(Exception):
 class Harness(Protocol):
     name: str
 
-    async def send(self, prompt: str) -> None: ...
+    async def send(self, prompt: str, cwd: Path | None = None) -> None: ...
 
 
 class PrintHarness:
@@ -79,7 +80,9 @@ class PrintHarness:
 
     name = "print"
 
-    async def send(self, prompt: str) -> None:
+    async def send(self, prompt: str, cwd: Path | None = None) -> None:
+        if cwd:
+            logging.write(f"# Working directory: {cwd}\n")
         logging.write(prompt)
 
 
@@ -153,7 +156,7 @@ class CommandHarness:
         self.argv = argv
         self.name = " ".join(argv)
 
-    async def send(self, prompt: str) -> None:
+    async def send(self, prompt: str, cwd: Path | None = None) -> None:
         try:
             process = await asyncio.create_subprocess_exec(
                 *self.argv,
@@ -167,6 +170,7 @@ class CommandHarness:
                 # never returns and the watcher is stuck rather than reporting
                 # the timeout it just detected.
                 start_new_session=True,
+                cwd=str(cwd) if cwd else None,
             )
         except FileNotFoundError as exc:
             raise HarnessError(f"`{self.argv[0]}` isn't on your PATH.") from exc

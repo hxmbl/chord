@@ -70,7 +70,7 @@ class Counting:
     def __init__(self):
         self.runs = 0
 
-    async def send(self, prompt):
+    async def send(self, prompt, cwd=None):
         self.runs += 1
 
 
@@ -83,7 +83,7 @@ class Escapes(Counting):
         super().__init__()
         self.exc = exc or KeyboardInterrupt("power cut")
 
-    async def send(self, prompt):
+    async def send(self, prompt, cwd=None):
         await super().send(prompt)
         raise self.exc
 
@@ -163,7 +163,7 @@ def test_cancellation_still_reaches_the_watcher(tmp_path):
     class Cancels:
         name = "cancelling"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise asyncio.CancelledError
 
     w = build(tmp_path, Cancels())
@@ -181,7 +181,7 @@ def test_a_harness_failure_is_unaffected(tmp_path):
     class Missing:
         name = "missing"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise HarnessError("`nope` isn't on your PATH.")
 
     w = build(tmp_path, Missing())
@@ -281,7 +281,7 @@ class Stub:
 
 class H:
     name = "h"
-    async def send(self, prompt):
+    async def send(self, prompt, cwd=None):
         print("WORK DONE", flush=True)
         os.kill(os.getpid(), signal.SIGKILL)
 

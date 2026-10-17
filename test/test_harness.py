@@ -375,6 +375,42 @@ def test_a_missing_command_is_still_a_clean_error():
         asyncio.run(harness.send("x"))
 
 
+def test_the_harness_runs_in_the_repository_it_was_given(tmp_path):
+    """The directory reaches the process, not just the log line above it.
+
+    Proved by having the harness write a file, because a log line saying where
+    the work happened while the process disagrees is exactly the failure this
+    is here to rule out.
+    """
+    elsewhere = tmp_path / "the-repo"
+    elsewhere.mkdir()
+
+    harness = CommandHarness(["sh", "-c", "cat > where.txt"])
+    asyncio.run(harness.send("the issue body", cwd=elsewhere))
+
+    assert (elsewhere / "where.txt").read_text() == "the issue body"
+    assert not (tmp_path / "where.txt").exists(), "wrote to Chord's own directory"
+
+
+def test_without_a_repository_the_harness_keeps_chords_own_directory(
+    tmp_path, monkeypatch
+):
+    """No repository given means Chord's own directory, which is the old behaviour.
+
+    Asserted rather than left as "it didn't raise", because what is worth
+    protecting here is that adding a repository argument didn't quietly move
+    the default at the same time.
+    """
+    here = tmp_path / "chords-own"
+    here.mkdir()
+    monkeypatch.chdir(here)
+
+    harness = CommandHarness(["sh", "-c", "touch ran-here"])
+    asyncio.run(harness.send("x"))
+
+    assert (here / "ran-here").exists()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_sigkill_reaches_a_grandchild(monkeypatch):
     """Direct proof that the group signal is what does the work.

@@ -257,7 +257,7 @@ class Stub:
 class Spy:
     name = "spy"
 
-    async def send(self, prompt):
+    async def send(self, prompt, cwd=None):
         pass
 
 
@@ -323,7 +323,7 @@ def test_linear_error_text_is_flattened_too(monkeypatch):
     class Refuses:
         name = "refuses"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             seen.append(prompt)
 
     class L:

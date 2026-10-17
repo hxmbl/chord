@@ -154,7 +154,7 @@ def test_cancellation_still_propagates(tmp_path):
     w = _watcher(tmp_path, [{"id": "1", "identifier": "E-1"}])
 
     class Cancel(RecordingHarness):
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise asyncio.CancelledError
 
     w = _watcher(tmp_path, [{"id": "1", "identifier": "E-1"}], Cancel())

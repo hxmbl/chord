@@ -74,6 +74,7 @@ query IssuesByRoute($filter: IssueFilter!, $first: Int!, $after: String) {
       state { name }
       labels { nodes { name } }
       creator { id name }
+      project { name }
     }
     pageInfo { hasNextPage endCursor }
   }

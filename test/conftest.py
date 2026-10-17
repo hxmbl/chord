@@ -3,6 +3,7 @@ test run can never read or write a real one."""
 
 import json
 import time
+from pathlib import Path
 
 import keyring
 import pytest
@@ -91,17 +92,60 @@ class RecordingHarness:
     Most tests aren't about a harness. They're about which route was chosen, so
     they need something that records the prompt without running an agent. One
     definition here rather than four that differ only in `name`.
+
+    Records the working directory it was handed as well as the prompt, because
+    that is what a real `CommandHarness` does with it and the tests that care
+    about where the work happens can only prove it through this.
     """
 
     def __init__(self, name: str = "stub", fail: Exception | None = None) -> None:
         self.name = name
         self.prompts: list[str] = []
+        self.working_directories: list[Path | None] = []
         self.fail = fail
 
-    async def send(self, prompt: str) -> None:
+    async def send(self, prompt: str, cwd: Path | None = None) -> None:
+        # Recorded before the failure check: a harness that can't be launched
+        # was still given a directory, and that is worth being able to assert.
+        self.working_directories.append(cwd)
         if self.fail:
             raise self.fail
         self.prompts.append(prompt)
+
+
+class Banners:
+    """Records the banners a run would have posted.
+
+    Patched at `notify.send` rather than at the verbs, because the verbs take
+    `(thing, why)` and the thing worth asserting on is the title and body a
+    person actually reads — the whole point of `send` is that those two halves
+    cannot be assembled wrongly at the call site.
+
+    Lives here rather than in the delivery tests because "what did this run
+    tell the user" is asked about by more than delivery.
+    """
+
+    def __init__(self):
+        self.said: list[tuple[str, str]] = []
+
+    async def send(self, title, message, *, group=None):
+        self.said.append((title, message))
+
+    @property
+    def titles(self) -> list[str]:
+        return [title for title, _ in self.said]
+
+    @property
+    def bodies(self) -> list[str]:
+        return [body for _, body in self.said]
+
+
+@pytest.fixture
+def banners(monkeypatch):
+    """Capture the notifications a run would have posted."""
+    rec = Banners()
+    monkeypatch.setattr(notify, "send", rec.send)
+    return rec
 
 
 def router_for(

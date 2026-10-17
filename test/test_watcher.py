@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import subprocess
 
 import pytest
 from conftest import RecordingHarness, router_for
@@ -55,13 +56,129 @@ def issue(n, **extra):
     }
 
 
-def build(tmp_path, linear_stub, harness_stub=None, harnesses=None, name="spy"):
+def build(
+    tmp_path, linear_stub, harness_stub=None, harnesses=None, name="spy", start_dir=None
+):
     return watcher.Watcher(
         linear_stub,
         router_for(harness_stub, harnesses=harnesses, name=name),
         1,
         tmp_path / "state.json",
+        start_dir=start_dir,
     )
+
+
+def git_repo(path):
+    """A directory at `path` that `git` will work in."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True, capture_output=True)
+    return path
+
+
+def test_the_harness_is_given_the_project_root(tmp_path):
+    """An issue that names no repository is worked on where Chord was started.
+
+    The end-to-end version of the fallback: the directory the watcher resolved
+    is the directory the harness was actually handed, not merely one mentioned
+    in the log.
+    """
+    start = git_repo(tmp_path / "workspace")
+    spy = RecordingHarness("spy")
+
+    w = build(tmp_path, LinearStub([issue(1)]), spy, start_dir=start)
+    asyncio.run(w.poll())
+
+    assert spy.working_directories == [start]
+
+
+def test_a_named_repository_reaches_the_harness(tmp_path):
+    """A `Repository:` line moves the work, not just the log."""
+    start = git_repo(tmp_path / "workspace")
+    elsewhere = git_repo(tmp_path / "elsewhere" / "billing")
+    spy = RecordingHarness("spy")
+
+    stub = LinearStub([issue(1, description=f"Repository: {elsewhere}")])
+    w = build(tmp_path, stub, spy, start_dir=start)
+    asyncio.run(w.poll())
+
+    assert spy.working_directories == [elsewhere.resolve()]
+
+
+def test_the_project_title_moves_the_work(tmp_path):
+    """A Linear project naming a directory beside the root."""
+    start = git_repo(tmp_path / "workspace")
+    billing = git_repo(start / "billing")
+    spy = RecordingHarness("spy")
+
+    stub = LinearStub([issue(1, project={"name": "billing"})])
+    w = build(tmp_path, stub, spy, start_dir=start)
+    asyncio.run(w.poll())
+
+    assert spy.working_directories == [billing]
+
+
+def test_a_wrong_repository_is_refused_and_retried(tmp_path, monkeypatch, banners):
+    """A bad path stops the hand-over, and the issue is still retried.
+
+    Not recorded, because nothing was handed over — and the missing directory
+    is the kind of thing somebody fixes. Recording it would write the issue
+    into `handed_over` and lose the work permanently, which is the one outcome
+    a repository mistake must never cause.
+    """
+    start = plain = tmp_path / "workspace"
+    plain.mkdir()
+    spy = RecordingHarness("spy")
+    said = banners
+
+    stub = LinearStub([issue(1, description=f"Repository: {tmp_path / 'nope'}")])
+    w = build(tmp_path, stub, spy, start_dir=start)
+    asyncio.run(w.poll())
+
+    assert spy.prompts == []
+    assert "isn't a Git repository" in said.bodies[-1]
+
+    # Still offered on the next poll, once the directory exists.
+    git_repo(tmp_path / "nope")
+    asyncio.run(w.poll())
+
+    assert len(spy.prompts) == 1, "the issue was not picked up again"
+    assert "Issue 1" in spy.prompts[0]
+    assert spy.working_directories == [(tmp_path / "nope").resolve()]
+
+
+def test_a_refused_issue_never_touches_a_repository(tmp_path, monkeypatch, banners):
+    """Authorisation is checked before Chord goes looking for the work.
+
+    An issue nobody was allowed to request should not have its filesystem
+    probed and should not produce a notice saying where Chord thought it was
+    going. Both are things an unauthorised person can learn from.
+    """
+    start = git_repo(tmp_path / "workspace")
+    spy = RecordingHarness("spy")
+    said = banners
+
+    stub = LinearStub(
+        [issue(1, project={"name": "billing"})],
+        history=[],
+    )
+    w = watcher.Watcher(
+        stub,
+        router_for(spy, label="Chord"),
+        1,
+        tmp_path / "state.json",
+        start_dir=start,
+    )
+    w._authorise = _refuse
+    asyncio.run(w.poll())
+
+    assert spy.prompts == []
+    assert spy.working_directories == [], "resolved a repository for a refused issue"
+    assert all("repository" not in body for body in said.bodies)
+
+
+async def _refuse(self, issue, identifier, issue_id, chosen):
+    """An authorisation that says no, without touching state."""
+    return False
 
 
 def test_hands_over_each_new_issue(tmp_path):
@@ -153,7 +270,7 @@ def test_a_missing_harness_is_recorded_anyway(tmp_path, capsys):
     class Broken:
         name = "broken"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             raise harnesses.HarnessError("`nope` isn't on your PATH.")
 
     stub = LinearStub([issue(1), issue(2)])

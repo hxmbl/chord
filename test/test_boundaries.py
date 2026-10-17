@@ -59,7 +59,7 @@ class Spy:
     def __init__(self):
         self.prompts: list[str] = []
 
-    async def send(self, prompt):
+    async def send(self, prompt, cwd=None):
         self.prompts.append(prompt)
 
 

@@ -102,7 +102,7 @@ def test_the_state_file_is_not_world_readable(session, tmp_path):
     class Spy:
         name = "spy"
 
-        async def send(self, prompt):
+        async def send(self, prompt, cwd=None):
             pass
 
     daemon._ensure_home()
