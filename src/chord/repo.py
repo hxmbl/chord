@@ -5,7 +5,9 @@ directory the harness is launched in. In order:
 
 1. The project title, matched against the two places it can plausibly be: the
    directory Chord is rooted at, and a directory of that name inside it.
-2. An explicit `[Chord_Working_Path: /path/to/repo` line in the issue description.
+2. An explicit `[Chord_Working_Path: "/path/to/repo"]` line in the issue
+   description. The path is quoted, and the name matches in any case, because
+   both are typed by hand.
 3. Chord's own project root, as a fallback — loudly.
 
 The fallback is the part that matters. Plenty of issues carry no project and no
@@ -33,6 +35,8 @@ from chord import logging
 from chord.text import one_line
 
 # The line in an issue description that explicitly names a repository.
+# Matched in any case, since it is typed by hand; the path it carries must be
+# in single or double quotes, so that spaces inside it stay inside it.
 # Relative paths resolve from the directory Chord is rooted at.
 EXPLICIT_PATH_PREFIX = "[Chord_Working_Path:"
 
@@ -72,7 +76,7 @@ def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
                 f"The project '{project_name}' matched {found}, which isn't a Git "
                 f"repository. Either make it one, or rename the directory to "
                 f"'{project_name}', or put an explicit "
-                f"`{EXPLICIT_PATH_PREFIX} /absolute/path` line in the description."
+                f'`{EXPLICIT_PATH_PREFIX} "/absolute/path"]` line in the description.'
             )
         logging.info(
             f"No directory named '{project_name}' in {start_dir} or directly inside it."
@@ -95,7 +99,7 @@ def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
         logging.warning(
             f"No repository named by the issue: falling back to {start_dir}. Add a "
             f"Linear project matching a directory name, or a "
-            f"`{EXPLICIT_PATH_PREFIX} /absolute/path` line to the description."
+            f'`{EXPLICIT_PATH_PREFIX} "/absolute/path"]` line to the description.'
         )
         return Resolution(start_dir, FROM_ROOT)
 
@@ -103,7 +107,7 @@ def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
         f"Nothing named a repository for this issue, and {start_dir} isn't a Git "
         f"repository either, so there's nowhere to run a harness. Start Chord "
         f"inside the repository, or put an explicit "
-        f"`{EXPLICIT_PATH_PREFIX} /absolute/path` line in the description."
+        f'`{EXPLICIT_PATH_PREFIX} "/absolute/path"]` line in the description.'
     )
 
 
@@ -136,11 +140,22 @@ def _find_by_project_name(project_name: str, start_dir: Path) -> Path | None:
 
 
 def _explicit_path(description: object) -> Path | None:
-    """The path from a `[Chord_Working_Path:` line, or None when there isn't one.
+    """The path from a `[Chord_Working_Path: "..."]` line, or None without one.
+
+    The path is quoted — single or double — so a path containing a space is
+    still one path, and so a line that forgot the quotes is an error rather
+    than a silently shortened one. The name itself matches in any case,
+    because it is typed by hand and a rule nobody can spell is a rule that
+    fires at random.
 
     Relative, so that a description stays portable between machines. The first
     such line wins; a second one is a contradiction rather than a preference,
     and Linear's own description field has no way to say which was meant.
+
+    Raises `ResolutionError` when the line is there but malformed. Somebody
+    wrote down a location: reading it as "no location" would fall back to the
+    project root and work on the wrong code quietly, which is the exact
+    failure this module exists to prevent.
 
     Takes `object` because Linear's description is a nullable string field and
     `render` is already hardened against the shapes it turns out to hold. A
@@ -148,18 +163,37 @@ def _explicit_path(description: object) -> Path | None:
     """
     if not isinstance(description, str):
         return None
+    prefix = EXPLICIT_PATH_PREFIX.lower()
     for line in description.splitlines():
         line = line.strip()
-        if line.startswith(EXPLICIT_PATH_PREFIX):
-            text = line[len(EXPLICIT_PATH_PREFIX) :].strip()
-            if text.endswith("]"):
-                text = text[:-1].rstrip()
-            if text:
-                # `~` first, because it is what a person writes and pathlib
-                # treats it as an ordinary directory name. A description is
-                # typed by hand, so a path that needs quoting is a path that
-                # won't be written.
-                return Path(text).expanduser()
+        if not line.lower().startswith(prefix):
+            continue
+        rest = line[len(EXPLICIT_PATH_PREFIX) :].strip()
+        if not rest or rest[0] not in "\"'":
+            raise ResolutionError(
+                f"The `{EXPLICIT_PATH_PREFIX}` line needs its path in single or "
+                f'double quotes, like `{EXPLICIT_PATH_PREFIX} "/path/to/repo"]`.'
+            )
+        quote, rest = rest[0], rest[1:]
+        end = rest.find(quote)
+        if end == -1:
+            raise ResolutionError(
+                f"The `{EXPLICIT_PATH_PREFIX}` line opens a {quote} quote and "
+                f"never closes it."
+            )
+        text, trailing = rest[:end], rest[end + 1 :].strip()
+        if trailing not in ("", "]"):
+            raise ResolutionError(
+                f"The `{EXPLICIT_PATH_PREFIX}` line must hold nothing but the "
+                f"quoted path; found {trailing!r} after the closing quote."
+            )
+        if not text:
+            raise ResolutionError(
+                f"The `{EXPLICIT_PATH_PREFIX}` line quotes an empty path."
+            )
+        # `~` first, because it is what a person writes and pathlib
+        # treats it as an ordinary directory name.
+        return Path(text).expanduser()
     return None
 
 

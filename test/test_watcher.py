@@ -97,7 +97,7 @@ def test_a_named_repository_reaches_the_harness(tmp_path):
     elsewhere = git_repo(tmp_path / "elsewhere" / "billing")
     spy = RecordingHarness("spy")
 
-    stub = LinearStub([issue(1, description=f"[Chord_Working_Path: {elsewhere}]")])
+    stub = LinearStub([issue(1, description=f'[Chord_Working_Path: "{elsewhere}"]')])
     w = build(tmp_path, stub, spy, start_dir=start)
     asyncio.run(w.poll())
 
@@ -130,7 +130,9 @@ def test_a_wrong_repository_is_refused_and_retried(tmp_path, monkeypatch, banner
     spy = RecordingHarness("spy")
     said = banners
 
-    stub = LinearStub([issue(1, description=f"[Chord_Working_Path: {tmp_path / 'nope'}]")])
+    stub = LinearStub(
+        [issue(1, description=f'[Chord_Working_Path: "{tmp_path / "nope"}"]')]
+    )
     w = build(tmp_path, stub, spy, start_dir=start)
     asyncio.run(w.poll())
 

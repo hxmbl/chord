@@ -99,7 +99,7 @@ def test_a_repository_line_in_the_description_is_used(tmp_path):
     start = repo_at(tmp_path / "workspace")
     elsewhere = repo_at(tmp_path / "elsewhere" / "billing")
 
-    issue = {"project": None, "description": f"[Chord_Working_Path: {elsewhere}]"}
+    issue = {"project": None, "description": f'[Chord_Working_Path: "{elsewhere}"]'}
 
     found = resolve(issue, start)
 
@@ -112,7 +112,7 @@ def test_a_relative_repository_line_is_read_from_the_project_root(tmp_path):
     start = repo_at(tmp_path / "workspace")
     repo_at(start / "billing")
 
-    issue = {"project": None, "description": "[Chord_Working_Path: billing]"}
+    issue = {"project": None, "description": '[Chord_Working_Path: "billing"]'}
 
     found = resolve(issue, start)
 
@@ -126,12 +126,10 @@ def test_a_named_repository_that_is_not_a_repository_is_an_error(tmp_path):
     and doing it somewhere else would be worse than not doing it.
     """
     start = repo_at(tmp_path / "workspace")
-    plain_at(tmp_path / "elsewhere" / "billing")
+    elsewhere = tmp_path / "elsewhere" / "billing"
+    plain_at(elsewhere)
 
-    issue = {
-        "project": None,
-        "description": f"[Chord_Working_Path: {tmp_path / 'elsewhere' / 'billing'}]",
-    }
+    issue = {"project": None, "description": f'[Chord_Working_Path: "{elsewhere}"]'}
 
     with pytest.raises(ResolutionError, match="isn't a Git repository"):
         resolve(issue, start)
@@ -158,12 +156,81 @@ def test_a_tilde_in_the_repository_line_is_expanded(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     repo_at(home / "billing")
 
-    issue = {"project": None, "description": "[Chord_Working_Path: ~/billing]"}
+    issue = {"project": None, "description": '[Chord_Working_Path: "~/billing"]'}
 
     found = resolve(issue, start)
 
     assert found.path == home / "billing"
     assert found.source == FROM_DESCRIPTION
+
+
+def test_the_line_name_is_matched_in_any_case(tmp_path):
+    """Nobody will remember the capitalisation, so it cannot matter.
+
+    `chord_working_path` is what somebody will actually type, and a line that
+    silently doesn't match falls back to the project root — the wrong code,
+    quietly, which is the failure this module exists to prevent.
+    """
+    start = repo_at(tmp_path / "workspace")
+    elsewhere = repo_at(tmp_path / "elsewhere" / "billing")
+
+    issue = {"project": None, "description": f'[chord_working_path: "{elsewhere}"]'}
+
+    found = resolve(issue, start)
+
+    assert found.path == elsewhere
+    assert found.source == FROM_DESCRIPTION
+
+
+def test_either_quote_character_is_accepted(tmp_path):
+    """Single or double, in any case of the name — both are what a person types."""
+    start = repo_at(tmp_path / "workspace")
+    repo_at(start / "billing")
+
+    issue = {"project": None, "description": "[CHORD_WORKING_PATH: 'billing']"}
+
+    found = resolve(issue, start)
+
+    assert found.path == (start / "billing").resolve()
+    assert found.source == FROM_DESCRIPTION
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param(
+            "[Chord_Working_Path: billing]",
+            id="no quotes",
+        ),
+        pytest.param(
+            '[Chord_Working_Path: "billing',
+            id="quote never closed",
+        ),
+        pytest.param(
+            "[Chord_Working_Path: 'billing\"]",
+            id="quotes do not match",
+        ),
+        pytest.param(
+            '[Chord_Working_Path: ""]',
+            id="empty quotes",
+        ),
+        pytest.param(
+            '[Chord_Working_Path: "billing" here]',
+            id="more than the path",
+        ),
+    ],
+)
+def test_a_malformed_line_is_an_error_not_a_fallback(tmp_path, description):
+    """A location that is present but unreadable is refused, never ignored.
+
+    Treating any of these as "no line" would fall back to the project root and
+    work on the wrong code quietly — so the hand-over stops and says what the
+    line should have looked like.
+    """
+    start = repo_at(tmp_path / "workspace")
+
+    with pytest.raises(ResolutionError, match="Chord_Working_Path"):
+        resolve({"project": None, "description": description}, start)
 
 
 # --- Precedence -------------------------------------------------------------
@@ -175,7 +242,10 @@ def test_the_project_title_wins_over_the_description(tmp_path):
     named = repo_at(start / "billing")
     other = repo_at(tmp_path / "elsewhere" / "billing")
 
-    issue = {"project": {"name": "billing"}, "description": f"[Chord_Working_Path: {other}]"}
+    issue = {
+        "project": {"name": "billing"},
+        "description": f'[Chord_Working_Path: "{other}"]',
+    }
 
     found = resolve(issue, start)
 
@@ -244,7 +314,9 @@ def test_a_linked_worktree_counts_as_a_repository(tmp_path):
 
     assert (linked / ".git").is_file(), "expected the linked form, not a directory"
 
-    found = resolve({"project": None, "description": f"[Chord_Working_Path: {linked}]"}, main)
+    found = resolve(
+        {"project": None, "description": f'[Chord_Working_Path: "{linked}"]'}, main
+    )
 
     assert found.path == linked.resolve()
     assert found.source == FROM_DESCRIPTION
@@ -256,7 +328,7 @@ def test_a_directory_that_only_looks_like_a_repository_is_not_one(tmp_path):
     fake = plain_at(tmp_path / "fake")
     (fake / ".git").mkdir()
 
-    issue = {"project": None, "description": f"[Chord_Working_Path: {fake}]"}
+    issue = {"project": None, "description": f'[Chord_Working_Path: "{fake}"]'}
 
     with pytest.raises(ResolutionError, match="isn't a Git repository"):
         resolve(issue, start)
@@ -266,7 +338,10 @@ def test_a_path_that_does_not_exist_is_not_a_repository(tmp_path):
     """The message names the path, so a typo is findable."""
     start = repo_at(tmp_path / "workspace")
 
-    issue = {"project": None, "description": f"[Chord_Working_Path: {tmp_path / 'nope'}]"}
+    issue = {
+        "project": None,
+        "description": f'[Chord_Working_Path: "{tmp_path / "nope"}"]',
+    }
 
     with pytest.raises(ResolutionError, match="nope"):
         resolve(issue, start)

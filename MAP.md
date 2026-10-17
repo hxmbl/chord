@@ -63,7 +63,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
   name directly inside it — deliberately bounded, because an unbounded ancestor
   walk matched `$HOME` for a project called `home`
 - A `[Chord_Working_Path:]` line in the issue description, the fallback for a repository
-  that is not a child of the project root; `~` is expanded, relative paths read
+  that is not a child of the project root; the name is matched in any case, the
+  path must be single- or double-quoted, `~` is expanded, relative paths read
   from the project root
 - Falls back to the project root when the issue names nothing, because most
   issues carry no Linear project; every hand-over logs which rule was used

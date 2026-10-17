@@ -291,11 +291,13 @@ happened to be started from. Chord decides which one, in this order:
 1. **The Linear project name.** Matched against the directory Chord is rooted
    at, and against a directory of that name directly inside it. Both, and
    nothing else — a project called `home` will not match `$HOME`.
-2. **A `[Chord_Working_Path:]` line in the issue description.** Write it on its own line;
-   relative paths are read from the directory Chord was started in.
+2. **A `[Chord_Working_Path:]` line in the issue description.** Write it on its own line,
+   with the path in single or double quotes; relative paths are read from the
+   directory Chord was started in. The name is matched in any case, so
+   `[chord_working_path: "..."]` works just the same.
 
    ```
-   [Chord_Working_Path: ~/Projects/billing]
+   [Chord_Working_Path: "~/Projects/billing"]
    ```
 3. **The project root**, which is where you started Chord.
 
