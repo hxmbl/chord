@@ -39,6 +39,13 @@ def a_marker() -> str:
     return f"chord-harness-marker-{os.getpid()}-{next(_MARKER_SEQ)}"
 
 
+# The shells below are named `bash`, never `sh`: rewriting argv[0] needs
+# `exec -a`, which is a bashism, and /bin/sh is dash on Debian and Ubuntu —
+# where `sh -c "exec -a ..."` exits 127 and every process-tree test in this
+# file fails for a reason that has nothing to do with what it tests.
+# Verified the hard way: the first CI run on Linux failed all five.
+
+
 def harness_tree(marker: str) -> set[str]:
     """The pids of the harness and anything it left behind.
 
@@ -183,7 +190,7 @@ def test_cancellation_leaves_nothing_running():
     repository.
     """
     marker = a_marker()
-    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 300 & wait"])
+    harness = CommandHarness(["bash", "-c", f"exec -a {marker} sleep 300 & wait"])
 
     async def scenario():
         task = asyncio.create_task(harness.send("x"))
@@ -205,7 +212,7 @@ def test_cancellation_leaves_nothing_running():
 
 def test_a_timeout_leaves_nothing_running(short_timeout):
     marker = a_marker()
-    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
+    harness = CommandHarness(["bash", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
     try:
         with pytest.raises(HarnessError):
             asyncio.run(asyncio.wait_for(harness.send("x"), timeout=20))
@@ -226,7 +233,7 @@ def test_shutdown_does_not_raise_a_second_time():
     """
 
     async def scenario():
-        harness = CommandHarness(["sh", "-c", f"exec -a {a_marker()} sleep 300"])
+        harness = CommandHarness(["bash", "-c", f"exec -a {a_marker()} sleep 300"])
         task = asyncio.create_task(harness.send("x"))
         await asyncio.sleep(0.3)
         task.cancel()
@@ -349,7 +356,7 @@ def test_killpg_really_does_reach_a_grandchild():
     exists for, so it is the case worth asserting on.
     """
     marker = a_marker()
-    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 305 & wait"])
+    harness = CommandHarness(["bash", "-c", f"exec -a {marker} sleep 305 & wait"])
 
     async def cancel_mid_flight():
         task = asyncio.create_task(harness.send("x"))
@@ -421,7 +428,7 @@ def test_sigkill_reaches_a_grandchild(monkeypatch):
     monkeypatch.setattr(harnesses, "HARNESS_TIMEOUT", 1.0)
     monkeypatch.setattr(harnesses, "_REAP_TIMEOUT", 1.0)
     marker = a_marker()
-    harness = CommandHarness(["sh", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
+    harness = CommandHarness(["bash", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
     try:
         with pytest.raises(HarnessError, match="timed out"):
             asyncio.run(asyncio.wait_for(harness.send("x"), timeout=20))

@@ -43,6 +43,12 @@ jobs:
   typecheck:
     name: Type check (pyright)
     runs-on: ubuntu-latest
+    env:
+      # The interpreter for every uv invocation in the job, including
+      # `uv run`. Without it, `uv run` follows .python-version (3.13), finds
+      # the synced venv on a different interpreter, and replaces it with a
+      # base-deps-only one — no pyright, no live extra.
+      UV_PYTHON: "3.12"
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v5
@@ -53,7 +59,7 @@ jobs:
       # with only dev the job fails 5x reportMissingImports. Verified both
       # ways; with live it is 0 errors.
       - name: Install development dependencies
-        run: uv sync --locked --python 3.12 --extra dev --extra live
+        run: uv sync --locked --extra dev --extra live
       - name: Run pyright
         # Pointed at the venv's interpreter so the stubs are the installed
         # ones rather than whatever pyright would guess.
@@ -67,6 +73,14 @@ jobs:
       matrix:
         # 3.11 is the floor from requires-python; 3.14 is current.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      # The interpreter for every uv invocation in the job, including the
+      # `uv run` below. Without this, `uv run` follows .python-version
+      # (3.13), finds the matrix-synced venv on a disagreeing interpreter,
+      # and replaces it — base deps only, no pytest: "Removed virtual
+      # environment at: .venv ... Failed to spawn: pytest". That is exactly
+      # how the first CI run went red on 3.11/3.12/3.14 while 3.13 ran.
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v5
@@ -76,7 +90,7 @@ jobs:
         # --extra live as in typecheck: test_subscribe asserts the live extra
         # is installed, so a dev-only sync fails that test for environmental
         # reasons rather than catching anything.
-        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra live
+        run: uv sync --locked --extra dev --extra live
 
       # `chord _serve` exits immediately on any machine that has never run
       # `chord setup` — "Not set up yet. Run `chord setup`" — which is every

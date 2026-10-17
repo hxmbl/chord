@@ -20,6 +20,7 @@ a minute, invisible from outside the log.
 import asyncio
 import pathlib
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from conftest import RecordingHarness
@@ -157,7 +158,13 @@ def test_a_broken_notifier_never_stops_a_hand_over(tmp_path, monkeypatch, exc):
     Patched *inside* `send`'s guard rather than over `send` itself — the guard is
     the thing under test, so replacing it with a function that raises would
     assert that an unguarded notification stops a hand-over.
+
+    The platform is pinned to darwin because `send` picks its delivery route by
+    it: on Linux the stubs below would be bypassed entirely and the real
+    D-Bus backend would run — raising, and being swallowed by the very guard
+    under test, so this test would pass having exercised nothing.
     """
+    monkeypatch.setattr(notify, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(notify, "_macos", lambda *_: [["/usr/bin/true"]])
     monkeypatch.setattr(notify, "_deliver", _raising(exc))
 
@@ -188,9 +195,15 @@ def test_notify_swallows_everything_except_cancellation(monkeypatch):
     on macOS nothing reaches that library any more: it goes to the notification
     daemon by a route that needs no app bundle. The guarantee is Chord's, not the
     library's, so the test belongs at the seam.
+
+    Pinned to darwin for the same reason as its sibling above: `send` chooses
+    the route by platform, and on Linux this would reach the real D-Bus
+    backend instead of the stub — where the raised CancelledError never
+    happens and the assertion fails for a reason that is not the point.
     """
     from chord import notify
 
+    monkeypatch.setattr(notify, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(notify, "_macos", lambda *_: [["/opt/tn"]])
     monkeypatch.setattr(
         notify, "_deliver", _raising(asyncio.CancelledError())
