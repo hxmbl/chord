@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       # uvx rather than a synced venv: the linter is not part of the project's
@@ -51,7 +51,7 @@ jobs:
       UV_PYTHON: "3.12"
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       # --extra live is not optional here. subscribe.py imports gql lazily so
@@ -83,7 +83,7 @@ jobs:
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Install development dependencies
@@ -157,7 +157,7 @@ jobs:
           echo "no skips"
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       # No sync: uv build uses its own isolated hatchling env, and the wheel
@@ -195,7 +195,7 @@ jobs:
           test -s .config/chord/chord.toml
           echo "wheel OK"
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -217,7 +217,7 @@ jobs:
       # .minesweep.yml (profile public-github, fail_on high, min_confidence
       # 0.7) is the pre-commit hook, and one scanner in both places means one
       # verdict rather than two tools that disagree.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: ${{ runner.temp }}/minesweep-src/go.sum
@@ -293,7 +293,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ runner.temp }}/results.sarif
         # An incomplete or failing scan must still publish what it found;
