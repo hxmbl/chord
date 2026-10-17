@@ -15,7 +15,7 @@ Claude Code, Codex, or a custom script — is handed the issue on stdin and gets
 to work on it.
 
 Want a different harness for a particular issue? Give it a different label.
-`Chord/opencode/space-bunny-free` sends that issue to the `space-bunny-free`
+`Chord/opencode/big-pickle` sends that issue to the `big-pickle`
 harness instead of the default one, while everything else keeps going to the
 default. See [Routing](#routing).
 
@@ -154,8 +154,8 @@ allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 #
 # Tables come last: in TOML everything after a `[table]` header belongs to that
 # table, so `interval` above has to be written before the first one of these.
-[harnesses."opencode/space-bunny-free"]
-command = ["opencode", "run", "--model", "space-bunny-free"]
+[harnesses."opencode/big-pickle"]
+command = ["opencode", "run", "--model", "big-pickle"]
 
 [harnesses.claude]
 command = ["claude", "-p"]
@@ -243,7 +243,7 @@ a harness is or how many segments its name has, so `opencode/tiny` is a name
 you chose, not a hierarchy Chord has to interpret.
 
 **An issue can carry more than one.** Label it `Chord`, then narrow it to
-`Chord/opencode/space-bunny-free` when you know where you want it to go, and
+`Chord/opencode/big-pickle` when you know where you want it to go, and
 both labels sit on the issue. Chord routes on **the one added most recently**,
 which it reads from Linear's own audit trail — not from a guess about which
 label is more specific. Narrowing an issue therefore changes where it goes,
