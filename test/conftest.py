@@ -31,9 +31,20 @@ class FakeKeyring(KeyringBackend):
         self.store.pop((service, account), None)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def keyring_backend(monkeypatch):
-    """Install a fake keyring for the duration of a test."""
+    """Install a fake keyring for the duration of a test.
+
+    Autouse because the module docstring's promise — a test run never reads or
+    writes a real keychain — was only true for tests that remembered to ask.
+    The ones that didn't tested the *not set up* paths and passed only on a
+    machine whose keychain happens to be empty, which is the same mistake as a
+    test that passes only because of the maintainer's hardware: it fails on
+    any machine that has run `chord setup`, and in CI once a job seeds the
+    credentials that the real-process tests in `test_stale_pid.py` need their
+    *subprocesses* to find. Those children read the environment's keyring, not
+    this in-memory one, so the two requirements do not collide.
+    """
     fake = FakeKeyring()
     monkeypatch.setattr(keyring, "get_keyring", lambda: fake)
     monkeypatch.setattr(keyring, "set_password", fake.set_password)

@@ -1,0 +1,287 @@
+name: CI
+
+on:
+  push:
+    # Scoped to the default branch: `pull_request` already covers feature
+    # branches, and an unfiltered push would test every PR branch twice —
+    # once as refs/heads/branch, once as refs/pull/N/merge — under two
+    # concurrency groups that can never cancel each other.
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default. The one job that needs more (the SARIF upload)
+# asks for it there, and only there.
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref; a new push supersedes an in-flight run for the same ref.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # uvx rather than a synced venv: the linter is not part of the project's
+      # dependency graph, so this job cannot fail for lockfile reasons, and a
+      # lint failure always means the code.
+      - name: Run ruff check
+        run: uvx --from "ruff>=0.16" ruff check .
+
+      # `ruff format --check` is deliberately not a job. The codebase predates
+      # it and 23 files would reformat; enforcing it today would be red on
+      # day one, and the reformat is its own reviewable change. Same position
+      # as servings-cli: the config is in pyproject, the day is coming.
+
+  typecheck:
+    name: Type check (pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # --extra live is not optional here. subscribe.py imports gql lazily so
+      # a bare install still runs, but pyright resolves the imports anyway:
+      # with only dev the job fails 5x reportMissingImports. Verified both
+      # ways; with live it is 0 errors.
+      - name: Install development dependencies
+        run: uv sync --locked --python 3.12 --extra dev --extra live
+      - name: Run pyright
+        # Pointed at the venv's interpreter so the stubs are the installed
+        # ones rather than whatever pyright would guess.
+        run: uv run pyright --pythonpath "$(uv run python -c 'import sys; print(sys.executable)')"
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor from requires-python; 3.14 is current.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install development dependencies
+        # --extra live as in typecheck: test_subscribe asserts the live extra
+        # is installed, so a dev-only sync fails that test for environmental
+        # reasons rather than catching anything.
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra live
+
+      # `chord _serve` exits immediately on any machine that has never run
+      # `chord setup` — "Not set up yet. Run `chord setup`" — which is every
+      # CI machine. The two real-watcher tests in test_stale_pid.py spawn it
+      # and need it still alive moments later, so without this the job is red
+      # before pytest has anything to say (verified: both fail exactly this
+      # way on a clean machine). CI fabricates the set-up state instead: a
+      # plaintext keyring seeded with a fake, just-stamped token, which is
+      # all `load()`'s freshness gate needs to hand the watcher a token.
+      #
+      # keyrings.alt is installed here and nowhere else. chord's own
+      # `chord setup` refuses this backend on purpose — the seeding calls
+      # keyring.set_password directly, which is the same read path `load()`
+      # takes. The token is fake and never good for anything: the watcher's
+      # 401 from Linear is logged and it carries on, which is all the tests
+      # ask of it. In-process tests are unaffected: conftest's autouse
+      # FakeKeyring covers them, so only the spawned children see this.
+      - name: Seed a headless keyring for the real-process tests
+        env:
+          PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+        run: |
+          uv pip install keyrings.alt
+          .venv/bin/python - <<'PY'
+          import json, time
+
+          import keyring
+
+          keyring.set_password(
+              "chord",
+              "linear",
+              json.dumps(
+                  {
+                      "access_token": "ci-fake-token",
+                      "refresh_token": "ci-fake-token",
+                      "obtained_at": time.time(),
+                  }
+              ),
+          )
+          PY
+
+      - name: Run tests with coverage
+        env:
+          PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+          _TYPER_FORCE_DISABLE_TERMINAL: "1"
+        # -rA shows every outcome so a skip is visible rather than buried in a
+        # summary line. The log is kept for the assertion below. Coverage and
+        # its 70% floor come from pyproject's addopts; coverage.xml lands in
+        # the repo root from there.
+        run: |
+          set -o pipefail
+          uv run pytest -v -rA --tb=short | tee /tmp/pytest.log
+
+      # pytest exits 0 when tests skip. The only skipifs in the suite are
+      # win32-only, so on Linux a SKIPPED line means a test quietly stopped
+      # running — fail here rather than ship a green build where something
+      # never executed. Same reasoning as servings-cli's guard.
+      - name: Assert nothing was skipped
+        run: |
+          if grep -qE '^SKIPPED ' /tmp/pytest.log; then
+            echo "::error::tests were skipped:"
+            grep -E '^SKIPPED ' /tmp/pytest.log
+            exit 1
+          fi
+          echo "no skips"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: error
+
+  package:
+    name: Build and smoke-test wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # No sync: uv build uses its own isolated hatchling env, and the wheel
+      # is installed into a venv of its own below.
+      - name: Build wheel and source distribution
+        run: uv build
+      - name: Install wheel in a clean environment and use it for real
+        run: |
+          set -euo pipefail
+          uv venv /tmp/chord-smoke --python 3.12
+          uv pip install --python /tmp/chord-smoke/bin/python dist/*.whl
+          # `--help` alone passes with a package that is broken beyond its
+          # entry point — visync shipped a wheel missing its config file that
+          # way. `init` is the cheap command that is actually work: no
+          # network, no credentials, and it exercises the full import graph,
+          # config discovery and file writing. There is no `--version` to run:
+          # the typer app does not define one and exits 2 on the flag.
+          cd /tmp
+          /tmp/chord-smoke/bin/chord --help > /dev/null
+          /tmp/chord-smoke/bin/chord setup --help > /dev/null
+          d="$(mktemp -d)"
+          cd "$d"
+          /tmp/chord-smoke/bin/chord init
+          test -s .config/chord/chord.toml
+          echo "wheel OK"
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  security:
+    name: Secret scan (minesweep)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # SARIF upload; nothing else in the job needs it
+    steps:
+      - name: Checkout chord
+        uses: actions/checkout@v5
+        with:
+          # --diff reads history from git.
+          fetch-depth: 0
+
+      # Minesweep, not gitleaks: chord's local gate already is minesweep —
+      # .minesweep.yml (profile public-github, fail_on high, min_confidence
+      # 0.7) is the pre-commit hook, and one scanner in both places means one
+      # verdict rather than two tools that disagree.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: ${{ runner.temp }}/minesweep-src/go.sum
+
+      # Cloned into RUNNER_TEMP rather than checked out with `path:` inside
+      # the workspace: the scan below targets the whole chord tree, and
+      # minesweep's own repository contains planted secret-shaped test
+      # fixtures — a scanner scanning its own fixtures is a red build with no
+      # chord bug in it. The module path is a bare `module minesweep`, so
+      # there is nothing to `go install`; build from the clone, as minesweep's
+      # own CI does.
+      - name: Check out and build minesweep
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/hxmbl/minesweep.git "$RUNNER_TEMP/minesweep-src"
+          mkdir -p "$RUNNER_TEMP/minesweep-bin"
+          go build -C "$RUNNER_TEMP/minesweep-src" -o "$RUNNER_TEMP/minesweep-bin/minesweep" ./cmd/minesweep
+          "$RUNNER_TEMP/minesweep-bin/minesweep" version
+
+      # One scan, one result set: the SARIF upload reuses this scan's output
+      # rather than running a second one that could disagree with the gate.
+      #
+      # --config names .minesweep.yml rather than relying on discovery, and
+      # that is load-bearing: minesweep's config-trust rule ignores
+      # min_confidence and profile from a *discovered* config because a
+      # discovered config can only weaken a scan — so without this the 0.7
+      # floor never applies and the scan drowns in 60%-confidence findings
+      # on plain `TOKEN = os.environ[...]` assignments (verified: the same
+      # tree exits 1 with19 highs unconfigured, 0 with the config named).
+      # The pre-commit hook passes --config for exactly this reason; CLI
+      # flags still override the file, which is why --fail-on is repeated.
+      # Written to RUNNER_TEMP so the scan cannot trip over its own output
+      # on the next run.
+      - name: Scan
+        id: scan
+        run: |
+          set +e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            "$RUNNER_TEMP/minesweep-bin/minesweep" --diff --diff-base "${{ github.base_ref }}" \
+              --config .minesweep.yml --fail-on high --sarif --no-pager . > "$RUNNER_TEMP/results.sarif"
+          else
+            "$RUNNER_TEMP/minesweep-bin/minesweep" --config .minesweep.yml --fail-on high \
+              --sarif --no-pager . > "$RUNNER_TEMP/results.sarif"
+          fi
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          # Always succeed: the exit code is the verdict and is enforced by the
+          # next step, which distinguishes 1 (findings) from 2 (incomplete).
+          # Failing here would skip the SARIF upload entirely.
+          exit 0
+
+      - name: Enforce the gate
+        # Exit 2 means "the scan did not cover the whole target". Treating
+        # that as a pass would publish a partial result as if it were
+        # complete, so it fails here too.
+        run: |
+          code="${{ steps.scan.outputs.exit_code }}"
+          if [ -z "$code" ]; then
+            echo "::error::the scan step reported no exit code"
+            exit 1
+          fi
+          if [ "$code" = "0" ]; then
+            echo "no findings at or above --fail-on high"
+          elif [ "$code" = "1" ]; then
+            echo "::error::secrets detected at or above --fail-on high"
+            exit 1
+          elif [ "$code" = "2" ]; then
+            echo "::error::scan was incomplete; results are partial (see the incompleteness reasons in results.sarif)"
+            exit 2
+          else
+            echo "::error::minesweep failed with exit code $code"
+            exit "$code"
+          fi
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/results.sarif
+        # An incomplete or failing scan must still publish what it found;
+        # the SARIF is self-describing about which case it is.
+        continue-on-error: true
