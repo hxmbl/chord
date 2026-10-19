@@ -245,6 +245,36 @@ def test_a_repeated_failure_is_logged_once(tmp_path, capsys):
     assert capsys.readouterr().out.count("still down") == 1
 
 
+def test_a_per_issue_problem_is_logged_once_not_every_poll(tmp_path, capsys):
+    """The once-in-a-row rule covers problems raised *during* a healthy poll.
+
+    `_poll` used to clear `_last_problem` on every poll that wasn't truncated,
+    so a problem raised in the per-issue loop — here, a repository that isn't
+    there — was logged again on every interval. That is exactly the log spam
+    the once-only rule exists to prevent.
+    """
+    start = tmp_path / "workspace"
+    start.mkdir()
+    # A valid route label, so the repository problem is the only one raised and
+    # the once-in-a-row comparison is actually exercised.
+    stub = LinearStub(
+        [
+            issue(
+                1,
+                labels={"nodes": [{"name": "chord"}]},
+                description=f'[Chord_Working_Path: "{tmp_path / "nope"}"]',
+            )
+        ]
+    )
+    w = build(tmp_path, stub, RecordingHarness("spy"), start_dir=start)
+
+    for _ in range(3):
+        asyncio.run(w.poll())
+
+    # The message is truncated by `one_line`, so assert on a prefix that survives.
+    assert capsys.readouterr().out.count("ENG-1 skipped") == 1
+
+
 def test_a_missing_discussion_still_hands_over(tmp_path, capsys):
     spy = RecordingHarness("spy")
     stub = LinearStub([issue(1)], comments=linear.LinearError("no comments"))
@@ -331,6 +361,36 @@ def test_state_trim_keeps_the_newest(tmp_path):
     saved = json.loads((tmp_path / "state.json").read_text())["handed_over"]
     assert len(saved) == 3
     assert set(saved) == {"5", "6", "7"}, f"kept the wrong entries: {sorted(saved)}"
+
+
+def test_state_trim_never_forgets_an_issue_still_in_the_page(tmp_path):
+    """An id in the page being walked survives trimming, cap or no cap.
+
+    Insertion order is hand-over order, and Linear does not order the page, so
+    an issue handed over early can sit at the head of the dictionary while it is
+    still in view. Trimming to the cap alone would evict it, and a later poll
+    would offer the same work again although it never left the page.
+    """
+    stub = LinearStub([issue(1), issue(2), issue(3)])
+    w = build(tmp_path, stub, RecordingHarness("spy"))
+    original = watcher.STATE_CAP
+    try:
+        watcher.STATE_CAP = 2  # deliberately below MAX_ISSUES_PER_POLL
+        asyncio.run(w.poll())
+
+        saved = json.loads((tmp_path / "state.json").read_text())["handed_over"]
+        assert set(saved) == {"1", "2", "3"}, (
+            f"an in-page issue was evicted: {sorted(saved)}"
+        )
+
+        # Once an id is no longer in the page, the cap applies again.
+        stub._issues = [issue(4)]
+        asyncio.run(w.poll())
+    finally:
+        watcher.STATE_CAP = original
+
+    saved = json.loads((tmp_path / "state.json").read_text())["handed_over"]
+    assert set(saved) == {"3", "4"}, f"the cap stopped applying: {sorted(saved)}"
 
 
 # --- linear ---

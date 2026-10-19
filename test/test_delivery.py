@@ -625,20 +625,24 @@ def test_a_discussion_that_could_not_be_read_is_not_announced(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    "mutation,runs",
     [
-        {"labels": {"nodes": [None]}},
-        {"state": "Todo"},
-        {"comments": [None]},
-        {"description": 42},
-        {"labels": "Chord"},
+        ({"state": "Todo"}, True),
+        ({"comments": [None]}, True),
+        ({"description": 42}, True),
+        # Labels that name no route are not the render path at all: running the
+        # default would be the wrong-harness case MAP.md decision 11 forbids, so
+        # the issue is skipped *and recorded* rather than silently lost.
+        ({"labels": {"nodes": [None]}}, False),
+        ({"labels": "Chord"}, False),
     ],
 )
-def test_an_odd_issue_still_reaches_the_harness(tmp_path, mutation):
+def test_an_odd_issue_is_either_run_or_recorded(tmp_path, mutation, runs):
     """End to end, through the real render.
 
-    The unit tests above pin that render survives; this pins that surviving is
-    the same as being worked on.
+    A shape the pipeline can read is still worked on; a shape that leaves the
+    route unreadable is skipped and recorded, so it shows up in the log and can
+    be retried by hand instead of disappearing.
     """
     seen = []
 
@@ -663,5 +667,5 @@ def test_an_odd_issue_still_reaches_the_harness(tmp_path, mutation):
         1, tmp_path / "state.json",
     )
     asyncio.run(asyncio.wait_for(w.poll(), timeout=10))
-    assert len(seen) == 1
+    assert len(seen) == (1 if runs else 0)
     assert pathlib.Path(tmp_path / "state.json").exists()

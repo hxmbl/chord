@@ -30,7 +30,7 @@ import socket
 
 import pytest
 
-from chord.webhook import READ_TIMEOUT, Webhook
+from chord.webhook import MAX_HEAD, READ_TIMEOUT, Webhook
 
 
 def free_port() -> int:
@@ -505,3 +505,183 @@ def test_a_well_formed_request_still_answers_200():
             await hook.stop()
 
     assert b"200 OK" in status_of(asyncio.run(scenario()))
+
+
+# --- the report the instrumentation reads, and the header bound ---
+
+
+class FakeWriter:
+    """The half of a `StreamWriter` `_handle` touches, so it can be called bare."""
+
+    def __init__(self):
+        self.closed = False
+        self.written = b""
+
+    def write(self, data):
+        self.written += data
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        pass
+
+
+def reader_for(payload: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    reader.feed_data(payload)
+    reader.feed_eof()
+    return reader
+
+
+def test_the_handler_reports_a_served_request_as_a_success():
+    async def scenario():
+        hook = Webhook(secret="")
+        return await hook._handle(reader_for(post()), FakeWriter())
+
+    assert asyncio.run(scenario()) is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(post(headers=b"X-Chord-Secret: wrong\r\n"), id="401"),
+        pytest.param(post(method=b"GET"), id="404"),
+        pytest.param(
+            b"POST /webhook HTTP/1.1\r\nContent-Length: abc\r\n\r\n", id="400"
+        ),
+    ],
+)
+def test_a_refused_request_is_reported_as_a_failure(payload):
+    """The method answers failures rather than raising them.
+
+    "Did not raise" would report every 400, 401 and 404 as a success, which is
+    a measurement pointing the wrong way.
+    """
+    async def scenario():
+        hook = Webhook(secret="s3cret")
+        return await hook._handle(reader_for(payload), FakeWriter())
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_a_cancelled_request_still_closes_its_socket():
+    """`chord stop` cancels a handler mid-request; the socket must still close.
+
+    Cancellation used to re-raise straight past the write and the close, leaking
+    the connection — and `stop()` waits for the handlers, so it never finished.
+    """
+    async def scenario():
+        hook = Webhook(secret="")
+
+        async def never(reader):
+            await asyncio.sleep(3600)
+
+        hook._respond = never
+        writer = FakeWriter()
+        task = asyncio.create_task(hook._handle(asyncio.StreamReader(), writer))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return writer
+
+    assert asyncio.run(scenario()).closed, "a cancelled handler leaked its socket"
+
+
+def test_a_refused_secret_says_so_in_the_log(caplog):
+    """Otherwise a lockout is invisible: every delivery 401s, live updates fall
+    back to polling, and nothing distinguishes a wrong secret from one that
+    cannot be transmitted at all."""
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="s3cret")
+        await hook.start()
+        try:
+            return await send(hook.port, post(headers=b"X-Chord-Secret: wrong\r\n"))
+        finally:
+            await hook.stop()
+
+    reply = asyncio.run(scenario())
+    assert b"401" in status_of(reply)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("wrong secret" in message for message in messages), messages
+    assert all("s3cret" not in message for message in messages), "the secret was echoed"
+
+
+# --- a secret has to survive the wire, in either encoding ---
+
+
+def test_a_non_ascii_secret_sent_as_latin1_is_accepted():
+    """HTTP header values are latin-1 on the wire.
+
+    Matching only the UTF-8 form meant a secret configured with an accent and
+    sent the standard way was refused forever, and a lockout looks exactly like
+    a wrong secret.
+    """
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="café")
+        await hook.start()
+        try:
+            return await send(hook.port, post(headers=b"X-Chord-Secret: caf\xe9\r\n"))
+        finally:
+            await hook.stop()
+
+    assert b"200 OK" in status_of(asyncio.run(scenario()))
+
+
+def test_a_non_ascii_secret_sent_as_utf8_is_accepted():
+    """A modern client may encode the header that way; refusing it is a lockout."""
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="café")
+        await hook.start()
+        try:
+            # `.encode()` is UTF-8, the wire form a modern client produces.
+            header = b"X-Chord-Secret: " + "café".encode() + b"\r\n"
+            return await send(hook.port, post(headers=header))
+        finally:
+            await hook.stop()
+
+    assert b"200 OK" in status_of(asyncio.run(scenario()))
+
+
+def test_a_non_ascii_secret_still_refuses_the_wrong_one():
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="café")
+        await hook.start()
+        try:
+            return await send(hook.port, post(headers=b"X-Chord-Secret: cafe\r\n"))
+        finally:
+            await hook.stop()
+
+    assert b"401" in status_of(asyncio.run(scenario()))
+
+
+def test_a_secret_no_client_can_send_has_no_wire_form():
+    """A lone surrogate cannot be encoded as a header value, so nothing matches."""
+    from chord.webhook import _wire_forms
+
+    assert _wire_forms("\ud800") == []
+
+
+def test_a_header_block_over_the_limit_is_refused_not_buffered():
+    """`MAX_HEAD` is the bound, and the asyncio default it was lost under is 64KiB.
+
+    A header block between `MAX_HEAD` and that default used to be read in full
+    and answered 200, so the bound was dead. It is what stops one request from
+    making the listener hold an arbitrary amount before the secret is checked at
+    all.
+    """
+    padding = b"X-Pad: " + b"y" * (MAX_HEAD + 4096) + b"\r\n"
+
+    async def scenario():
+        hook = Webhook(port=free_port(), secret="")
+        await hook.start()
+        try:
+            return await send(hook.port, post(headers=padding), wait=READ_TIMEOUT + 5)
+        finally:
+            await hook.stop()
+
+    assert b"400" in status_of(asyncio.run(scenario()))

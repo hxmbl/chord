@@ -11,6 +11,7 @@ import httpx
 
 from chord import logging
 from chord.context import Issue
+from chord.performance import instrumented
 from chord.text import one_line
 
 # Seconds for a single GraphQL request. `watcher.POLL_TIMEOUT` is the ceiling
@@ -44,6 +45,16 @@ MAX_HISTORY = 50
 
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BACKOFF_BASE = 1
+
+# A ceiling on the whole retry sequence, so a request that keeps timing out
+# fails as a `LinearError` here rather than as `watcher.POLL_TIMEOUT` above it.
+# The layering is deliberate: the watcher's timeout is the last resort, and
+# reaching it means losing a page read the retry loop was supposed to complete.
+# 30s + 1s + 30s + 2s + 30s is 93s, well past `POLL_TIMEOUT`, so the budget is
+# what actually bounds a slow Linear. Kept below that constant rather than
+# imported from it, because `watcher` imports `linear` and the reverse would be
+# a cycle.
+RETRY_BUDGET = 45
 
 # A hard ceiling on the pages one walk will ask for, independent of how many
 # nodes come back. The node budget alone cannot bound the loop: a connection
@@ -236,6 +247,27 @@ def _detail(errors: object) -> str:
         if message is not None:
             return str(message)
     return f"an error with no usable message ({type(first).__name__})"
+
+
+def _messages(errors: object) -> list[str]:
+    """Every usable message in an `errors` list, in order.
+
+    `_detail` reads only the first, which is nearly always the one that
+    explains the failure. Auth is the exception: Linear can return a generic
+    error before the one that says the token was refused, so classification
+    checks all of them rather than the first. Anything unusable is skipped here
+    and still reaches the caller through `_detail`, which always produces a
+    `LinearError` message.
+    """
+    if not isinstance(errors, list):
+        return []
+    found: list[str] = []
+    for item in errors:
+        if isinstance(item, dict):
+            message = item.get("message")
+            if message is not None:
+                found.append(str(message))
+    return found
 
 
 def _usable_nodes(raw: object) -> tuple[list[dict[str, Any]], int]:
@@ -469,39 +501,18 @@ class Linear:
         # Out of budget with Linear still offering more.
         return nodes, True
 
+    @instrumented
     async def _query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        for attempt in range(RETRY_MAX_ATTEMPTS):
-            try:
-                async with httpx.AsyncClient(timeout=TIMEOUT) as http:
-                    response = await http.post(
-                        GRAPHQL_ENDPOINT,
-                        json={"query": query, "variables": variables},
-                        headers=self._headers,
-                    )
-            except (httpx.HTTPError, TimeoutError) as exc:
-                if attempt + 1 == RETRY_MAX_ATTEMPTS:
-                    raise LinearError(
-                        f"Couldn't reach Linear ({type(exc).__name__})."
-                    ) from exc
-                delay = RETRY_BACKOFF_BASE * 2**attempt
-                logging.warning(
-                    f"Linear request failed ({type(exc).__name__}); "
-                    f"retrying in {delay}s (attempt {attempt + 2}/{RETRY_MAX_ATTEMPTS})."
-                )
-                await asyncio.sleep(delay)
-                continue
-
-            if 500 <= response.status_code < 600:
-                if attempt + 1 == RETRY_MAX_ATTEMPTS:
-                    raise LinearError(f"Linear returned HTTP {response.status_code}.")
-                delay = RETRY_BACKOFF_BASE * 2**attempt
-                logging.warning(
-                    f"Linear returned HTTP {response.status_code}; "
-                    f"retrying in {delay}s (attempt {attempt + 2}/{RETRY_MAX_ATTEMPTS})."
-                )
-                await asyncio.sleep(delay)
-                continue
-            break
+        try:
+            # The whole retry sequence shares one budget, so a slow Linear fails
+            # as a `LinearError` here rather than by hitting `watcher.POLL_TIMEOUT`
+            # first. See `RETRY_BUDGET`.
+            async with asyncio.timeout(RETRY_BUDGET):
+                response = await self._request(query, variables)
+        except TimeoutError as exc:
+            raise LinearError(
+                f"Linear didn't answer within {RETRY_BUDGET}s."
+            ) from exc
 
         if response.status_code in (401, 403):
             # The status and nothing more: the body can carry workspace detail,
@@ -528,11 +539,14 @@ class Linear:
 
         # GraphQL answers 200 and puts failures in an `errors` list, so the
         # status code alone doesn't tell us the query worked. The first message
-        # is nearly always the one that explains it.
+        # is nearly always the one that explains it — but auth is checked across
+        # all of them, because a generic error can precede the auth one and
+        # missing it leaves the daemon dead with Linear's wording instead of
+        # "run `chord refresh`".
         errors = body.get("errors")
         if errors:
             detail = _detail(errors)
-            if _is_auth_failure(detail):
+            if any(_is_auth_failure(message) for message in _messages(errors)):
                 # A 200 with an auth error is the same refusal as a 401, and it
                 # is what Linear actually returns for an expired access token on
                 # the GraphQL endpoint. Recognised here rather than in the
@@ -544,3 +558,50 @@ class Linear:
         if not isinstance(data, dict):
             raise LinearError("Linear sent back no data.")
         return data
+
+    async def _request(
+        self, query: str, variables: dict[str, Any]
+    ) -> httpx.Response:
+        """POST one query, retrying transport failures, 5xx and 429.
+
+        `RETRY_MAX_ATTEMPTS` bounds the attempts; the caller's `RETRY_BUDGET`
+        bounds the wall clock, since the attempts alone can outlast the poll.
+        429 is retried alongside 5xx because Linear rate-limits per requester,
+        which is expected traffic rather than an error: without it the whole
+        poll is skipped until the next interval. `Retry-After` is deliberately
+        not honoured — the budget is Chord's own ceiling, and a server asking
+        for longer than it should still get the next poll, not a stalled daemon.
+        """
+        for attempt in range(RETRY_MAX_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=TIMEOUT) as http:
+                    response = await http.post(
+                        GRAPHQL_ENDPOINT,
+                        json={"query": query, "variables": variables},
+                        headers=self._headers,
+                    )
+            except (httpx.HTTPError, TimeoutError) as exc:
+                if attempt + 1 == RETRY_MAX_ATTEMPTS:
+                    raise LinearError(
+                        f"Couldn't reach Linear ({type(exc).__name__})."
+                    ) from exc
+                delay = RETRY_BACKOFF_BASE * 2**attempt
+                logging.warning(
+                    f"Linear request failed ({type(exc).__name__}); "
+                    f"retrying in {delay}s (attempt {attempt + 2}/{RETRY_MAX_ATTEMPTS})."
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            if response.status_code == 429 or 500 <= response.status_code < 600:
+                if attempt + 1 == RETRY_MAX_ATTEMPTS:
+                    return response
+                delay = RETRY_BACKOFF_BASE * 2**attempt
+                logging.warning(
+                    f"Linear returned HTTP {response.status_code}; "
+                    f"retrying in {delay}s (attempt {attempt + 2}/{RETRY_MAX_ATTEMPTS})."
+                )
+                await asyncio.sleep(delay)
+                continue
+            return response
+        return response

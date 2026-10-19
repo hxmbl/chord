@@ -174,6 +174,31 @@ def test_cancellation_still_reaches_the_watcher(tmp_path):
         asyncio.run(w.poll())
 
 
+def test_a_cancelled_hand_over_is_not_recorded(tmp_path):
+    """`chord stop` is not a declaration that the work is done.
+
+    Recording a cancelled hand-over would turn a person asking Chord to stop
+    into work that never runs again — at-most-once, where the contract is
+    at-least-once. The id must stay out of the state file.
+    """
+
+    class Cancels:
+        name = "cancelling"
+
+        async def send(self, prompt, cwd=None):
+            raise asyncio.CancelledError
+
+    w = build(tmp_path, Cancels())
+    with (
+        contextlib.redirect_stdout(io.StringIO()),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(w.poll())
+
+    assert w.handed_over == 0, "a cancelled hand-over was written down as done"
+    assert not (tmp_path / "state.json").exists()
+
+
 def test_a_harness_failure_is_unaffected(tmp_path):
     """The existing policy: a harness that is missing is recorded, and said."""
     from chord.harness import HarnessError

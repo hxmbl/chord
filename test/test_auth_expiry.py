@@ -446,3 +446,168 @@ def test_the_state_file_is_still_loadable_afterwards(tmp_path):
     asyncio.run(w.poll())
     assert watcher.read_state(tmp_path / "state.json")
     assert pathlib.Path(tmp_path / "state.json").exists()
+
+
+# --- auth is recognised wherever it appears in the errors list ---
+
+
+def test_an_auth_error_behind_a_generic_one_is_still_a_refusal(monkeypatch):
+    """Linear can put a generic error before the one that names the refusal.
+
+    Reading only `errors[0]` missed it, and the daemon stayed dead with Linear's
+    wording instead of "run `chord refresh`".
+    """
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "errors": [
+                    {"message": "Entity not found: IssueFilter"},
+                    {"message": "Authentication failed."},
+                ]
+            }
+
+    class Client:
+        def __init__(self, *a, **k): ...
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return Response()
+
+    monkeypatch.setattr(linear.httpx, "AsyncClient", Client)
+    with pytest.raises(linear.Unauthorised):
+        asyncio.run(linear.Linear("token")._query("q {}", {}))
+
+
+def test_every_usable_message_is_considered():
+    errors = [
+        {"message": "nope"},
+        "not a record",
+        {"message": None},
+        {"message": "Authentication required."},
+    ]
+    assert linear._messages(errors) == ["nope", "Authentication required."]
+    assert linear._messages("not a list") == []
+
+
+# --- the retry sequence is bounded by the poll that contains it ---
+
+
+def test_a_retry_sequence_that_overruns_the_budget_is_a_linear_error(monkeypatch):
+    """The attempts alone can outlast `POLL_TIMEOUT`, which would then surface
+    as an unexplained poll timeout instead of "Linear was slow"."""
+
+    async def never(query, variables):
+        await asyncio.sleep(3600)
+
+    client = linear.Linear("token")
+    monkeypatch.setattr(client, "_request", never)
+    monkeypatch.setattr(linear, "RETRY_BUDGET", 0.05)
+
+    with pytest.raises(linear.LinearError, match="didn't answer within"):
+        asyncio.run(client._query("q {}", {}))
+
+
+def test_the_retry_budget_is_below_the_poll_timeout():
+    """Deliberate layering: reaching the watcher's timeout means a page read was
+    lost to a limit the retry loop was meant to complete within."""
+    assert linear.RETRY_BUDGET < watcher.POLL_TIMEOUT
+
+
+def test_a_429_is_retried_like_a_5xx(monkeypatch):
+    """Rate limiting is expected traffic, not an error worth skipping the poll
+    for."""
+    seen: list[int] = []
+
+    class Response:
+        def __init__(self, status):
+            self.status_code = status
+
+    class Client:
+        def __init__(self, *a, **k): ...
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            seen.append(1)
+            return Response(429 if len(seen) == 1 else 200)
+
+    monkeypatch.setattr(linear.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(linear, "RETRY_BACKOFF_BASE", 0)
+
+    response = asyncio.run(linear.Linear("token")._request("q {}", {}))
+
+    assert response.status_code == 200
+    assert len(seen) == 2, "the 429 was not retried"
+
+
+def test_an_ordinary_client_error_is_not_retried(monkeypatch):
+    seen: list[int] = []
+
+    class Response:
+        status_code = 400
+
+    class Client:
+        def __init__(self, *a, **k): ...
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            seen.append(1)
+            return Response()
+
+    monkeypatch.setattr(linear.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(linear, "RETRY_BACKOFF_BASE", 0)
+
+    response = asyncio.run(linear.Linear("token")._request("q {}", {}))
+
+    assert response.status_code == 400
+    assert len(seen) == 1, "a 4xx that is not 429 was retried"
+
+
+# --- a refresh reaches the live connection too ---
+
+
+def test_a_refresh_reaches_the_subscription_it_was_given(tmp_path):
+    """The handshake header is fixed at connect time, so the token has to be
+    handed to the subscription for its next reconnect. Without it the socket
+    reconnects with the dead token forever and live updates never come back."""
+
+    class Sub:
+        def __init__(self):
+            self.tokens: list[str] = []
+
+        def use_token(self, token):
+            self.tokens.append(token)
+
+    client = Expiring("fresh")
+    sub = Sub()
+    spy = Spy()
+    w = watcher.Watcher(
+        client,
+        Router("Chord", "spy", factory=lambda s: spy),
+        1,
+        tmp_path / "state.json",
+        subscription=sub,
+        renew=lambda: "fresh",
+    )
+
+    asyncio.run(w.poll())
+
+    assert len(spy.prompts) == 1, "the token did not heal the poll"
+    assert sub.tokens == ["fresh"], "the subscription kept the dead token"

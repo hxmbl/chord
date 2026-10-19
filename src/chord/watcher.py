@@ -17,6 +17,7 @@ from chord.context import Issue, render
 from chord.harness import HarnessError
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
 from chord.paths import project_root
+from chord.performance import instrumented
 from chord.repo import ResolutionError, resolve
 from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label
 from chord.subscribe import Subscription
@@ -26,12 +27,13 @@ from chord.webhook import Webhook
 # The most hand-overs to remember, and no smaller than the number of issues
 # one poll will read: `linear.MAX_ISSUES_PER_POLL` is the most a single poll
 # can offer, so anything below that and a still-labelled issue could be
-# forgotten while it is still in view. Dropping older entries can't re-offer an
-# issue in practice, because Linear pages newest-first, so an issue that has
-# fallen out of the window is also out of the page.
+# forgotten while it is still in view.
 #
 # The cap is what keeps the file readable for the person who opens it to reset
-# Chord, which is the reason it exists at all.
+# Chord, which is the reason it exists at all. It is a target rather than a
+# hard bound: `_remember` never evicts an id that is in the page currently
+# being walked, so a page that exceeds the cap (possible only if the cap is
+# set below `MAX_ISSUES_PER_POLL`) loses none of its own issues.
 STATE_CAP = 1000
 
 # How long a single Linear request gets before we treat it as a failed poll.
@@ -169,6 +171,9 @@ class Watcher:
         self._path = state_path
         self._seen = read_state(state_path)
         self._last_problem: str | None = None
+        # The ids in the page currently being walked, so trimming the state
+        # file never drops one of them (see `_remember`).
+        self._in_page: set[str] = set()
         self._subscription = subscription
         self._webhook = webhook
         # How to re-read the token. Supplied rather than reached for, because the
@@ -218,9 +223,18 @@ class Watcher:
         except Exception as exc:
             self._problem(f"couldn't adopt the new token: {one_line(str(exc))}")
             return False
+        if self._subscription is not None:
+            # The subscription's handshake header is fixed at connect time, so
+            # this takes effect on its next reconnect rather than on the live
+            # socket. Without it the socket reconnects with the dead token
+            # forever, and live updates stay silently off until a restart.
+            adopt = getattr(self._subscription, "use_token", None)
+            if adopt is not None:
+                adopt(token)
         self._adopted = token
         return True
 
+    @instrumented
     async def run(self) -> None:
         """Poll until cancelled.
 
@@ -296,9 +310,15 @@ class Watcher:
             f"live updates unavailable ({message}); polling every {self._interval}s"
         )
 
-    async def poll(self) -> None:
+    @instrumented
+    async def poll(self) -> bool:
         """One pass over Linear. Never raises: a watcher that dies on a bad
         moment is worse than one that says what went wrong and carries on.
+
+        Returns whether the page was read. The per-issue work inside can report
+        its own problems and still complete, but a poll that could not read
+        Linear is the failure worth counting, and the return value is how the
+        instrumentation learns it.
 
         The promise covers the whole body, including the paging loop and the
         sort, rather than just the request. A daemon has no supervisor and no
@@ -309,7 +329,7 @@ class Watcher:
         the rest of the backlog.
         """
         try:
-            await self._poll()
+            return await self._poll()
         except asyncio.CancelledError:
             # `chord stop` reaches the watcher this way. Swallowing it here would
             # make the watcher unstoppable.
@@ -318,8 +338,10 @@ class Watcher:
             self._problem(
                 f"couldn't read Linear: {type(exc).__name__}: {one_line(str(exc))}"
             )
+            return False
 
-    async def _poll(self) -> None:
+    async def _poll(self) -> bool:
+        """The body of one poll. Returns whether Linear's page was read."""
         try:
             page = await asyncio.wait_for(
                 self._linear.issues_for(self._router.filter()), POLL_TIMEOUT
@@ -339,7 +361,7 @@ class Watcher:
                 self._problem(
                     f"{exc} Run `chord refresh`, then this Chord picks it up."
                 )
-                return
+                return False
             try:
                 page = await asyncio.wait_for(
                     self._linear.issues_for(self._router.filter()), POLL_TIMEOUT
@@ -348,13 +370,13 @@ class Watcher:
                 self._problem(
                     f"still couldn't read Linear after refreshing: {one_line(str(retry))}"
                 )
-                return
+                return False
         except LinearError as exc:
             self._problem(str(exc))
-            return
+            return False
         except TimeoutError:
             self._problem(f"Linear didn't answer within {POLL_TIMEOUT}s.")
-            return
+            return False
 
         # Said out loud on purpose. The alternative — quietly reading the first
         # N issues — is how a backlog ends up with issues that simply never
@@ -363,12 +385,19 @@ class Watcher:
         # Reported before `_last_problem` is cleared, and cleared only when
         # there is nothing to report, so a label that is permanently over the
         # cap says so once rather than every poll for the life of the watcher.
+        truncation = (
+            f"more issues carry {self._router.default_name!r} than one poll "
+            "reads; raise MAX_ISSUES_PER_POLL in chord/linear.py to see them all"
+        )
         if page.truncated:
-            self._problem(
-                f"more issues carry {self._router.default_name!r} than one poll "
-                "reads; raise MAX_ISSUES_PER_POLL in chord/linear.py to see them all"
-            )
-        else:
+            self._problem(truncation)
+        elif self._last_problem == truncation:
+            # Only the truncation warning is cleared when the condition ends.
+            # Clearing `_last_problem` on every healthy poll used to re-log
+            # every problem raised during per-issue handling — a repository
+            # that is temporarily missing, an unreadable issue, a subscription
+            # that keeps dropping — once per interval, which is exactly what
+            # the once-in-a-row rule exists to prevent.
             self._last_problem = None
 
         usable, dropped = _usable_issues(page.issues)
@@ -376,6 +405,10 @@ class Watcher:
             # Said rather than swallowed: an issue that disappears without a word
             # is indistinguishable from one that never existed.
             self._problem(f"skipped {dropped} issue(s) Linear returned unreadable")
+
+        # The page we are about to walk, so `_remember` never trims one of these
+        # away while it is still in view.
+        self._in_page = {_key(issue.get("id")) for issue in usable}
 
         # Oldest first, so a backlog works its way through in the order it was
         # written rather than the order it was last touched.
@@ -418,6 +451,8 @@ class Watcher:
                     )
                     self._remember(issue.get("id"))
 
+        return True
+
     async def _hand_over(self, issue: Issue) -> None:
         identifier = _label(issue)
         log(f"{identifier} {issue.get('title') or ''}".rstrip())
@@ -432,6 +467,27 @@ class Watcher:
             return
 
         chosen = await self._resolve(issue, identifier, issue_id)
+        if chosen is None:
+            # The filter matched this issue on a route label, so a payload that
+            # carries labels but names no route is one Chord cannot read.
+            # Running the default would put the work on a harness nobody asked
+            # for — the case `test_wrong_harness.py` exists to eliminate — so it
+            # is skipped and recorded, and the person who labelled it can fix
+            # it. The second line exists for the same reason as every other
+            # recorded skip: dropping the id from the state file is how somebody
+            # retries it by hand.
+            _spacer()
+            self._problem(
+                f"{identifier} skipped: it carries labels but no "
+                f"{self._router.default_name!r} route Chord can read."
+            )
+            self._problem(
+                f"  to retry it: add a route label, then drop {_key(issue_id)} "
+                f"from {self._path.name}."
+            )
+            await notify.skipped(identifier, "no route label Chord can read")
+            self._remember(issue_id)
+            return
 
         if not await self._authorise(issue, identifier, issue_id, chosen):
             return
@@ -539,9 +595,16 @@ class Watcher:
         except BaseException as exc:
             # `CancelledError` is meant to travel: it is how `chord stop` reaches
             # the watcher, and swallowing it here would make the watcher
-            # unstoppable. Every other `BaseException` — `KeyboardInterrupt`, a
-            # library raising something outside `Exception`, a `SystemExit` from
-            # a harness — leaves the issue unrecorded, which means the same work
+            # unstoppable. It is the one case that is *not* recorded: the person
+            # asked Chord to stop, not to declare the issue done, and writing it
+            # to the state file would turn a stopped hand-over into work that
+            # never runs again — at-most-once where the contract is
+            # at-least-once.
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            # Every other `BaseException` — `KeyboardInterrupt`, a library
+            # raising something outside `Exception`, a `SystemExit` from a
+            # harness — leaves the issue unrecorded, which means the same work
             # is handed to the agent again on the next poll, and the one after
             # that, for as long as the process lives.
             #
@@ -552,12 +615,7 @@ class Watcher:
             # in-progress marker written before the run, would trade this
             # duplicate for the possibility of never running the work at all,
             # which is the worse of the two.
-            #
-            # Announced, except for the cancellation: a `chord stop` is the
-            # person's own doing and needs no banner, and the notification would
-            # otherwise be the last thing the watcher says on its way out.
-            if not isinstance(exc, asyncio.CancelledError):
-                await notify.failed(identifier, f"{type(exc).__name__}: {exc}")
+            await notify.failed(identifier, f"{type(exc).__name__}: {exc}")
             self._remember(issue_id)
             raise
 
@@ -567,7 +625,7 @@ class Watcher:
 
     async def _resolve(
         self, issue: Issue, identifier: str, issue_id: Any
-    ) -> Routed:
+    ) -> Routed | None:
         """Which harness this issue is routed to, and who routed it.
 
         Both questions come out of one read of Linear's audit trail, because
@@ -581,17 +639,30 @@ class Watcher:
         the read failed. Callers treat that as "ask nobody", never as "ask
         anyone": a permissive fallback here would turn the allowlist off
         silently on exactly the issues it is hardest to reason about.
+
+        None means "the payload names no route at all", which `_hand_over`
+        turns into a recorded skip rather than a run on the default. It is
+        only returned when the issue actually carries labels: a payload with
+        no label information is the historical shape that falls back to the
+        default, and is reported here.
         """
         candidates = self._router.candidates(issue)
         if not candidates:
-            # The filter matched this issue on a route label, so this shouldn't
-            # happen. Reported rather than guessed at, because guessing means
-            # running the work somewhere nobody asked for.
-            self._problem(
-                f"{identifier} has no {self._router.default_name!r} label on it, "
-                "so Chord can't tell what it was routed to. Using the default."
-            )
-            return Routed(DEFAULT_ROUTE, None, NO_LABEL)
+            if issue.get("labels") is None:
+                # Nothing on the issue even claims to be a label, so there is
+                # no route to have been misread. Reported rather than guessed
+                # at quietly, but the default still runs, as it always has.
+                self._problem(
+                    f"{identifier} has no {self._router.default_name!r} label on "
+                    "it, so Chord can't tell what it was routed to. Using the "
+                    "default."
+                )
+                return Routed(DEFAULT_ROUTE, None, NO_LABEL)
+            # Labels are present and none of them is a route. The filter matched
+            # this issue, so the payload is malformed or a label changed
+            # underneath us. Refusing to guess keeps the work off a harness
+            # nobody asked for.
+            return None
 
         # One round trip is spent on the routing choice when there is one, and
         # unconditionally when there is an allowlist, because then the actor is
@@ -706,8 +777,14 @@ class Watcher:
     def _remember(self, issue_id: object) -> None:
         self._seen[_key(issue_id)] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         # Keep the newest entries; dicts hold insertion order, so the tail is
-        # the most recent.
-        trimmed = dict(list(self._seen.items())[-STATE_CAP:])
+        # the most recent. An id in the page currently being walked is kept
+        # regardless: insertion order is hand-over order, and the query does not
+        # order the page, so an issue handed over early in the poll can sit at
+        # the head while still in view. Evicting it there would offer it again
+        # on a later poll even though it never left the page.
+        newest = list(self._seen)[-STATE_CAP:]
+        keep = set(newest) | self._in_page
+        trimmed = {key: when for key, when in self._seen.items() if key in keep}
         self._seen = trimmed
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)

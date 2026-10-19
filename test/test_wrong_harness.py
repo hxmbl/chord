@@ -252,10 +252,12 @@ def test_the_default_still_runs_for_the_bare_label(tmp_path):
 
 
 def test_a_non_route_label_is_not_a_route(tmp_path):
-    """Unrelated labels are still ignored entirely."""
-    ran, _watcher, out = run_once(tmp_path, ["Bug", "Research"])
-    assert ran == ["DEFAULT"], "the filter matched it, so the default runs it"
-    assert "skipped" not in out
+    """Unrelated labels are still ignored, and with no route at all the issue is
+    skipped rather than run on the default."""
+    ran, w, out = run_once(tmp_path, ["Bug", "Research"])
+    assert ran == [], "a payload naming no route was run on the default"
+    assert w.handed_over == 1, "recorded, so it is not retried on every poll"
+    assert "skipped" in out
 
 
 def test_candidates_ordering_is_unaffected(tmp_path):

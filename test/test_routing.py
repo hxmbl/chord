@@ -166,6 +166,16 @@ def test_candidates_survive_an_issue_with_no_labels_at_all():
     assert Router("Chord", "print").candidates({"labels": {"nodes": []}}) == []
 
 
+def test_candidates_survive_a_null_nodes_list():
+    """Linear sends `nodes: null` for an issue that carries no labels.
+
+    `.get("nodes", [])` hands back `None` when the key is present-and-null, and
+    the loop then raises. A raise here is recorded as handed over, so the work
+    is silently lost — the outcome this read exists to prevent.
+    """
+    assert Router("Chord", "print").candidates({"labels": {"nodes": None}}) == []
+
+
 # --- resolving a route to a harness ---
 
 
@@ -571,15 +581,44 @@ def test_a_curated_route_that_cannot_run_does_not_wedge_the_queue(tmp_path):
     assert "do 2" in spy.prompts[0]
 
 
-def test_an_issue_with_no_route_label_says_so_and_uses_the_default(tmp_path, capsys):
-    """The filter should have matched on one; if it didn't, don't guess quietly."""
+def test_an_issue_whose_labels_name_no_route_is_skipped_not_run(tmp_path, capsys):
+    """The filter should have matched on a route label; if it didn't, don't guess.
+
+    A payload that carries labels but names no route is the wrong-harness case:
+    running the default would put the work on an agent nobody asked for, so it
+    is skipped and recorded rather than quietly worked on.
+    """
     spy = RecordingHarness()
     stub = StubLinear([issue(1, "Bug")])
-    asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
+    runner = build(tmp_path, stub, spy, CURATED)
+    asyncio.run(runner.poll())
 
     out = capsys.readouterr().out
-    assert len(spy.prompts) == 1
-    assert "no 'Chord' label" in out
+    assert spy.prompts == [], "a payload naming no route was run on the default"
+    assert "skipped" in out
+    assert runner.handed_over == 1, "an unrecorded skip is retried on every poll"
+
+
+def test_an_issue_with_no_label_information_still_uses_the_default(tmp_path, capsys):
+    """The skip is only for a payload that *names* labels and no route.
+
+    A payload with no `labels` field at all carries no route to have been
+    misread, so it falls back to the default as Chord always has. Refusing to
+    run it would turn an absent field into a silent loss.
+    """
+    spy = RecordingHarness()
+    bare = {
+        "id": "1",
+        "identifier": "ENG-1",
+        "title": "Issue 1",
+        "description": "do 1",
+        "createdAt": "2026-01-01T00:00:00Z",
+    }
+    runner = build(tmp_path, StubLinear([bare]), spy, CURATED)
+    asyncio.run(runner.poll())
+
+    assert len(spy.prompts) == 1, "a payload with no labels at all was skipped"
+    assert "no 'Chord' label" in capsys.readouterr().out
 
 
 def test_the_default_route_is_not_logged_on_every_issue(tmp_path, capsys):

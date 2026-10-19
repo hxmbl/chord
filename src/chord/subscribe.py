@@ -106,6 +106,17 @@ class Subscription(EventSource):
         self._task: asyncio.Task | None = None
         self._closing = False
 
+    def use_token(self, access_token: str) -> None:
+        """Adopt a token issued after this subscription was built.
+
+        The handshake header is fixed at connect time, so this takes effect on
+        the next reconnect rather than on the live socket. Without it a socket
+        that reconnects after the access token's 24 hours keeps presenting the
+        dead token forever, and live updates stay silently off until a restart
+        — polling keeps correctness, but the fast path never comes back.
+        """
+        self._token = access_token
+
     @property
     def connected(self) -> bool:
         return self._task is not None and not self._task.done()

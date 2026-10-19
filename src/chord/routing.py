@@ -20,6 +20,7 @@ from typing import NamedTuple
 
 from chord.config import SEPARATOR, HarnessSpec, spell
 from chord.harness import Harness, HarnessError, build
+from chord.performance import instrumented
 
 # The name that asks for the default harness. Curated names are separate
 # namespaces from the `harness` setting: `Chord/foo` always means "the curated
@@ -178,7 +179,12 @@ class Router:
         """
         found: list[str] = []
         labels = issue.get("labels")
-        for node in labels.get("nodes", []) if isinstance(labels, dict) else []:
+        # `or []` rather than a default: a present-but-null `nodes` is not
+        # missing, so `.get(key, [])` would hand back `None` and the loop would
+        # raise. Linear sends `nodes: null` for an issue with no labels, and a
+        # raise here is recorded as handed over — the work is silently lost.
+        nodes = (labels.get("nodes") or []) if isinstance(labels, dict) else []
+        for node in nodes:
             if not isinstance(node, dict):
                 continue
             route = route_of(self.label, str(node.get("name") or ""))
@@ -186,6 +192,7 @@ class Router:
                 found.append(route)
         return sorted(found, key=lambda route: (-len(route), route))
 
+    @instrumented
     def harness_for(self, name: str) -> Harness:
         """The harness a route runs on, built once and remembered."""
         if name in self._built:

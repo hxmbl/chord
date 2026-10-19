@@ -18,6 +18,7 @@ import hmac
 import logging
 
 from chord.event_source import EventSource
+from chord.performance import instrumented
 
 _log = logging.getLogger(__name__)
 
@@ -26,8 +27,11 @@ _log = logging.getLogger(__name__)
 # declare a `Content-Length` and then go quiet.
 READ_TIMEOUT = 5.0
 MAX_BODY = 1_000_000
-# Enough for a request line, a handful of headers, and their terminator. The
-# default 64KiB limit is generous enough and raising it is not needed.
+# Enough for a request line, a handful of headers, and their terminator. Passed
+# to `asyncio.start_server` as the `StreamReader` limit, so `readuntil` raises
+# `LimitOverrunError` for a header block past this and `_respond` answers 400
+# rather than buffering an unbounded amount. (The body is bounded separately, by
+# `MAX_BODY` and the `readexactly` below it.)
 MAX_HEAD = 32 * 1024
 
 SECRET_HEADER = b"x-chord-secret"
@@ -61,7 +65,9 @@ class Webhook(EventSource):
         return self.listening
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle, self.host, self.port)
+        self._server = await asyncio.start_server(
+            self._handle, self.host, self.port, limit=MAX_HEAD
+        )
         socket = self._server.sockets[0]
         self.port = socket.getsockname()[1]
 
@@ -71,42 +77,51 @@ class Webhook(EventSource):
             await self._server.wait_closed()
             self._server = None
 
+    @instrumented
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        # Answer, rather than raise, for every way this can go wrong. `status` and
-        # `body` are set before the `try` now: they used to be assigned only inside
-        # it, so an exception the `except` clause did not name reached the
-        # `finally` with them unbound and raised `UnboundLocalError` from the
-        # cleanup itself — which skipped `writer.close()`, leaking the socket.
-        # That was reachable from anything not in the tuple below, cancellation
-        # (`chord stop`) among them.
+    ) -> bool:
+        """Answer one request and report whether it was a success.
+
+        Returns whether the request got a `200 OK`. The instrumentation needs
+        that: this method answers failures (400, 401, 404, a read timeout)
+        rather than raising them, so "did not raise" would report every rejected
+        request as a success.
+
+        A writer is always closed, whatever happens — including cancellation
+        (`chord stop`). `status` and `body` used to be assigned only inside the
+        `try`, and cancellation re-raised before the write/close block, so a
+        cancelled request leaked its socket and the `finally` could raise
+        `UnboundLocalError` from the cleanup itself. The outer `finally` below
+        is what makes the close unconditional.
+        """
         status = b"400 Bad Request"
         body = b"bad request\n"
         try:
-            async with asyncio.timeout(READ_TIMEOUT):
-                status, body = await self._respond(reader)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
-            pass
-        except asyncio.CancelledError:
-            # `chord stop`. Reply as best we can, then let it continue.
-            raise
-        except (ConnectionError, OSError):
-            # The client went away mid-request. Nothing to reply to.
-            with contextlib.suppress(ConnectionError, OSError):
-                writer.close()
-            return
-        except Exception:
-            # Never take the listener down over one request. `warning` rather
-            # than `error`: a malformed request is expected traffic from
-            # something that is not Linear, and the log is a long-lived daemon's
-            # log that a person reads when the watcher misbehaves. The
-            # traceback is kept because reaching here means the request was not
-            # one of the shapes handled below, which is the interesting part.
-            _log.warning("unexpected error handling a webhook request", exc_info=True)
-            status, body = b"400 Bad Request", b"bad request\n"
+            try:
+                async with asyncio.timeout(READ_TIMEOUT):
+                    status, body = await self._respond(reader)
+            except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
+                pass
+            except asyncio.CancelledError:
+                # `chord stop`. Reply as best we can in the `finally`, then let
+                # it continue.
+                raise
+            except (ConnectionError, OSError):
+                # The client went away mid-request. Nothing to reply to.
+                return False
+            except Exception:
+                # Never take the listener down over one request. `warning` rather
+                # than `error`: a malformed request is expected traffic from
+                # something that is not Linear, and the log is a long-lived
+                # daemon's log that a person reads when the watcher misbehaves.
+                # The traceback is kept because reaching here means the request
+                # was not one of the shapes handled below.
+                _log.warning(
+                    "unexpected error handling a webhook request", exc_info=True
+                )
+                status, body = b"400 Bad Request", b"bad request\n"
 
-        try:
             writer.write(
                 b"HTTP/1.1 "
                 + status
@@ -117,6 +132,7 @@ class Webhook(EventSource):
             )
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.drain()
+            return status == b"200 OK"
         finally:
             writer.close()
             with contextlib.suppress(ConnectionError, OSError):
@@ -167,6 +183,13 @@ class Webhook(EventSource):
         if not self._authorised(secret):
             # Checked before the body is read, so an unauthorised caller cannot
             # make us wait on bytes it is not allowed to send.
+            #
+            # Logged because otherwise this is invisible: every delivery gets a
+            # 401, the webhook silently degrades to interval polling, and a
+            # secret that cannot be transmitted the way an HTTP header is
+            # encoded looks exactly like a wrong secret. The offered value is
+            # never echoed.
+            _log.warning("rejected a webhook request carrying the wrong secret")
             return b"401 Unauthorized", b"unauthorized\n"
 
         await reader.readexactly(length)
@@ -180,7 +203,33 @@ class Webhook(EventSource):
         byte-by-byte comparison leaks how much of a guess was right. That is not
         a practical attack over a local socket, but it costs one function call to
         not do it and the alternative is a comparison that reads like a mistake.
+
+        The secret is compared against every byte form a sender might put on the
+        wire. HTTP header values are bytes, and a sender encodes as latin-1 (the
+        header default) or UTF-8; matching only the UTF-8 form meant a
+        non-ASCII secret configured here and sent the standard way was refused
+        forever. A value outside both encodings (a lone surrogate) cannot be
+        transmitted at all, so there is nothing to accept and it is refused.
         """
         if not self.secret:
             return True
-        return hmac.compare_digest(offered, self.secret.encode())
+        return any(
+            hmac.compare_digest(offered, candidate)
+            for candidate in _wire_forms(self.secret)
+        )
+
+
+def _wire_forms(secret: str) -> list[bytes]:
+    """The byte forms of `secret` a client could plausibly send.
+
+    Latin-1 first, because that is what an HTTP header value is defined as on
+    the wire; UTF-8 as well, because a modern client may encode a header that
+    way and refusing it would be a lockout rather than a safeguard.
+    """
+    forms: list[bytes] = []
+    for encoding in ("latin-1", "utf-8"):
+        try:
+            forms.append(secret.encode(encoding))
+        except UnicodeEncodeError:
+            continue
+    return forms

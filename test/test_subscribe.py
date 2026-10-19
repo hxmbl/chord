@@ -54,6 +54,13 @@ def test_available_reflects_the_install():
     assert subscribe.available() is True  # the `live` extra is installed here
 
 
+def test_use_token_replaces_the_token_for_the_next_handshake():
+    """The access token expires every 24 hours and a daemon runs for days."""
+    sub = subscribe.Subscription("old")
+    sub.use_token("new")
+    assert sub._token == "new"
+
+
 def test_wait_times_out_when_never_started():
     """With no connection, `wait` is just the interval sleep."""
     sub = subscribe.Subscription("token")
