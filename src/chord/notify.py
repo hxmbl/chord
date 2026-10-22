@@ -140,6 +140,21 @@ async def refused(thing: str, why: object) -> None:
     await send(f"{thing} refused", one_line(why), group=_group(thing))
 
 
+async def signed_out(why: object) -> None:
+    """Chord couldn't get a working Linear token, so it has stopped picking up work.
+
+    Announced because nothing else would say so: the watcher keeps running and
+    the log is somewhere nobody is looking, so from the outside a Chord that
+    can't sign in looks exactly like a quiet day. Posted once per spell of
+    failure, not once per retry.
+    """
+    await send(
+        "Chord can't renew its Linear token",
+        f"{one_line(why)} Run `chord refresh`, or `chord setup` to sign in again.",
+        group="chord-auth",
+    )
+
+
 async def send(title: str, message: str, *, group: str | None = None) -> None:
     """Post one notification, without ever making a watcher fail.
 

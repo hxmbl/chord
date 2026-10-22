@@ -97,7 +97,7 @@ def harness_add(
 
 @app.command()
 def refresh():
-    """Renew the stored Linear token. This never happens on its own."""
+    """Renew the Linear token now. Chord also does this on its own."""
     code, content = asyncio.run(credentials.refresh())
     if code:
         _fail(content)
@@ -117,7 +117,7 @@ def start():
     # Everything that can be wrong is checked here, before anything is spawned,
     # so the person who typed the command is the one who hears about it rather
     # than a log file they haven't been pointed at yet.
-    _token()
+    _signed_in()
     _check_routes(_router(config))
     try:
         watcher.read_state(daemon.STATE_FILE)
@@ -331,9 +331,11 @@ async def _watch() -> None:
             webhook=webhook,
             # An access token lasts 24 hours and this daemon runs for days, so
             # the token read at startup goes stale. Re-reading it when Linear
-            # refuses one is what lets a `chord refresh` heal a running daemon
-            # instead of needing a restart nobody remembers to do.
+            # refuses one picks up a token another Chord (or `chord setup`)
+            # stored, instead of needing a restart nobody remembers to do.
             renew=lambda: _try_token(),
+            # And renewing it with Linear before it runs out, so nobody has to.
+            freshen=_Freshener(),
             # The directory where Chord was started, used as the base for
             # repository resolution.
             start_dir=project_root(),
@@ -494,6 +496,23 @@ def _stored() -> object:
     return None if code else content
 
 
+def _signed_in() -> str:
+    """The token, renewed first if it's due. Stops the command if there's none.
+
+    Renewing here rather than refusing means a Chord that was stopped for a
+    weekend starts again with nothing to type.
+    """
+    code, content = credentials.read()
+    if code:
+        _fail(content)
+    code, content = asyncio.run(credentials.renew_if_due())
+    # A renewal that fails while the token still works is the watcher's to
+    # retry, not a reason to refuse to start.
+    if code and credentials.load()[0]:
+        _fail(content)
+    return _token()
+
+
 def _token() -> str:
     code, content = credentials.load()
     if code:
@@ -501,6 +520,33 @@ def _token() -> str:
     if not isinstance(content, dict):  # load() only succeeds with a dict.
         _fail("The keychain entry isn't a set of credentials. Run `chord setup`.")
     return content["access_token"]
+
+
+class _Freshener:
+    """Renews the stored token with Linear when it's due, for the watcher.
+
+    Remembers when the token is next due, so a poll that has nothing to renew
+    touches neither the keychain nor Linear. A renewal that fails waits
+    `RENEW_RETRY` before the next attempt, forced or not: a refresh token Linear
+    has refused stays refused, and asking every poll would only fill its logs.
+    """
+
+    def __init__(self) -> None:
+        stored = _stored()
+        self._due = credentials.renew_at(stored) if isinstance(stored, dict) else 0.0
+        self._backoff_until = 0.0
+
+    async def __call__(self, force: bool) -> str | None:
+        now = time.time()
+        if now < self._backoff_until or (not force and now < self._due):
+            return None
+        code, content = await credentials.renew_if_due(force=force)
+        if code or not isinstance(content, dict):
+            self._backoff_until = now + credentials.RENEW_RETRY
+            raise RuntimeError(content)
+        self._due = credentials.renew_at(content)
+        token = content.get("access_token")
+        return token if isinstance(token, str) and token else None
 
 
 def _try_token() -> str | None:
@@ -536,14 +582,14 @@ def _linear_line() -> str:
 
     age = time.time() - (credentials.obtained_at(content) or time.time())
     if age > credentials.max_age():
-        return "connected, but the token is past max age (`chord refresh`)"
+        return "connected, token past max age (renewed on `chord start`)"
 
     expires_at = content.get("expires_at")
     if not isinstance(expires_at, int | float) or isinstance(expires_at, bool):
         return "connected"
     left = expires_at - time.time()
     if left <= 0:
-        return "connected, but the token has expired (`chord refresh`)"
+        return "connected, token expired (renewed on `chord start`)"
     return f"connected, token good for {_remaining(left)}"
 
 

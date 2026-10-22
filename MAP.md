@@ -124,7 +124,7 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - OAuth flow with PKCE (code verifier)
 - Client credentials from `.env` file
 - Tokens stored in OS keychain (never in files Chord writes)
-- Token refresh with `chord refresh` (never automatic)
+- Automatic token renewal (`renew_if_due`): an hour before expiry and on a refusal, one renewer per machine via `~/.chord/renew.lock`
 - Max age enforcement (configurable via `CHORD_MAX_AGE`)
 - Local HTTP server on port 23841 for OAuth callback
 

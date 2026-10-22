@@ -261,7 +261,7 @@ def test_no_renewable_token_says_what_to_run(tmp_path, capsys):
     asyncio.run(w.poll())
 
     out = capsys.readouterr().out
-    assert "chord refresh" in out, "the remedy was not in the log"
+    assert "chord setup" in out, "the remedy was not in the log"
     assert "authentication failed" in out, "Linear's own wording was lost"
     assert spy.prompts == []
 
@@ -274,7 +274,7 @@ def test_the_remedy_is_said_once_not_every_poll(tmp_path, capsys):
     for _ in range(5):
         asyncio.run(w.poll())
 
-    assert capsys.readouterr().out.count("chord refresh") == 1
+    assert capsys.readouterr().out.count("chord setup") == 1
 
 
 def test_it_recovers_without_being_told_to_restart(tmp_path):
@@ -327,7 +327,7 @@ def test_a_watcher_with_no_renew_callback_still_works(tmp_path, capsys):
 
     asyncio.run(w.poll())
 
-    assert capsys.readouterr().out.count("chord refresh") == 1
+    assert capsys.readouterr().out.count("chord setup") == 1
 
 
 def test_a_client_that_cannot_be_given_a_token_is_not_retried(tmp_path, capsys):
@@ -346,7 +346,7 @@ def test_a_client_that_cannot_be_given_a_token_is_not_retried(tmp_path, capsys):
     w, _spy = build(tmp_path, NoSetter(), renew=lambda: "fresh")
     asyncio.run(w.poll())
 
-    assert "chord refresh" in capsys.readouterr().out
+    assert "chord setup" in capsys.readouterr().out
 
 
 def test_a_keychain_that_will_not_open_does_not_take_the_watcher_down(

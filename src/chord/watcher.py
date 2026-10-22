@@ -8,7 +8,7 @@ backlog again.
 import asyncio
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -164,6 +164,7 @@ class Watcher:
         webhook: Webhook | None = None,
         renew: Callable[[], str | None] | None = None,
         start_dir: Path | None = None,
+        freshen: Callable[[bool], Awaitable[str | None]] | None = None,
     ) -> None:
         self._linear = linear
         self._router = router
@@ -180,6 +181,15 @@ class Watcher:
         # watcher has no business reading a keychain, and because a test needs
         # to be able to say what the next token is.
         self._renew = renew
+        # How to renew the token with Linear: called before every poll with
+        # False (renew only if it is about to run out), and with True once
+        # Linear has refused the one we hold. Returns the token to use, or None
+        # when there is nothing new. Kept apart from `renew`, which only reads.
+        self._freshen = freshen
+        # Whether the person has been told the token can't be renewed, so a
+        # failure that lasts all night is one notification, not one per retry.
+        # Cleared when a token works again.
+        self._told_signed_out = False
         # The last token this process adopted, so a keychain read that hands
         # back the same dead string is recognised as not-a-renewal.
         self._adopted: str | None = None
@@ -215,6 +225,41 @@ class Watcher:
             return False
         if not token or token == self._adopted:
             return False
+        return self._adopt(token)
+
+    async def _renew_with_linear(self, force: bool) -> bool:
+        """Ask for a new token if one is due (or `force`). Whether it changed.
+
+        Never raises: a renewal that fails is said once in the log, and the
+        poll goes ahead with the token we hold, which may well still work.
+        """
+        if self._freshen is None:
+            return False
+        try:
+            token = await self._freshen(force)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._problem(f"couldn't renew the Linear token: {one_line(str(exc))}")
+            await self._tell_signed_out(exc)
+            return False
+        if not token or token == self._adopted:
+            return False
+        if not self._adopt(token):
+            return False
+        log("Renewed the Linear token.")
+        self._told_signed_out = False
+        return True
+
+    async def _tell_signed_out(self, why: object) -> None:
+        """A desktop notification that the token can't be renewed. Once per spell."""
+        if self._told_signed_out:
+            return
+        self._told_signed_out = True
+        await notify.signed_out(why)
+
+    def _adopt(self, token: str) -> bool:
+        """Hand `token` to the client (and the live socket). Whether it took."""
         use = getattr(self._linear, "use_token", None)
         if use is None:
             return False
@@ -342,6 +387,7 @@ class Watcher:
 
     async def _poll(self) -> bool:
         """The body of one poll. Returns whether Linear's page was read."""
+        await self._renew_with_linear(False)
         try:
             page = await asyncio.wait_for(
                 self._linear.issues_for(self._router.filter()), POLL_TIMEOUT
@@ -349,18 +395,19 @@ class Watcher:
         except asyncio.CancelledError:
             raise
         except Unauthorised as exc:
-            # The one failure that a retry on its own cannot fix: the token this
-            # process was started with is dead, and will stay dead until somebody
-            # runs `chord refresh`. Re-read it and try once more, so the common
-            # case — a person refreshed the token and left the daemon running —
-            # heals without anybody noticing there was anything to heal.
+            # The one failure that a retry on its own cannot fix: the token we
+            # hold is dead. First see whether another Chord already renewed it
+            # (a keychain read), then renew it with Linear ourselves. Either
+            # way the daemon heals without anybody noticing.
             #
             # Once per poll at most, and only when the token actually changed. A
             # keychain read is not free and this runs every interval forever.
-            if not self._renew_token():
+            if not self._renew_token() and not await self._renew_with_linear(True):
                 self._problem(
-                    f"{exc} Run `chord refresh`, then this Chord picks it up."
+                    f"{exc} Run `chord setup` to sign in again; "
+                    "this Chord picks it up."
                 )
+                await self._tell_signed_out(f"Linear refused the token: {exc}.")
                 return False
             try:
                 page = await asyncio.wait_for(
