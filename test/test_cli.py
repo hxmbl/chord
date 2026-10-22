@@ -555,7 +555,7 @@ def test_help_is_the_same_output_as_the_help_flag():
 def test_help_lists_the_commands():
     result = runner.invoke(app, ["help"])
     assert result.exit_code == 0
-    for command in ("setup", "start", "stop", "watch", "info"):
+    for command in ("setup", "refresh", "start", "stop", "watch", "info"):
         assert command in result.stdout
 
 

@@ -111,6 +111,7 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 | `chord init`             | Write the stock `chord.toml`, annotated.               |
 | `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
 | `chord start`            | Watch in the background.                                |
+| `chord refresh`          | Renew the token now. Chord also does it on its own.     |
 | `chord stop`       | Stop watching.                                          |
 | `chord watch`      | Follow the log, live.                                   |
 | `chord info`       | Show the settings, the labels Chord acts on, and the state. |

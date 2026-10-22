@@ -95,9 +95,9 @@ def harness_add(
     typer.echo("`chord info` lists every label Chord acts on.")
 
 
-@app.command(hidden=True)
+@app.command()
 def refresh():
-    """Renew the stored Linear token now. A running Chord does this itself."""
+    """Renew the Linear token now. Chord also does this on its own."""
     code, content = asyncio.run(credentials.refresh())
     if code:
         _fail(content)
