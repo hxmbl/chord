@@ -186,6 +186,10 @@ class Watcher:
         # Linear has refused the one we hold. Returns the token to use, or None
         # when there is nothing new. Kept apart from `renew`, which only reads.
         self._freshen = freshen
+        # Whether the person has been told the token can't be renewed, so a
+        # failure that lasts all night is one notification, not one per retry.
+        # Cleared when a token works again.
+        self._told_signed_out = False
         # The last token this process adopted, so a keychain read that hands
         # back the same dead string is recognised as not-a-renewal.
         self._adopted: str | None = None
@@ -237,13 +241,22 @@ class Watcher:
             raise
         except Exception as exc:
             self._problem(f"couldn't renew the Linear token: {one_line(str(exc))}")
+            await self._tell_signed_out(exc)
             return False
         if not token or token == self._adopted:
             return False
         if not self._adopt(token):
             return False
         log("Renewed the Linear token.")
+        self._told_signed_out = False
         return True
+
+    async def _tell_signed_out(self, why: object) -> None:
+        """A desktop notification that the token can't be renewed. Once per spell."""
+        if self._told_signed_out:
+            return
+        self._told_signed_out = True
+        await notify.signed_out(why)
 
     def _adopt(self, token: str) -> bool:
         """Hand `token` to the client (and the live socket). Whether it took."""
@@ -394,6 +407,7 @@ class Watcher:
                     f"{exc} Run `chord setup` to sign in again; "
                     "this Chord picks it up."
                 )
+                await self._tell_signed_out(f"Linear refused the token: {exc}.")
                 return False
             try:
                 page = await asyncio.wait_for(

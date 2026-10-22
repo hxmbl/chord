@@ -290,3 +290,48 @@ def test_the_freshener_backs_off_after_a_failure(stored_token, no_env, monkeypat
     # Even a forced attempt waits out the back-off.
     assert asyncio.run(fresh(True)) is None
     assert calls == [False]
+
+
+# --- telling the person ---
+
+
+def test_a_failed_renewal_posts_one_notification_per_spell(tmp_path, banners):
+    client = Client(None)
+    fail = True
+
+    async def freshen(force):
+        if fail:
+            raise RuntimeError("Linear refused the refresh: invalid_grant")
+        return "renewed"
+
+    w, _spy = build(tmp_path, client, freshen)
+    for _ in range(3):
+        asyncio.run(w.poll())
+
+    auth = [(t, b) for t, b in banners.said if "Linear token" in t]
+    assert len(auth) == 1, banners.titles
+    assert "invalid_grant" in auth[0][1]
+    assert "chord refresh" in auth[0][1]
+
+    # It works again, then breaks again: that is a new spell, so a new banner.
+    fail = False
+    client.live.add("renewed")
+    asyncio.run(w.poll())
+    fail = True
+    w._adopted = None
+    asyncio.run(w.poll())
+    assert sum("Linear token" in t for t in banners.titles) == 2
+
+
+def test_a_refused_token_with_nothing_to_renew_it_is_announced(tmp_path, banners):
+    client = Client()  # nothing is ever live
+
+    async def freshen(force):
+        return None
+
+    w, _spy = build(tmp_path, client, freshen, renew=lambda: None)
+    for _ in range(3):
+        asyncio.run(w.poll())
+
+    assert banners.titles == ["Chord can't renew its Linear token"]
+    assert "authentication failed" in banners.bodies[0]

@@ -712,8 +712,9 @@ moment a renewal succeeds. Two things follow. The new pair goes into the
 keychain before anything uses it. And only one Chord on the machine renews at a
 time (a lock in `~/.chord/renew.lock`); one that was waiting re-reads the
 keychain and uses the pair the other just stored, rather than spending a
-refresh token Linear has already retired. A renewal that fails is logged and
-tried again in five minutes.
+refresh token Linear has already retired. A renewal that fails is logged,
+tried again in five minutes, and announced with one desktop notification
+(not one per retry) saying to run `chord refresh` or `chord setup`.
 
 ---
 
