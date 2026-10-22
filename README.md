@@ -114,7 +114,6 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 | `chord stop`       | Stop watching.                                          |
 | `chord watch`      | Follow the log, live.                                   |
 | `chord info`       | Show the settings, the labels Chord acts on, and the state. |
-| `chord refresh`    | Renew the token. You'll need this about once a day.     |
 | `chord help`       | The same as `chord --help`.                             |
 
 `chord help <command>` is `chord <command> --help`, and `chord info` is the one
@@ -645,9 +644,9 @@ say anything at all.
 were written.
 
 **Chord keeps running when Linear doesn't.** An unreachable Linear, a rate
-limit, or a token that needs renewing is written to the log once and retried on
-the next tick; the watcher doesn't die. Run `chord refresh` and a running
-watcher picks the new token up on its next poll.
+limit, or a failed token renewal is written to the log once and retried later;
+the watcher doesn't die. If Linear stops accepting the refresh token itself,
+run `chord setup` and a running watcher picks the new token up on its next poll.
 
 **A failed hand-over is recorded anyway.** If your harness is missing or
 errors, the log says so and Chord moves to the next issue. Retrying forever
@@ -703,9 +702,17 @@ terminating a stranger's process is worse than refusing.
   flattened to a single printable line before it reaches the log, so it can't
   break a log entry or carry terminal escapes.
 
-Linear's tokens last 24 hours, and `chord refresh` is deliberately never
-automatic: Linear rotates the refresh token on every exchange, so renewing
-silently would be a decision you never made.
+Linear's tokens last 24 hours. A running Chord renews its token an hour before
+it runs out, and again if Linear refuses it, so there is nothing to run by hand.
+`chord start` renews a stale one too.
+
+Linear rotates the refresh token on every exchange, so the old one dies the
+moment a renewal succeeds. Two things follow. The new pair goes into the
+keychain before anything uses it. And only one Chord on the machine renews at a
+time (a lock in `~/.chord/renew.lock`); one that was waiting re-reads the
+keychain and uses the pair the other just stored, rather than spending a
+refresh token Linear has already retired. A renewal that fails is logged and
+tried again in five minutes.
 
 ---
 

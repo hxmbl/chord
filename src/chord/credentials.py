@@ -5,11 +5,13 @@ never leaves this module except into the OAuth client that needs it.
 """
 
 import asyncio
+import contextlib
 import json
 import re
 import secrets
 import time
 import warnings
+from pathlib import Path
 from typing import TypeAlias
 
 import typer
@@ -48,6 +50,16 @@ FAILED = 1
 # a short clock. See `max_age`.
 DEFAULT_MAX_AGE = 24 * 60 * 60
 LINEAR_TTL = 24 * 60 * 60
+
+# How long before a token runs out that the watcher renews it. An hour, so a
+# laptop that sleeps through the exact moment still wakes up with time to spare,
+# and so a renewal that fails has a few polls' worth of retries before Linear
+# starts refusing.
+RENEW_MARGIN = 60 * 60
+
+# How long a failed renewal waits before it is tried again. Linear being down
+# is the common reason, and asking every poll would be noise for nothing.
+RENEW_RETRY = 5 * 60
 
 # Every step answers with (exit code, content): on failure the content is the
 # error message, on success it is whatever that step produced.
@@ -226,23 +238,123 @@ def load() -> Outcome:
 
     stamp = obtained_at(content)
     if stamp is None:
-        return FAILED, "Can't tell how old that token is. Run `chord refresh`."
+        return FAILED, "Can't tell how old that token is. Run `chord setup`."
 
     age = time.time() - stamp
     if age > max_age():
         mins = round(age / 60)
-        return FAILED, f"Token is {mins}m old, past max age. Run `chord refresh`."
+        return FAILED, f"Token is {mins}m old, past max age. Run `chord setup`."
 
     return OK, content
+
+
+def renew_at(credentials: dict) -> float:
+    """When this token should be swapped for a new one, as a Unix time.
+
+    Whichever comes first of Linear's own expiry and our max age, less
+    `RENEW_MARGIN`. A token with neither is due now: we can't tell how long it
+    has left, and renewing early costs one request.
+    """
+    deadlines = []
+    expires_at = credentials.get("expires_at")
+    if isinstance(expires_at, int | float) and not isinstance(expires_at, bool):
+        deadlines.append(float(expires_at))
+    stamp = obtained_at(credentials)
+    if stamp is not None:
+        deadlines.append(stamp + max_age())
+    if not deadlines:
+        return 0.0
+    # A short CHORD_MAX_AGE must not leave a margin larger than the token's
+    # life, or every poll would renew.
+    life = min(deadlines) - (stamp if stamp is not None else time.time())
+    margin = min(RENEW_MARGIN, max(life, 0) / 4)
+    return min(deadlines) - margin
+
+
+def _lock_file() -> Path:
+    return Path.home() / ".chord" / "renew.lock"
+
+
+@contextlib.contextmanager
+def _renewal_lock():
+    """Only one Chord on this machine renews at a time.
+
+    Linear rotates the refresh token on every exchange, so two watchers (two
+    projects, one keychain entry) renewing together would each spend the same
+    refresh token and one of them would be refused, and could leave the
+    keychain holding the loser's dead pair. The lock is per machine because the
+    keychain entry is.
+
+    On a platform without `fcntl` this is a no-op. Two watchers renewing in the
+    same second is unlikely, and refusing to renew at all would be worse.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - not POSIX
+        yield
+        return
+    path = _lock_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+async def renew_if_due(force: bool = False) -> Outcome:
+    """The current credentials, renewed first if they're about to run out.
+
+    This is what keeps a watcher signed in for days without anybody running
+    anything. `force` renews regardless, and is for when Linear has already
+    refused the token we hold.
+
+    The keychain is read again once the lock is held, because the watcher that
+    held it before us may have just renewed. Its new pair is then the answer,
+    and spending its refresh token again would be refused.
+    """
+    code, before = read()
+    if code:
+        return code, before
+    if not isinstance(before, dict):
+        return FAILED, "Stored credentials are in an unexpected shape."
+    if not force and time.time() < renew_at(before):
+        return OK, before
+
+    async with _async_lock():
+        code, now = read()
+        if code:
+            return code, now
+        if not isinstance(now, dict):
+            return FAILED, "Stored credentials are in an unexpected shape."
+        renewed_elsewhere = now.get("access_token") != before.get("access_token")
+        if renewed_elsewhere and time.time() < renew_at(now):
+            return OK, now
+        if not force and time.time() < renew_at(now):
+            return OK, now
+        return await refresh()
+
+
+@contextlib.asynccontextmanager
+async def _async_lock():
+    """`_renewal_lock`, waited for off the event loop."""
+    stack = contextlib.ExitStack()
+    await asyncio.to_thread(stack.enter_context, _renewal_lock())
+    try:
+        yield
+    finally:
+        stack.close()
 
 
 async def refresh() -> Outcome:
     """Trade the stored refresh token for a new pair, and put the new pair away.
 
-    Never automatic, and never silent: Linear rotates the refresh token on
-    every exchange, so the old one dies the moment this succeeds. We always
-    re-store, otherwise you'd be left holding a dead pair and a live access
-    token with nothing to renew it.
+    Linear rotates the refresh token on every exchange, so the old one dies the
+    moment this succeeds. The new pair is stored before anything uses it,
+    otherwise a crash in between would leave the keychain holding a dead pair.
+    The watcher reaches this through `renew_if_due`, which holds the lock that
+    keeps two Chords from spending the same refresh token.
     """
     # `read`, not `load`: a token past its max age is precisely the one that
     # needs renewing, so applying the freshness gate here would make this
@@ -284,7 +396,11 @@ async def refresh() -> Outcome:
                 TOKEN_ENDPOINT, refresh_token=refresh_token
             )
         except OAuthError as exc:
-            return FAILED, f"Linear refused the refresh: {_printable(str(exc))}"
+            message = (
+                f"Linear refused the refresh: {_printable(str(exc))}. "
+                "Run `chord setup` to sign in again."
+            )
+            return FAILED, message
 
     rotated = _carry_identity(dict(token), credentials)
     code, content = _store(rotated)
