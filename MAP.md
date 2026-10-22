@@ -5,9 +5,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 
 ## Entry Point
 **`src/chord/cli.py`** - The command-line interface
-- Nine commands: `setup`, `init`, `harness add`, `refresh`, `start`, `stop`,
-  `watch`, `info`, `help`
-  (`help` forwards to the command you name, and `_serve` is hidden)
+- Commands: `setup`, `init`, `harness add`, `refresh`, `start`, `stop`, `watch`,
+  `info`, `help` (`help` forwards to the command you name; `_serve` is hidden)
+- `chord start` runs the guided setup first when Chord isn't signed in
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
 - All commands are thin wrappers that validate state before calling other modules
@@ -18,6 +18,14 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
   the machine run a harness
 
 ## Core Modules
+
+### Guided setup
+**`src/chord/setup.py`** - `chord setup`
+- Three steps, each skipped when done: Linear OAuth app credentials into `.env`,
+  sign-in (`credentials.authenticate`), project config via `write_setup()`
+- Offers the coding tools found on PATH (`KNOWN_TOOLS`); adds the signed-in
+  user to `allowed_actors`; never overwrites a config or touches Linear
+- Without a terminal it only signs in, as the old `chord setup` did
 
 ### Configuration
 **`src/chord/config.py`** - Settings management
@@ -30,7 +38,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - `allowed_actors` is a list of Linear **user ids**; ids and not names because
   Linear lets anyone rewrite their own display name
 - All settings have defaults, so Chord works without a config file
-- `init_file()` writes the stock annotated config; `curate()` appends a
+- `init_file()` writes the stock annotated config; `write_setup()` writes the
+  same file with setup's answers filled in; `curate()` appends a
   `[harnesses."<name>"]` table (appending is safe because TOML tables come
   last), proving the result parses before it lands on disk
 
@@ -223,7 +232,7 @@ Harness output (logged to chord.log)
     exists and is off unless configured; `chord start` says which state it is in
 2. **State in process-external file**: Restarting doesn't re-offer entire backlog
 3. **Polling is the source of truth**: Webhooks/subscriptions are just accelerators
-4. **Never automatic token refresh**: Linear rotates refresh tokens, so this is a user decision
+4. **Automatic token renewal, one renewer at a time**: Linear rotates refresh tokens, so renewals are serialised per machine and stored before use; `chord refresh` renews on demand
 5. **Issue on stdin**: Avoids command-line length limits for long issues
 6. **Prompt boundaries**: BEGIN/END markers make it clear what's untrusted content
 7. **One-line logging**: All untrusted text flattened to prevent log injection

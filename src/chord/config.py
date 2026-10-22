@@ -114,6 +114,39 @@ def init_file() -> Path:
     return path
 
 
+def write_setup(label: str, harness: HarnessSpec, allowed: list[str]) -> Path:
+    """Write the stock chord.toml with `chord setup`'s answers filled in.
+
+    The same annotated file `chord init` writes, so everything a person might
+    want to change later is there with its comment. Refuses to overwrite.
+    """
+    path, exists = config_path()
+    if exists:
+        raise ConfigError(f"{path} already exists — this would overwrite it.")
+    text = STOCK.replace('label = "Chord"', f"label = {json.dumps(label)}", 1)
+    spelled = (
+        json.dumps(harness)
+        if isinstance(harness, str)
+        else "[" + ", ".join(json.dumps(part) for part in harness) + "]"
+    )
+    text = text.replace('harness = "opencode"', f"harness = {spelled}", 1)
+    if allowed:
+        quoted = ", ".join(json.dumps(ident) for ident in allowed)
+        text = text.replace(
+            '# allowed_actors = ["11111111-1111-1111-1111-111111111111"]',
+            f"allowed_actors = [{quoted}]",
+            1,
+        )
+    # Prove it parses and means what was asked before it lands on disk.
+    try:
+        _build(tomllib.loads(text), path)
+    except tomllib.TOMLDecodeError as exc:  # pragma: no cover - defensive
+        raise ConfigError(f"Those answers would make {path} invalid: {exc}.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
 def curate(name: str, argv: list[str]) -> tuple[Path, bool]:
     """Add `[harnesses."<name>"]` to the project config, writing the stock
     file first if there isn't one. Returns (path, whether the file was new).
