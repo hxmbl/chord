@@ -66,7 +66,7 @@ class Webhook(EventSource):
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
-            self._handle, self.host, self.port, limit=MAX_HEAD
+            self._serve_one, self.host, self.port, limit=MAX_HEAD
         )
         socket = self._server.sockets[0]
         self.port = socket.getsockname()[1]
@@ -78,6 +78,12 @@ class Webhook(EventSource):
             self._server = None
 
     @instrumented
+    async def _serve_one(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """`_handle` as asyncio's server wants it: a callback returning None."""
+        await self._handle(reader, writer)
+
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> bool:
