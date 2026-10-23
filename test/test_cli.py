@@ -14,6 +14,19 @@ from chord.config import load
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def tools_installed(monkeypatch):
+    """Every harness command counts as installed for the command-layer tests.
+
+    `chord start` and `chord info` ask the PATH whether each route can start,
+    and these tests are about everything else those commands say. The PATH
+    check itself is tested in `test_presets.py`.
+    """
+    from chord import routing
+
+    monkeypatch.setattr(routing, "missing", lambda spec: None)
+
+
 # --- harness ---
 
 

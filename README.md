@@ -11,7 +11,7 @@ Linear  →  Chord  →  Context  →  chosen harness
 
 Chord is the layer that connects your issue tracker to your coding tools. Put the
 `Chord` label on an issue, and whatever you normally build with — opencode,
-Claude Code, Codex, or a custom script — is handed the issue on stdin and gets
+Claude Code, Codex, Cursor, or a custom script — is handed the issue and gets
 to work on it.
 
 Want a different harness for a particular issue? Give it a different label.
@@ -117,7 +117,8 @@ supported; the project config wins.
 # The label that triggers a run. Default: "Chord".
 label = "Chord"
 
-# What does the work by default. Default: "opencode".
+# What does the work by default: "opencode", a preset ("claude", "codex",
+# "cursor"), "print", or a command. Default: "opencode".
 harness = "opencode"
 
 # Seconds between checks of Linear. Default: 60, floor 5.
@@ -144,7 +145,7 @@ allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 command = ["opencode", "run", "--model", "big-pickle"]
 
 [harnesses.claude]
-command = ["claude", "-p"]
+command = ["claude"]   # the Claude Code preset; see "Harnesses" below
 
 # Optional T3 Code CLI settings, used only when the selected harness is "t3".
 [t3]
@@ -298,7 +299,7 @@ so `chord info` is the only place the second can be read before it matters:
 
 ```
   labels     Chord                            opencode
-             Chord/claude                     claude -p
+             Chord/claude                     claude
              Add these in Linear by hand — Chord never creates a
              label. Adding one is what makes this machine run a
              harness, so this list is the whole trigger surface.
@@ -311,9 +312,11 @@ of those labels to an issue is what makes your machine run a command, which is
 the same thing `allowed_actors` restricts and the same thing a stranger with
 access to your workspace could do on purpose.
 
-`chord start` builds every route before it spawns anything, so a curated harness
-naming a command that isn't installed is reported by the command rather than by
-the first issue that trips it.
+`chord start` builds every route and looks each command up on your `PATH`
+before it spawns anything, so a harness that isn't installed — the default, a
+preset, or a curated command — is reported by the command, every broken route at
+once, rather than by the first issue that trips it. `chord info` marks the same
+routes with `! can't run:` and the reason, so you can check before starting.
 
 ## Where the work happens
 
@@ -557,10 +560,56 @@ what a `Chord/<name>` label routes to.
 debugging harness: it writes the issue to Chord's log so you can see exactly
 what would be handed over before trusting it with a real agent.
 
+### Presets
+
+Three coding agents are known by name, so you don't have to look up their
+non-interactive flags. Each is an ordinary command harness with the flags
+filled in — checked against each tool's documentation — and the least
+permission that still lets the agent edit the checkout it's started in:
+
+| Name     | Runs                                                   | The issue goes      |
+| -------- | ------------------------------------------------------ | ------------------- |
+| `claude` | `claude -p --permission-mode acceptEdits`              | on stdin            |
+| `codex`  | `codex exec --sandbox workspace-write -`               | on stdin            |
+| `cursor` | `cursor-agent -p --force --trust` (or `agent`)         | as the last argument |
+
+```toml
+harness = "claude"
+
+[harnesses.review]
+command = ["codex"]     # a one-word command naming a preset is the preset
+```
+
+`chord setup` offers whichever of `opencode`, `claude`, `codex` and `cursor` it
+finds on your `PATH`, and writes the one you pick by name.
+
+What those permissions mean, so nothing surprises you:
+
+- **Claude Code** in `-p` mode refuses file edits unless something approves
+  them; `acceptEdits` allows edits and simple filesystem commands, and still
+  refuses other shell commands. Want it to run tests too? Curate the full
+  command yourself, e.g. `["claude", "-p", "--permission-mode", "acceptEdits",
+  "--allowedTools", "Bash(uv run pytest *)"]`.
+- **Codex** `exec` is read-only by default; `workspace-write` lets it write in
+  the repository. Codex also insists on running inside a Git repository, which
+  is what Chord's [repository resolution](#where-the-work-happens) gives it.
+- **Cursor** in print mode only *proposes* changes without `--force`, and
+  `--force` also allows shell commands it isn't told to deny. `--trust` skips a
+  workspace-trust prompt nobody is there to answer. Cursor's print mode doesn't
+  read a prompt from stdin, so this one preset takes the issue as its last
+  argument — and an issue over 100,000 bytes is refused before anything runs,
+  because a single argument can't be much longer than that on Linux.
+
+Want different flags — a model, a budget, a stricter mode? Write the command
+out; only a one-word `["claude"]` means the preset, and anything longer is run
+exactly as written.
+
+### Any other command
+
 Anything else is run as a command, with the issue **on standard input**:
 
 ```toml
-harness = ["claude", "-p"]
+harness = ["claude", "-p", "--model", "opus"]
 
 [harnesses.review]
 command = ["./scripts/on-issue.sh"]
@@ -572,10 +621,10 @@ command = ["my-agent", "--prompt", "-"]
 A bare name works too, if it's on your `PATH`:
 
 ```toml
-harness = "claude"
+harness = "my-agent"
 
 [harnesses.review]
-command = "claude"
+command = "my-agent"
 ```
 
 That is the whole compatibility layer. Chord doesn't need to know what a
@@ -594,8 +643,25 @@ Two things follow from the issue arriving on stdin:
 - Your harness has to read stdin. Most agent CLIs take a prompt this way; if
   yours wants a file, wrap it: `["sh", "-c", "cat > /tmp/issue.md; my-agent --file /tmp/issue.md"]`
 
+### Checking a harness before it matters
+
+`chord start` refuses to start while any route's command is missing from your
+`PATH`, listing every one, and `chord info` marks them (`! can't run: ...`). A
+command given by path, like `./scripts/on-issue.sh`, isn't checked: it runs in
+the issue's repository, which isn't known until an issue arrives.
+
+### When a harness fails
+
 Whatever your harness prints goes into Chord's log, and a non-zero exit is
-reported as a failure.
+reported as a failure. The failure — in the log and in the "failed"
+notification — carries the last line the harness printed, which is usually the
+reason (`` `claude` exited 1: Invalid API key. Its full output is in the log. ``).
+
+A failed hand-over is recorded, like every other issue Chord won't do, so it
+isn't retried on every poll and the queue behind it keeps moving. The log says
+how to retry it: fix the cause, then drop the issue's id from `state.json`
+(see [State on disk](#state-on-disk)). That covers a missing command, a non-zero
+exit, and a timeout alike.
 
 **After the hand-over it isn't Chord's problem.** A harness that half-finishes,
 needs a nudge, or wants a PR opened is doing that on its own. Chord waits for
@@ -620,11 +686,17 @@ built-in only when a harness needs to *do* something rather than run something �
 `print` is the only one that does, and it exists so a first run is inspectable
 instead of speculative.
 
-To add one anyway, in `src/chord/harness.py`:
+A preset is the next step down: a tool whose non-interactive flags are worth
+getting right once for everybody. To add one, give it an entry in `PRESETS` in
+`src/chord/harness.py` — the executable names to look for, its flags, where to
+install it, and whether it needs the issue as an argument — and a test in
+`test/test_presets.py` pinning the flags. `chord setup` offers it from then on.
+
+To add a real built-in anyway, in `src/chord/harness.py`:
 
 1. Write a class with a `name` (string) and an
-   `async def send(self, prompt: str) -> None`.
-2. Add a name check to `build()`.
+   `async def send(self, prompt: str, cwd: Path | None = None)`.
+2. Add a name check to `build()`, and to `missing()` if it runs something.
 
 A built-in is reachable from `[harnesses.<name>]` like any other command, since
 `build()` is what resolves both.

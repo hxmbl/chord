@@ -82,7 +82,8 @@ STOCK = """\
 # The label that triggers a run. Default: "Chord".
 label = "Chord"
 
-# What does the work by default. Default: "opencode".
+# What does the work by default: "opencode", a preset ("claude", "codex",
+# "cursor"), "print", or a command. Default: "opencode".
 harness = "opencode"
 
 # Seconds between checks of Linear. Default: 60, floor 5.

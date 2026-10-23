@@ -16,7 +16,6 @@ through gives a working setup.
 """
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -27,17 +26,16 @@ from dotenv import dotenv_values, set_key
 
 from chord import credentials
 from chord.config import DEFAULT_LABEL, ConfigError, write_setup
+from chord.harness import PRESETS, missing
 from chord.paths import ENV_NAME, config_path, find_upwards, project_root
 
 REDIRECT_URL = f"http://127.0.0.1:{credentials.CALLBACK_PORT}/callback"
 
-# Coding tools Chord can offer by name, in the order they are offered, and the
-# command each runs with the issue on stdin. Only the ones on PATH are offered.
-# `opencode` is the built-in default harness, so it is written by name.
-KNOWN_TOOLS: dict[str, str | list[str]] = {
-    "opencode": "opencode",
-    "claude": ["claude", "-p"],
-}
+# Coding tools Chord can offer, in the order they are offered. Each is a
+# harness Chord knows by name — the default `opencode`, and the presets in
+# `harness.PRESETS` — so the config gets `harness = "claude"` and the flags stay
+# Chord's to keep right. Only the ones on PATH are offered.
+KNOWN_TOOLS: tuple[str, ...] = ("opencode", *PRESETS)
 
 
 class SetupError(Exception):
@@ -137,7 +135,7 @@ def _sign_in(say: Callable[[str], None]) -> dict:
 
 
 def installed_tools() -> list[str]:
-    return [name for name in KNOWN_TOOLS if shutil.which(name)]
+    return [name for name in KNOWN_TOOLS if missing(name) is None]
 
 
 def _choose(tools: list[str], say: Callable[[str], None]) -> str:
@@ -180,7 +178,7 @@ def _project(say: Callable[[str], None], viewer: dict) -> None:
     you = credentials.viewer_id(viewer)
     allowed = [you] if you else []
     try:
-        written = write_setup(label, KNOWN_TOOLS[tool], allowed)
+        written = write_setup(label, tool, allowed)
     except ConfigError as exc:
         raise SetupError(str(exc)) from exc
     say(f"   Wrote {written}.")

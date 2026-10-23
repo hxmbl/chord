@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from typing import NamedTuple
 
 from chord.config import SEPARATOR, HarnessSpec, T3Options, spell
-from chord.harness import Harness, HarnessError, build
+from chord.harness import Harness, HarnessError, build, missing
 from chord.performance import instrumented
 
 # The name that asks for the default harness. Curated names are separate
@@ -227,3 +227,32 @@ class Router:
                 self.harness_for(route.name)
             except HarnessError as exc:
                 raise HarnessError(f"{route.label} can't be run: {exc}") from None
+
+    def problems(self) -> list[tuple[Route, str]]:
+        """Every route that can't be started on this machine, and why.
+
+        Wider than `validate`, which only builds: building leaves an explicit
+        command and the default `opencode` to be found missing by the first
+        issue that needs them, and that issue is recorded as failed. This asks
+        the PATH as well, for every route rather than stopping at the first,
+        so `chord start` and `chord info` can list everything wrong at once.
+        """
+        found: list[tuple[Route, str]] = []
+        for route in self.routes():
+            spec = (
+                self._default
+                if route.name == DEFAULT_ROUTE
+                else self._specs[route.name]
+            )
+            # The factory directly rather than `harness_for`: this is a
+            # question, not a hand-over, so it neither memoizes nor writes a
+            # PERF line into `chord info`.
+            try:
+                self._factory(spec)
+            except HarnessError as exc:
+                found.append((route, str(exc)))
+                continue
+            reason = missing(spec)
+            if reason:
+                found.append((route, reason))
+        return found

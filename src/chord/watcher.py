@@ -593,6 +593,10 @@ class Watcher:
                 f"{identifier} didn't finish: "
                 f"{route_label(self._router.label, chosen.route)} {exc}"
             )
+            self._problem(
+                f"  to retry it: fix the harness, then drop {_key(issue_id)} "
+                f"from {self._path.name}."
+            )
             await notify.skipped(
                 identifier, f"{route_label(self._router.label, chosen.route)}: {exc}"
             )
@@ -652,10 +656,19 @@ class Watcher:
             # run. The failure is in the log, which is where a person looks.
             _spacer()
             self._problem(f"{identifier} didn't finish: {exc}")
-            if isinstance(harness, T3CodeHarness) and not (
+            held = isinstance(harness, T3CodeHarness) and (
                 isinstance(exc, T3ClientError) and exc.uncertain
-            ):
+            )
+            if isinstance(harness, T3CodeHarness) and not held:
                 self._clear_t3_pending(issue_id)
+            if not held:
+                # Recorded like every other skip, so the same line: dropping the
+                # id is the retry, and a failure that doesn't say so reads as
+                # final. A held T3 dispatch is the exception — its own message
+                # already says why retrying could send the work twice.
+                self._problem(
+                    f"  to retry it: drop {_key(issue_id)} from {self._path.name}."
+                )
             self._remember(issue_id)
             await notify.failed(identifier, exc)
             return

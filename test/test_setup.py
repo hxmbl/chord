@@ -6,7 +6,7 @@ import pytest
 from dotenv import dotenv_values
 from typer.testing import CliRunner
 
-from chord import cli, credentials
+from chord import cli, credentials, harness
 from chord import setup as guided
 from chord.cli import app
 
@@ -43,7 +43,7 @@ def signs_in(monkeypatch, keyring_backend):
 
 def tools(monkeypatch, *found):
     monkeypatch.setattr(
-        guided.shutil, "which", lambda name: f"/bin/{name}" if name in found else None
+        harness.shutil, "which", lambda name: f"/bin/{name}" if name in found else None
     )
 
 
@@ -81,7 +81,7 @@ def test_the_tool_is_chosen_from_the_ones_installed(project, signs_in, monkeypat
     assert result.exit_code == 0, result.output
     cfg = config(project)
     assert cfg["label"] == "Build"
-    assert cfg["harness"] == ["claude", "-p"]
+    assert cfg["harness"] == "claude", "the preset is written by name"
     assert "found in" in result.output, "asked for an app .env already had"
 
 

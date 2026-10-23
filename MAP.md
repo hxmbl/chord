@@ -1,7 +1,7 @@
 # Chord Codebase Map
 
 ## Overview
-Chord is a Python tool that watches Linear for issues carrying one of its route labels and hands each one to the coding harness that label names (opencode, Claude Code, or any command-line tool).
+Chord is a Python tool that watches Linear for issues carrying one of its route labels and hands each one to the coding harness that label names (opencode, the Claude Code / Codex / Cursor presets, or any command-line tool).
 
 ## Entry Point
 **`src/chord/cli.py`** - The command-line interface
@@ -13,6 +13,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - All commands are thin wrappers that validate state before calling other modules
 - `chord info` stays offline: daemon state, the labels Chord will act on, and
   which notification route is in use, without touching the network
+- `chord start` refuses to spawn while any route can't start
+  (`Router.problems()`: build errors plus a PATH lookup), listing all of them;
+  `chord info` marks the same routes `! can't run:`
 - `chord info` prints the accepted labels as a list, because Chord never
   creates a label and the set is kept in step by hand — adding one is what makes
   the machine run a harness
@@ -23,7 +26,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 **`src/chord/setup.py`** - `chord setup`
 - Three steps, each skipped when done: Linear OAuth app credentials into `.env`,
   sign-in (`credentials.authenticate`), project config via `write_setup()`
-- Offers the coding tools found on PATH (`KNOWN_TOOLS`); adds the signed-in
+- Offers the coding tools found on PATH (`KNOWN_TOOLS`: `opencode` plus every
+  preset, detected with `harness.missing`) and writes the pick by name; adds the signed-in
   user to `allowed_actors`; never overwrites a config or touches Linear
 - Without a terminal it only signs in, as the old `chord setup` did
 
@@ -50,7 +54,10 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - `filter()` builds one Linear query covering every route, curated or not
 - `candidates()` reads an issue's route labels, most specific first
 - `harness_for()` resolves a name to a built harness, memoized
-- `validate()` builds every route so `chord start` can report a broken one
+- `validate()` builds every route so the watcher can refuse a broken one
+- `problems()` is wider: every route that can't start, from a build error or a
+  command missing from PATH, without memoizing or logging a PERF line — what
+  `chord start` and `chord info` use
 - The watched set is wider than the routable set, and `chord info` says so: the
   labels are the trigger surface, and `chord info` lists the ones that run work
 
@@ -63,6 +70,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Tracks which issues have been handed over in `state.json`
 - Processes issues oldest-first (by `createdAt`)
 - Hands each issue to the harness its labels select
+- A failed hand-over (missing command, non-zero exit, timeout) is recorded and
+  logged with a `to retry it: drop <id> from state.json` line, like every other
+  recorded skip; a held T3 dispatch is the one exception
 - Resolves the repository after authorisation, and hands it to the harness as
   its working directory (`repo.py`)
 - Announces one banner per issue: received, failed, skipped, or refused — the
@@ -113,11 +123,23 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Built-in: `t3` harness (the official T3 Code CLI; dispatch-only — the thread
   id is reported and dropped, and a pending marker only prevents a duplicate
   send)
+- Presets (`PRESETS`): `claude` (`claude -p --permission-mode acceptEdits`),
+  `codex` (`codex exec --sandbox workspace-write -`), `cursor`
+  (`cursor-agent`/`agent -p --force --trust`), each a `CommandHarness` with the
+  flags filled in; reachable as `harness = "claude"` or a one-word
+  `command = ["claude"]`, and refused at build time when not installed
+- Cursor's print mode rejects stdin, so its preset passes the issue as the last
+  argument (`prompt_as_argument`), refusing one over `MAX_PROMPT_ARGUMENT`
+  bytes before spawning
+- `missing(spec)` answers "can this start here?" from the PATH, for setup,
+  start and info; a command given by path isn't checked (it runs in the issue's
+  repository)
 - Command harness: runs any command with issue on stdin
 - Protocol-based design for extensibility
 - Issues sent via stdin to avoid command-line length limits
 - Captures stdout/stderr and logs them
-- Non-zero exit codes are reported as failures
+- Non-zero exit codes are reported as failures, carrying the harness's last
+  output line; a timeout names `HARNESS_TIMEOUT`
 - Each harness runs in its own session, so a timeout or `chord stop` kills the
   whole process group rather than leaving the work it started running
 - The timeout is validated, not merely parsed: `float()` accepts `-1`, `nan`
@@ -293,6 +315,8 @@ Tests are in `test/` directory:
   banner per issue
 - `test_findings.py` - Issue handling
 - `test_harness.py` - Running an external command without letting it run away
+- `test_presets.py` - The Claude Code / Codex / Cursor presets against stand-in
+  executables, the PATH check in start/info/setup, and what a failure says
 - `test_log_safety.py` - What untrusted text is allowed to do to the log
 - `test_notify.py` - Notification shape, platform routing, injection safety, and
   the one-banner-per-issue rule

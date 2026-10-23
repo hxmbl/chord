@@ -399,10 +399,15 @@ def _check_routes(router: Router) -> None:
     no indication of which config file is wrong. Curating a harness you can't
     run is a mistake worth catching while the person is still looking.
     """
-    try:
-        router.validate()
-    except HarnessError as exc:
-        _fail(str(exc))
+    problems = router.problems()
+    if not problems:
+        return
+    lines = [f"{route.label} can't be run: {reason}" for route, reason in problems]
+    lines.append(
+        "Fix chord.toml or install the tool, then `chord start` again. "
+        "`chord setup` offers the coding tools it finds."
+    )
+    _fail("\n".join(lines))
 
 
 def _labels(config: Config) -> list[str]:
@@ -427,14 +432,24 @@ def _labels(config: Config) -> list[str]:
     A curated harness is a command, and commands are long, so one label per line
     keeps a dozen of them readable.
     """
-    routes = _router(config).routes()
+    router = _router(config)
+    routes = router.routes()
+    # Offline like everything else here: only the PATH is asked. A route that
+    # can't start says so on its own line, because the label next to it is one
+    # somebody can still put on an issue.
+    broken = {route.label: reason for route, reason in router.problems()}
     width = max(len(route.label) for route in routes)
     lead = "  labels     "
-    lines = [
-        f"{lead if index == 0 else ' ' * len(lead)}"
-        f"{route.label.ljust(width)}  {route.spelling}"
-        for index, route in enumerate(routes)
-    ]
+    lines: list[str] = []
+    for index, route in enumerate(routes):
+        lines.append(
+            f"{lead if index == 0 else ' ' * len(lead)}"
+            f"{route.label.ljust(width)}  {route.spelling}"
+        )
+        if route.label in broken:
+            lines.append(
+                f"{' ' * len(lead)}{' ' * width}  ! can't run: {broken[route.label]}"
+            )
     return lines + [
         "             Add these in Linear by hand — Chord never creates a",
         "             label. Adding one is what makes this machine run a",

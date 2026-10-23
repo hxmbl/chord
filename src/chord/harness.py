@@ -5,6 +5,10 @@ handed over before trusting it with anything. Everything else is a command:
 Chord runs it and writes the issue to its standard input. That is the whole
 compatibility story, and it is why supporting a new tool means naming it in
 chord.toml rather than teaching Chord about it.
+
+The presets (`claude`, `codex`, `cursor`) are that same command harness with
+the flags filled in, because each tool's non-interactive spelling is easy to
+get subtly wrong — a run that cannot write files looks like it worked.
 """
 
 import asyncio
@@ -16,7 +20,7 @@ import shutil
 import signal
 import subprocess
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from chord import logging
 from chord.config import HarnessSpec, T3Options
@@ -61,6 +65,14 @@ HARNESS_TIMEOUT = _harness_timeout()
 # itself, so it is short: the alternative is a watcher that stops working and
 # never says why.
 _REAP_TIMEOUT = 5.0
+
+# Linux refuses a single command-line argument longer than 128 KiB
+# (MAX_ARG_STRLEN), whatever the total limit is. Below that, with room to spare,
+# for the one preset that has to take the issue as an argument.
+MAX_PROMPT_ARGUMENT = 100_000
+
+# How much of a failed harness's last line goes into the failure message.
+_REASON_LENGTH = 160
 
 
 class HarnessError(Exception):
@@ -311,14 +323,36 @@ class CommandHarness:
     be a miserable thing to debug.
     """
 
-    def __init__(self, argv: list[str]) -> None:
+    def __init__(
+        self,
+        argv: list[str],
+        name: str | None = None,
+        *,
+        prompt_as_argument: bool = False,
+    ) -> None:
         self.argv = argv
-        self.name = " ".join(argv)
+        self.name = name or " ".join(argv)
+        # Only for a tool that refuses a prompt on stdin (Cursor's CLI). The
+        # issue then goes on the end of the command line instead, which is
+        # bounded, so an issue too long for it is refused before anything runs.
+        self.prompt_as_argument = prompt_as_argument
 
     async def send(self, prompt: str, cwd: Path | None = None) -> None:
+        argv = self.argv
+        stdin = prompt.encode()
+        if self.prompt_as_argument:
+            if len(stdin) > MAX_PROMPT_ARGUMENT:
+                raise HarnessError(
+                    f"The issue is {len(stdin)} bytes, too long for `{self.name}`, "
+                    f"which takes its prompt on the command line (limit "
+                    f"{MAX_PROMPT_ARGUMENT}). Shorten the discussion or route it "
+                    "to a harness that reads stdin."
+                )
+            argv = [*self.argv, prompt]
+            stdin = b""
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.argv,
+                *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -340,7 +374,7 @@ class CommandHarness:
             # stderr was merged into stdout above, so everything the harness
             # said arrives in the first slot and the second is always None.
             output, _ = await asyncio.wait_for(
-                process.communicate(prompt.encode()), HARNESS_TIMEOUT
+                process.communicate(stdin), HARNESS_TIMEOUT
             )
         except TimeoutError as exc:
             # Logged before any attempt to tidy up, because the tidy-up is
@@ -348,10 +382,13 @@ class CommandHarness:
             # pipe to close, and a grandchild holding the write end means it
             # never does; the timeout was detected, and saying so cannot wait on
             # the thing that would hang.
-            logging.error(f"Harness `{self.name}` timed out after {HARNESS_TIMEOUT}s.")
+            logging.error(
+                f"Harness `{self.name}` timed out after {HARNESS_TIMEOUT:.0f}s."
+            )
             await self._terminate(process)
             raise HarnessError(
-                f"`{self.name}` timed out after {HARNESS_TIMEOUT}s."
+                f"`{self.name}` timed out after {HARNESS_TIMEOUT:.0f}s and was "
+                "stopped. Set HARNESS_TIMEOUT (seconds) if it needs longer."
             ) from exc
         except asyncio.CancelledError:
             # We're being shut down, most likely by `chord stop`. Don't leave
@@ -365,7 +402,16 @@ class CommandHarness:
             # harness that fails quietly looks exactly like one that worked.
             logging.write(said, end="\n")
         if process.returncode:
-            raise HarnessError(f"`{self.name}` exited {process.returncode}.")
+            # The last thing it said is usually the reason, and the banner is
+            # the only place a person reads it without opening the log.
+            last = said.splitlines()[-1].strip() if said else ""
+            if len(last) > _REASON_LENGTH:
+                last = last[: _REASON_LENGTH - 1] + "…"
+            reason = f": {last}" if last else " without saying why"
+            raise HarnessError(
+                f"`{self.name}` exited {process.returncode}{reason}. "
+                "Its full output is in the log."
+            )
 
     async def _terminate(self, process: asyncio.subprocess.Process) -> None:
         """Stop a harness and everything it started, then let go of its output.
@@ -401,11 +447,130 @@ class OpenCodeHarness(CommandHarness):
         super().__init__(["opencode"])
 
 
+class Preset(NamedTuple):
+    """A coding agent Chord knows how to run without being told the command.
+
+    `executables` are tried in order and the first on the PATH runs, because a
+    tool can be installed under more than one name. `args` are the tool's own
+    non-interactive flags, checked against its documentation, with the least
+    permission that still lets it edit the checkout it is started in.
+    """
+
+    executables: tuple[str, ...]
+    args: tuple[str, ...]
+    install: str
+    prompt_as_argument: bool = False
+
+
+# Name to preset. A preset is written by name (`harness = "claude"`, or
+# `command = ["claude"]` under `[harnesses.<name>]`), and runs as an ordinary
+# command harness: issue in, output to the log, non-zero exit is a failure.
+PRESETS: dict[str, Preset] = {
+    # Claude Code. `-p` reads the prompt from stdin; `acceptEdits` lets it write
+    # files, which a `-p` run otherwise has refused, without approving every
+    # shell command.
+    "claude": Preset(
+        ("claude",),
+        ("-p", "--permission-mode", "acceptEdits"),
+        "Claude Code (https://code.claude.com)",
+    ),
+    # Codex. `exec -` takes the whole prompt from stdin; `exec` is read-only
+    # unless the sandbox allows writing to the workspace.
+    "codex": Preset(
+        ("codex",),
+        ("exec", "--sandbox", "workspace-write", "-"),
+        "the Codex CLI (https://developers.openai.com/codex/cli)",
+    ),
+    # Cursor's CLI, installed as `cursor-agent` and, newer, `agent`. Print mode
+    # wants the prompt as an argument and rejects one on stdin. `--force` is what
+    # lets print mode apply changes rather than propose them; `--trust` skips
+    # the workspace-trust prompt nobody is there to answer.
+    "cursor": Preset(
+        ("cursor-agent", "agent"),
+        ("-p", "--force", "--trust"),
+        "the Cursor CLI (https://cursor.com/docs/cli/installation)",
+        prompt_as_argument=True,
+    ),
+}
+
+
+def preset_executable(name: str) -> str | None:
+    """Where the preset `name` is installed, or None if it isn't."""
+    for executable in PRESETS[name].executables:
+        found = shutil.which(executable)
+        if found:
+            return found
+    return None
+
+
+def _preset(name: str) -> CommandHarness:
+    preset = PRESETS[name]
+    found = preset_executable(name)
+    if found is None:
+        raise HarnessError(
+            f"`{preset.executables[0]}` isn't on your PATH. Install "
+            f"{preset.install}, or pick another harness."
+        )
+    return CommandHarness(
+        [found, *preset.args],
+        name,
+        prompt_as_argument=preset.prompt_as_argument,
+    )
+
+
+def missing(spec: HarnessSpec) -> str | None:
+    """Why `spec` can't be started on this machine, or None if it can.
+
+    The check `chord start`, `chord info` and `chord setup` share. Building a
+    harness already refuses a bare name, a preset or `t3` that isn't installed;
+    this also covers what building leaves to the first issue — an explicit
+    command, and the default `opencode` — so a harness that can't start is
+    found while somebody is looking rather than overnight, when the issue it
+    was handed is recorded as failed.
+
+    A command given by path (`./scripts/on-issue.sh`) is not checked: it runs in
+    the issue's repository, which isn't known until an issue arrives.
+    """
+    if isinstance(spec, list):
+        if len(spec) == 1 and spec[0] in PRESETS:
+            spec = spec[0]
+        elif spec == [T3CodeHarness.name]:
+            spec = T3CodeHarness.name
+        else:
+            return _not_on_path(spec[0])
+    if spec == PrintHarness.name:
+        return None
+    if spec in PRESETS:
+        if preset_executable(spec) is None:
+            return (
+                f"`{PRESETS[spec].executables[0]}` isn't on your PATH. Install "
+                f"{PRESETS[spec].install}."
+            )
+        return None
+    if spec in (OpenCodeHarness.name, T3CodeHarness.name):
+        return _not_on_path(spec)
+    try:
+        argv = shlex.split(spec)
+    except ValueError as exc:
+        return f"Invalid harness quoting: {exc}."
+    return _not_on_path(argv[0]) if argv else "The harness command is empty."
+
+
+def _not_on_path(command: str) -> str | None:
+    if os.sep in command or (os.altsep and os.altsep in command):
+        return None
+    return None if shutil.which(command) else f"`{command}` isn't on your PATH."
+
+
 def build(spec: HarnessSpec, t3_options: T3Options | None = None) -> Harness:
     """Turn a configured harness into one that can be sent work."""
     if isinstance(spec, list):
         if spec == [T3CodeHarness.name]:
             return T3CodeHarness(t3_options)
+        # `command = ["claude"]` under a curated table means the preset, the
+        # same way `["t3"]` means the T3 integration.
+        if len(spec) == 1 and spec[0] in PRESETS:
+            return _preset(spec[0])
         return CommandHarness(spec)
     if spec == PrintHarness.name:
         return PrintHarness()
@@ -413,6 +578,8 @@ def build(spec: HarnessSpec, t3_options: T3Options | None = None) -> Harness:
         return OpenCodeHarness()
     if spec == T3CodeHarness.name:
         return T3CodeHarness(t3_options)
+    if spec in PRESETS:
+        return _preset(spec)
 
     # A bare word we don't recognise is most likely the name of a tool the
     # user meant, so try it as a command before giving up. Naming the command
@@ -429,6 +596,7 @@ def build(spec: HarnessSpec, t3_options: T3Options | None = None) -> Harness:
         return CommandHarness([found, *argv[1:]])
     raise HarnessError(
         f"Don't know a harness called `{spec}`. "
-        f"Use `{PrintHarness.name}` or `{OpenCodeHarness.name}`, or "
+        f"Use `{PrintHarness.name}`, `{OpenCodeHarness.name}`, "
+        f"{', '.join(f'`{name}`' for name in PRESETS)} or `{T3CodeHarness.name}`, or "
         'name the command to run instead, like ["claude", "-p"].'
     )
