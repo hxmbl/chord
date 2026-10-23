@@ -1,8 +1,8 @@
 """Chord's command line.
 
-Six things a person can do: connect Chord to Linear, look at what it's set up
-to do, start watching, follow the log, stop watching, and renew the token.
-Everything else happens in the background.
+Five things a person does: set Chord up, look at what it's set up to do, start
+watching, follow the log, and stop watching. Everything else, renewing the
+token included, happens in the background.
 """
 
 import asyncio
@@ -15,6 +15,7 @@ import typer
 import typer.core
 
 from chord import credentials, daemon, notify, subscribe, watcher
+from chord import setup as guided
 from chord.config import (
     SEPARATOR,
     AlreadyCurated,
@@ -40,12 +41,22 @@ app = typer.Typer(
 
 @app.command()
 def setup():
-    """Connect Chord to your Linear account."""
-    code, message = asyncio.run(credentials.authenticate(store=True))
-    if code:
-        _fail(message)
-    typer.echo("Connected to Linear.")
-    typer.echo("Next: `chord start` to begin watching.")
+    """Get Chord ready: your Linear app, signing in, and this project."""
+    if not guided.interactive():
+        # No one to answer questions (a script, CI). Sign in with what `.env`
+        # already holds, which is all the old `chord setup` did.
+        code, message = asyncio.run(credentials.authenticate(store=True))
+        if code:
+            _fail(f"{message} Run `chord setup` in a terminal to be walked through it.")
+        typer.echo("Connected to Linear.")
+        return
+    try:
+        guided.run()
+    except guided.SetupError as exc:
+        _fail(str(exc))
+    except typer.Abort:
+        _fail("\nSetup stopped. Run `chord setup` again to pick up where you left off.")
+    typer.echo("\nReady. Run `chord start`.")
 
 
 @app.command()
@@ -112,12 +123,12 @@ def refresh():
 
 @app.command()
 def start():
-    """Start watching Linear in the background."""
+    """Start watching Linear in the background. Sets Chord up first if needed."""
+    _signed_in()
     config = _config()
     # Everything that can be wrong is checked here, before anything is spawned,
     # so the person who typed the command is the one who hears about it rather
     # than a log file they haven't been pointed at yet.
-    _signed_in()
     _check_routes(_router(config))
     try:
         watcher.read_state(daemon.STATE_FILE)
@@ -504,6 +515,18 @@ def _signed_in() -> str:
     weekend starts again with nothing to type.
     """
     code, content = credentials.read()
+    if code and guided.interactive():
+        # Not signed in yet. Walk them through it rather than sending them off
+        # to run another command first.
+        typer.echo("Chord isn't set up yet.\n")
+        try:
+            guided.run()
+        except guided.SetupError as exc:
+            _fail(str(exc))
+        except typer.Abort:
+            _fail("\nSetup stopped. Run `chord setup` to finish it.")
+        typer.echo("")
+        code, content = credentials.read()
     if code:
         _fail(content)
     code, content = asyncio.run(credentials.renew_if_due())
