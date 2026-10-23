@@ -9,15 +9,17 @@ chord.toml rather than teaching Chord about it.
 
 import asyncio
 import contextlib
+import json
 import os
 import shlex
 import shutil
 import signal
+import subprocess
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from chord import logging
-from chord.config import HarnessSpec
+from chord.config import HarnessSpec, T3Options
 
 
 def _harness_timeout() -> float:
@@ -68,7 +70,225 @@ class HarnessError(Exception):
 class Harness(Protocol):
     name: str
 
-    async def send(self, prompt: str, cwd: Path | None = None) -> None: ...
+    async def send(self, prompt: str, cwd: Path | None = None) -> object | None: ...
+
+
+class T3ClientError(HarnessError):
+    """A T3 CLI operation failed, with dispatch ambiguity kept explicit."""
+
+    def __init__(self, message: str, *, uncertain: bool = False) -> None:
+        super().__init__(message)
+        self.uncertain = uncertain
+
+
+class T3CodeHarness:
+    """Dispatches work to T3 Code through its supported `t3 thread` CLI."""
+
+    name = "t3"
+
+    def __init__(self, options: T3Options | None = None, executable: str = "t3"):
+        found = shutil.which(executable)
+        if found is None:
+            raise HarnessError(
+                "`t3` isn't on your PATH. Install T3 Code and make its CLI "
+                "available before selecting the `t3` harness."
+            )
+        self.executable = found
+        self.options = options or T3Options()
+
+    async def send(self, prompt: str, cwd: Path | None = None) -> dict[str, str]:
+        if cwd is None:
+            raise HarnessError(
+                "The `t3` harness needs a resolved project directory; no task was sent."
+            )
+        argv = [
+            self.executable,
+            "thread",
+            "start",
+            ".",
+            "-",
+            "--json",
+            "--title",
+            "Chord task",
+        ]
+        if self.options.provider is not None and self.options.model is not None:
+            argv.extend(["--provider", self.options.provider, "--model", self.options.model])
+        if self.options.worktree is not None:
+            argv.extend(["--worktree", self.options.worktree])
+        if self.options.branch is not None:
+            argv.extend(["--branch", self.options.branch])
+
+        output = await self._run(argv, prompt, cwd)
+        result = self._json_object(output.stdout, "start")
+        thread_id = result.get("threadId")
+        project_id = result.get("projectId")
+        run_id = result.get("runId")
+        if (
+            not isinstance(thread_id, str)
+            or not thread_id.strip()
+            or not isinstance(project_id, str)
+            or not project_id.strip()
+            or (run_id is not None and not isinstance(run_id, str))
+        ):
+            raise T3ClientError(
+                "T3 returned malformed start output; dispatch may have been accepted. "
+                "Chord has held this issue to prevent a duplicate.",
+                uncertain=True,
+            )
+        return {
+            "thread_id": thread_id.strip(),
+            "project_id": project_id,
+        }
+
+    async def show_thread(self, thread_id: str) -> dict[str, Any]:
+        output = await self._run(
+            [self.executable, "thread", "show", "--json", thread_id], None, None
+        )
+        result = self._json_object(output.stdout, "show")
+        thread = result.get("thread")
+        messages = result.get("messages")
+        if (
+            not isinstance(thread, dict)
+            or thread.get("threadId") != thread_id
+            or not isinstance(thread.get("status"), str)
+            or not isinstance(thread.get("pendingRequestCount"), int)
+            or isinstance(thread.get("pendingRequestCount"), bool)
+            or thread["pendingRequestCount"] < 0
+            or not isinstance(messages, list)
+            or any(
+                not isinstance(message, dict)
+                or message.get("role") not in ("user", "assistant")
+                or not isinstance(message.get("text"), str)
+                for message in messages
+            )
+        ):
+            raise T3ClientError(
+                "T3 returned malformed thread output. Update the T3 Code CLI and retry."
+            )
+        return result
+
+    async def send_follow_up(
+        self, thread_id: str, message: str, *, wait: bool = False
+    ) -> dict[str, Any]:
+        argv = [self.executable, "thread", "send", thread_id, "-", "--json"]
+        if wait:
+            argv.append("--wait")
+        output = await self._run(argv, message, None, wait_exit_codes={1, 2} if wait else set())
+        result = self._json_object(output.stdout, "send")
+        if result.get("threadId") != thread_id:
+            raise T3ClientError("T3 returned a response for an unexpected thread.")
+        if wait:
+            if (
+                not isinstance(result.get("status"), str)
+                or "reply" not in result
+                or "error" not in result
+                or result.get("reply") is not None
+                and not isinstance(result.get("reply"), str)
+                or result.get("error") is not None
+                and not isinstance(result.get("error"), str)
+            ):
+                raise T3ClientError("T3 returned malformed wait output.")
+            expected = {"completed": 0, "waiting": 2}
+            status = result["status"]
+            if status not in expected and output.returncode != 1:
+                raise T3ClientError("T3 returned an unknown run status.")
+            if status in expected and output.returncode != expected[status]:
+                raise T3ClientError("T3 returned an inconsistent run status.")
+            if status not in {"completed", "waiting"} and output.returncode != 1:
+                raise T3ClientError("T3 returned an inconsistent run status.")
+        elif (
+            not isinstance(result.get("runId"), str)
+            or result.get("delivery") not in ("sent", "queued")
+        ):
+            raise T3ClientError("T3 returned malformed send output.")
+        return result
+
+    async def _run(
+        self,
+        argv: list[str],
+        stdin: str | None,
+        cwd: Path | None,
+        *,
+        wait_exit_codes: set[int] | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd) if cwd else None,
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            raise HarnessError(
+                "`t3` isn't on your PATH. Install T3 Code and make its CLI available."
+            ) from exc
+        except OSError as exc:
+            raise HarnessError(f"Couldn't run the T3 Code CLI: {exc.strerror}.") from exc
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(stdin.encode() if stdin is not None else None),
+                HARNESS_TIMEOUT,
+            )
+        except TimeoutError as exc:
+            await self._terminate(process)
+            raise T3ClientError(
+                f"T3 CLI timed out after {HARNESS_TIMEOUT:.0f}s; dispatch may have "
+                "been accepted. Chord has held this issue to prevent a duplicate.",
+                uncertain=True,
+            ) from exc
+        except asyncio.CancelledError:
+            await self._terminate(process)
+            raise
+
+        returncode = process.returncode
+        if returncode is None:
+            raise T3ClientError("T3 CLI ended without a recorded exit status.")
+        result = subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+        permitted = wait_exit_codes or set()
+        if returncode != 0 and returncode not in permitted:
+            detail = stderr.decode(errors="replace").casefold()
+            if "no t3 code project matches" in detail:
+                raise T3ClientError(
+                    "No T3 Code project matches Chord's resolved repository. Add that "
+                    "repository as a T3 Code project or configure a valid working path."
+                )
+            if "no running t3 code server" in detail:
+                raise T3ClientError(
+                    "No T3 Code server is running. Start T3 Code, then retry."
+                )
+            if "no longer available" in detail or "thread not found" in detail:
+                raise T3ClientError(
+                    "The saved T3 thread is unavailable. Confirm it still exists in "
+                    "T3 Code and that Chord is using the same T3 environment."
+                )
+            raise T3ClientError(
+                f"T3 CLI exited with status {returncode}; check the T3 Code server "
+                "and configured project/provider/worktree. Dispatch may have been "
+                "accepted, so Chord has held this issue to prevent a duplicate.",
+                uncertain=True,
+            )
+        return result
+
+    @staticmethod
+    def _json_object(output: bytes, command: str) -> dict[str, Any]:
+        try:
+            result = json.loads(output)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise T3ClientError(
+                f"T3 returned malformed JSON from `thread {command}`."
+            ) from exc
+        if not isinstance(result, dict):
+            raise T3ClientError(f"T3 returned malformed JSON from `thread {command}`.")
+        return result
+
+    async def _terminate(self, process: asyncio.subprocess.Process) -> None:
+        _signal_group(process, signal.SIGKILL)
+        with contextlib.suppress(TimeoutError, ProcessLookupError, PermissionError):
+            await asyncio.wait_for(_reap(process), _REAP_TIMEOUT)
+        _close_transport(process)
 
 
 class PrintHarness:
@@ -242,14 +462,18 @@ class OpenCodeHarness(CommandHarness):
         super().__init__(["opencode"])
 
 
-def build(spec: HarnessSpec) -> Harness:
+def build(spec: HarnessSpec, t3_options: T3Options | None = None) -> Harness:
     """Turn a configured harness into one that can be sent work."""
     if isinstance(spec, list):
+        if spec == [T3CodeHarness.name]:
+            return T3CodeHarness(t3_options)
         return CommandHarness(spec)
     if spec == PrintHarness.name:
         return PrintHarness()
     if spec == OpenCodeHarness.name:
         return OpenCodeHarness()
+    if spec == T3CodeHarness.name:
+        return T3CodeHarness(t3_options)
 
     # A bare word we don't recognise is most likely the name of a tool the
     # user meant, so try it as a command before giving up. Naming the command

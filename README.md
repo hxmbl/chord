@@ -110,6 +110,8 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 | `chord setup`            | Connect Chord to Linear. Once.                          |
 | `chord init`             | Write the stock `chord.toml`, annotated.               |
 | `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
+| `chord t3 show ISSUE`    | Inspect the T3 thread saved for a Linear issue.        |
+| `chord t3 send ISSUE MESSAGE` | Send a follow-up to that issue's T3 thread.       |
 | `chord start`            | Watch in the background.                                |
 | `chord refresh`          | Renew the token now. Chord also does it on its own.     |
 | `chord stop`       | Stop watching.                                          |
@@ -169,6 +171,13 @@ command = ["opencode", "run", "--model", "big-pickle"]
 
 [harnesses.claude]
 command = ["claude", "-p"]
+
+# Optional T3 Code CLI settings, used only when the selected harness is "t3".
+[t3]
+# provider = "provider-instance-id"  # Set with model.
+# model = "model-slug"                # Set with provider.
+# worktree = "main"                   # Optional T3 git worktree base.
+# branch = "chord/issue-branch"       # Optional; requires worktree.
 ```
 
 Commit this file. It holds no secrets. Legacy root-level `chord.toml` files are
@@ -195,6 +204,53 @@ didn't configure the project would not be a project config.
 `.env` is read the same way and for the same reason. It supplies your Linear
 client id and secret, which are how Chord obtains a token — it holds no token
 itself, because those live in your OS keychain.
+
+### T3 Code
+
+Chord's built-in `t3` harness uses the official `t3 thread` CLI. Install the
+T3 Code CLI, keep its server running, and add the repository Chord resolves for
+each issue as a T3 Code project. Chord passes that exact resolved directory to
+`t3 thread start` as the project path; it will not silently fall back to a
+different project. Select it with `harness = "t3"` or a curated `t3` route:
+
+```toml
+harness = "t3"
+
+# Alternatively, use a Linear route label named `Chord/t3`:
+# [harnesses.t3]
+# command = ["t3"]
+```
+
+The optional `[t3]` table shown above selects a provider/model pair or a T3 git
+worktree. `provider` and `model` must be configured together; `branch` requires
+`worktree`. Without those options, T3 Code uses the project's default model,
+permission mode, and project directory. Chord does not elevate permissions,
+merge work, or create commits.
+
+Chord saves the returned T3 thread ID with its originating Linear issue in
+`~/.chord/sessions/`. Inspect or continue only threads Chord associated with an
+issue:
+
+```bash
+chord t3 show ENG-123
+chord t3 send ENG-123 "Please add a regression test"
+chord t3 send ENG-123 "Run the focused test and report the result" --wait
+```
+
+Without `--wait`, a follow-up is reported as sent or queued, not completed.
+With `--wait`, Chord preserves T3's completed, failed, and waiting-for-an-answer
+outcomes. `show` reports current state and latest messages, including pending
+requests that need a person in T3 Code. Chord saves a pending-dispatch marker
+before `t3 thread start`; if interrupted before recording the returned ID, it
+will not automatically start a duplicate. Check `t3 thread list` and resolve
+the issue manually before retrying. To retry, remove that issue's id from both
+`t3_pending` and `handed_over` in the project's `~/.chord/sessions/.../state.json`
+only after confirming that no T3 thread was created.
+
+T3 support depends on the installed CLI's `t3 thread` commands and JSON output.
+Chord does not adopt arbitrary threads from `t3 thread list`; that command is
+only useful for manual recovery if a launch was interrupted before its ID was
+saved.
 
 ## Who can trigger a run
 
