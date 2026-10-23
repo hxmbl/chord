@@ -497,6 +497,7 @@ async def authenticate(store: bool) -> Outcome:
         client_id, client_secret = pair
 
         from authlib.common.security import generate_token
+
         # See the matching import in refresh().
         AsyncOAuth2Client, OAuthError = _oauth_clients()
 

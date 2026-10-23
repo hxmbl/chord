@@ -58,9 +58,9 @@ def test_a_secret_with_interior_spaces_is_accepted(tmp_path):
 
 def test_a_secret_long_enough_to_be_a_secret_is_accepted(tmp_path):
     long_secret = "a1b2c3d4e5f6" * 8
-    assert load(write(tmp_path, f'webhook_secret = "{long_secret}"\n')).webhook_secret == (
-        long_secret
-    )
+    assert load(
+        write(tmp_path, f'webhook_secret = "{long_secret}"\n')
+    ).webhook_secret == (long_secret)
 
 
 def test_a_secret_with_non_ascii_is_accepted(tmp_path):

@@ -144,7 +144,11 @@ def t3_send(
         _fail(str(exc))
 
     if not wait:
-        delivery = "queued behind the current turn" if result["delivery"] == "queued" else "sent"
+        delivery = (
+            "queued behind the current turn"
+            if result["delivery"] == "queued"
+            else "sent"
+        )
         typer.echo(
             f"Follow-up {delivery} to {thread['identifier']} "
             f"(T3 thread {thread['thread_id']})."
@@ -158,8 +162,7 @@ def t3_send(
             typer.echo(result["reply"])
     elif status == "waiting":
         typer.echo(
-            f"The thread is waiting for an answer in T3 Code "
-            f"({thread['thread_id']}).",
+            f"The thread is waiting for an answer in T3 Code ({thread['thread_id']}).",
             err=True,
         )
         raise typer.Exit(code=2)

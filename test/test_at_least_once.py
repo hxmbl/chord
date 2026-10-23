@@ -160,6 +160,7 @@ def test_cancellation_still_reaches_the_watcher(tmp_path):
     This is the one `BaseException` that is meant to travel, so it is checked
     explicitly rather than assumed.
     """
+
     class Cancels:
         name = "cancelling"
 

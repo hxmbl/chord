@@ -167,13 +167,28 @@ def test_older_issues_still_go_first(tmp_path, capsys):
     """The sort key had to survive being a function."""
     spy = Spy()
     issues = [
-        {"id": "3", "identifier": "E-3", "title": "c", "description": "d",
-         "createdAt": "2026-03-01T00:00:00Z"},
-        {"id": "1", "identifier": "E-1", "title": "a", "description": "d",
-         "createdAt": "2026-01-01T00:00:00Z"},
+        {
+            "id": "3",
+            "identifier": "E-3",
+            "title": "c",
+            "description": "d",
+            "createdAt": "2026-03-01T00:00:00Z",
+        },
+        {
+            "id": "1",
+            "identifier": "E-1",
+            "title": "a",
+            "description": "d",
+            "createdAt": "2026-01-01T00:00:00Z",
+        },
         None,
-        {"id": "2", "identifier": "E-2", "title": "b", "description": "d",
-         "createdAt": "2026-02-01T00:00:00Z"},
+        {
+            "id": "2",
+            "identifier": "E-2",
+            "title": "b",
+            "description": "d",
+            "createdAt": "2026-02-01T00:00:00Z",
+        },
     ]
     w, spy = poll_once(tmp_path, issues, spy)
     asyncio.run(asyncio.wait_for(w.poll(), timeout=10))
@@ -183,8 +198,11 @@ def test_older_issues_still_go_first(tmp_path, capsys):
 def test_an_issue_with_no_timestamp_is_still_handed_over(tmp_path, capsys):
     """A missing `createdAt` sorts first rather than being dropped."""
     spy = Spy()
-    w, spy = poll_once(tmp_path, [{"id": "9", "identifier": "E-9", "title": "t",
-                                   "description": "d"}], spy)
+    w, spy = poll_once(
+        tmp_path,
+        [{"id": "9", "identifier": "E-9", "title": "t", "description": "d"}],
+        spy,
+    )
     asyncio.run(asyncio.wait_for(w.poll(), timeout=10))
     assert len(spy.prompts) == 1
 
@@ -319,6 +337,7 @@ def test_an_endless_comment_connection_cannot_wedge_the_watcher(monkeypatch):
     An issue whose discussion never finishes being read took the whole watcher
     with it, on the first such issue, with no log line.
     """
+
     async def fake(query, variables):
         return {
             "issue": {
@@ -347,8 +366,10 @@ def test_a_normal_walk_is_unaffected_by_the_ceilings(monkeypatch):
         nodes, more, cursor = pages[calls["n"]]
         calls["n"] += 1
         return {
-            "issues": {"nodes": nodes,
-                       "pageInfo": {"hasNextPage": more, "endCursor": cursor}}
+            "issues": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": more, "endCursor": cursor},
+            }
         }
 
     client = linear.Linear("token")
@@ -422,10 +443,20 @@ def test_a_body_that_is_not_an_object_is_reported(monkeypatch, payload):
 
 @pytest.mark.parametrize(
     "payload",
-    [{"errors": "a string"}, {"errors": {"message": "x"}}, {"errors": ["boom"]},
-     {"errors": [None]}, {"errors": [{"message": None}]}],
-    ids=["errors-string", "errors-dict", "errors-list-of-str", "errors-null",
-         "errors-no-message"],
+    [
+        {"errors": "a string"},
+        {"errors": {"message": "x"}},
+        {"errors": ["boom"]},
+        {"errors": [None]},
+        {"errors": [{"message": None}]},
+    ],
+    ids=[
+        "errors-string",
+        "errors-dict",
+        "errors-list-of-str",
+        "errors-null",
+        "errors-no-message",
+    ],
 )
 def test_a_malformed_errors_list_is_reported(monkeypatch, payload):
     """`errors[0].get("message")` on a string or a dict raises `AttributeError`
@@ -498,6 +529,7 @@ def test_a_missing_issue_is_empty_rather_than_an_error(monkeypatch):
 def test_a_missing_issue_key_is_empty_too(monkeypatch):
     client = _client(monkeypatch, {})
     assert asyncio.run(client.comments("gone")) == []
+
 
 # --- the limit is enforced, not requested ---
 

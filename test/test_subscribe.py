@@ -220,9 +220,7 @@ def test_events_make_the_watcher_poll_sooner(tmp_path, capsys):
     """The point of the whole exercise: an event cuts the wait short."""
     stub = StubLinear([issue(1)])
     sub = FakeSubscription([True, True, True])
-    w = watcher.Watcher(
-        stub, router_for(), 60, tmp_path / "s.json", subscription=sub
-    )
+    w = watcher.Watcher(stub, router_for(), 60, tmp_path / "s.json", subscription=sub)
 
     run_watcher(w, ticks=12)
 
@@ -234,9 +232,7 @@ def test_no_events_still_polls_on_the_interval(tmp_path):
     """The slow path has to work on its own."""
     stub = StubLinear([issue(1)])
     sub = FakeSubscription([])
-    w = watcher.Watcher(
-        stub, router_for(), 0.01, tmp_path / "s.json", subscription=sub
-    )
+    w = watcher.Watcher(stub, router_for(), 0.01, tmp_path / "s.json", subscription=sub)
 
     run_watcher(w, ticks=20)
     assert stub.polls >= 3, (

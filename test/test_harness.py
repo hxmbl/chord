@@ -212,7 +212,9 @@ def test_cancellation_leaves_nothing_running():
 
 def test_a_timeout_leaves_nothing_running(short_timeout):
     marker = a_marker()
-    harness = CommandHarness(["bash", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
+    harness = CommandHarness(
+        ["bash", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"]
+    )
     try:
         with pytest.raises(HarnessError):
             asyncio.run(asyncio.wait_for(harness.send("x"), timeout=20))
@@ -428,7 +430,9 @@ def test_sigkill_reaches_a_grandchild(monkeypatch):
     monkeypatch.setattr(harnesses, "HARNESS_TIMEOUT", 1.0)
     monkeypatch.setattr(harnesses, "_REAP_TIMEOUT", 1.0)
     marker = a_marker()
-    harness = CommandHarness(["bash", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"])
+    harness = CommandHarness(
+        ["bash", "-c", f"exec -a {marker} sleep 300 & cat >/dev/null"]
+    )
     try:
         with pytest.raises(HarnessError, match="timed out"):
             asyncio.run(asyncio.wait_for(harness.send("x"), timeout=20))

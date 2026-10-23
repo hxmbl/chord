@@ -112,7 +112,9 @@ class T3CodeHarness:
             "Chord task",
         ]
         if self.options.provider is not None and self.options.model is not None:
-            argv.extend(["--provider", self.options.provider, "--model", self.options.model])
+            argv.extend(
+                ["--provider", self.options.provider, "--model", self.options.model]
+            )
         if self.options.worktree is not None:
             argv.extend(["--worktree", self.options.worktree])
         if self.options.branch is not None:
@@ -173,7 +175,9 @@ class T3CodeHarness:
         argv = [self.executable, "thread", "send", thread_id, "-", "--json"]
         if wait:
             argv.append("--wait")
-        output = await self._run(argv, message, None, wait_exit_codes={1, 2} if wait else set())
+        output = await self._run(
+            argv, message, None, wait_exit_codes={1, 2} if wait else set()
+        )
         result = self._json_object(output.stdout, "send")
         if result.get("threadId") != thread_id:
             raise T3ClientError("T3 returned a response for an unexpected thread.")
@@ -196,9 +200,9 @@ class T3CodeHarness:
                 raise T3ClientError("T3 returned an inconsistent run status.")
             if status not in {"completed", "waiting"} and output.returncode != 1:
                 raise T3ClientError("T3 returned an inconsistent run status.")
-        elif (
-            not isinstance(result.get("runId"), str)
-            or result.get("delivery") not in ("sent", "queued")
+        elif not isinstance(result.get("runId"), str) or result.get("delivery") not in (
+            "sent",
+            "queued",
         ):
             raise T3ClientError("T3 returned malformed send output.")
         return result
@@ -214,7 +218,9 @@ class T3CodeHarness:
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
-                stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE
+                if stdin is not None
+                else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd) if cwd else None,
@@ -225,7 +231,9 @@ class T3CodeHarness:
                 "`t3` isn't on your PATH. Install T3 Code and make its CLI available."
             ) from exc
         except OSError as exc:
-            raise HarnessError(f"Couldn't run the T3 Code CLI: {exc.strerror}.") from exc
+            raise HarnessError(
+                f"Couldn't run the T3 Code CLI: {exc.strerror}."
+            ) from exc
 
         try:
             stdout, stderr = await asyncio.wait_for(

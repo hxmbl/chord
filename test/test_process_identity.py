@@ -32,20 +32,14 @@ from chord import daemon
     "command",
     [
         pytest.param("/usr/bin/python3 -m chord.cli _serve", id="system python"),
-        pytest.param(
-            "/Users/x/.venv/bin/python -m chord.cli _serve", id="venv python"
-        ),
+        pytest.param("/Users/x/.venv/bin/python -m chord.cli _serve", id="venv python"),
         pytest.param(
             "/opt/homebrew/bin/python3.13 -m chord.cli _serve", id="homebrew python"
         ),
         pytest.param("python -m chord.cli _serve", id="bare python"),
         pytest.param("/usr/bin/python3 -m chord.cli _serve ", id="trailing space"),
-        pytest.param(
-            "  /usr/bin/python3 -m chord.cli _serve", id="leading whitespace"
-        ),
-        pytest.param(
-            "/usr/bin/python3 -m chord.cli _serve 2>&1", id="with a redirect"
-        ),
+        pytest.param("  /usr/bin/python3 -m chord.cli _serve", id="leading whitespace"),
+        pytest.param("/usr/bin/python3 -m chord.cli _serve 2>&1", id="with a redirect"),
     ],
 )
 def test_a_watcher_is_recognised_across_interpreters(command):
@@ -55,7 +49,9 @@ def test_a_watcher_is_recognised_across_interpreters(command):
     an exact word count or a leading path would mean a watcher on an unusual
     install could never be stopped.
     """
-    assert daemon._is_watcher_argv(command), f"would not recognise its own watcher: {command!r}"
+    assert daemon._is_watcher_argv(command), (
+        f"would not recognise its own watcher: {command!r}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -67,7 +63,9 @@ def test_a_watcher_is_recognised_across_interpreters(command):
             id="argument",
         ),
         pytest.param("grep -r chord.cli .", "a grep for the string", id="grep"),
-        pytest.param("tail -f src/chord/cli.py", "a file with it in the name", id="file"),
+        pytest.param(
+            "tail -f src/chord/cli.py", "a file with it in the name", id="file"
+        ),
         pytest.param("sleep 300 chord.cli", "an unrelated process", id="unrelated"),
         pytest.param(
             "python -m chord.cli_other _serve", "a similarly named module", id="module"
@@ -75,14 +73,18 @@ def test_a_watcher_is_recognised_across_interpreters(command):
         pytest.param(
             "python -m not_chord.cli _serve", "a prefix of the module name", id="prefix"
         ),
-        pytest.param("python -m chord.cli serve", "a different subcommand", id="subcmd"),
+        pytest.param(
+            "python -m chord.cli serve", "a different subcommand", id="subcmd"
+        ),
         pytest.param("python chord.cli", "run as a file, not a module", id="as-file"),
         pytest.param("", "nothing at all", id="empty"),
         pytest.param("chord.cli", "the bare name", id="bare-name"),
     ],
 )
 def test_anything_else_is_refused(command, why):
-    assert not daemon._is_watcher_argv(command), f"matched something that is not a watcher ({why})"
+    assert not daemon._is_watcher_argv(command), (
+        f"matched something that is not a watcher ({why})"
+    )
 
 
 def test_the_serve_command_alone_is_not_enough():
@@ -177,8 +179,16 @@ def test_nothing_this_file_spawned_is_left_running():
     `finally` blocks that ran after an assertion had already failed.
     """
     before = count_watchers()
-    spawn([sys.executable, "-c", "import time; time.sleep(60)", "-m",
-           daemon.PROCESS_MODULE, daemon.SERVE_COMMAND]).kill()
+    spawn(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            "-m",
+            daemon.PROCESS_MODULE,
+            daemon.SERVE_COMMAND,
+        ]
+    ).kill()
     spawn([sys.executable, "-c", "import time; time.sleep(60)", "chord.cli"]).kill()
     assert count_watchers() == before, "a helper spawned something it did not clean up"
 
@@ -192,7 +202,13 @@ def test_nothing_this_file_spawned_is_left_running():
             id="argument",
         ),
         pytest.param(
-            [sys.executable, "-c", "import time; time.sleep(60)", "-m", "chord.cli_fake"],
+            [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+                "-m",
+                "chord.cli_fake",
+            ],
             "a similarly named module",
             id="similar-module",
         ),

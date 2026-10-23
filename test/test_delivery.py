@@ -71,10 +71,24 @@ BASE = {
         ("the whole issue is empty", None),
     ],
     ids=[
-        "label-null", "label-string", "label-no-name", "label-null-name",
-        "labels-list", "labels-string", "state-string", "state-list",
-        "comment-null", "comment-string", "user-string", "createdAt-int",
-        "desc-int", "title-list", "id-null", "url-null", "priority-str", "empty",
+        "label-null",
+        "label-string",
+        "label-no-name",
+        "label-null-name",
+        "labels-list",
+        "labels-string",
+        "state-string",
+        "state-list",
+        "comment-null",
+        "comment-string",
+        "user-string",
+        "createdAt-int",
+        "desc-int",
+        "title-list",
+        "id-null",
+        "url-null",
+        "priority-str",
+        "empty",
     ],
 )
 def test_render_survives_every_unexpected_shape(name, mutation):
@@ -138,8 +152,15 @@ def _raising(exc):
         ValueError("bad icon"),
         Exception("something unforeseen"),
     ],
-    ids=["oserror", "runtime", "timeout", "subprocess-timeout", "attribute",
-         "value", "bare"],
+    ids=[
+        "oserror",
+        "runtime",
+        "timeout",
+        "subprocess-timeout",
+        "attribute",
+        "value",
+        "bare",
+    ],
 )
 def test_a_broken_notifier_never_stops_a_hand_over(tmp_path, monkeypatch, exc):
     """This call sits *before* the harness runs.
@@ -205,9 +226,7 @@ def test_notify_swallows_everything_except_cancellation(monkeypatch):
 
     monkeypatch.setattr(notify, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(notify, "_macos", lambda *_: [["/opt/tn"]])
-    monkeypatch.setattr(
-        notify, "_deliver", _raising(asyncio.CancelledError())
-    )
+    monkeypatch.setattr(notify, "_deliver", _raising(asyncio.CancelledError()))
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(notify.send("t", "m"))
@@ -250,8 +269,10 @@ def test_an_unexpected_failure_records_the_issue_and_says_how_to_retry(
             return []
 
     w = watcher.Watcher(
-        Stub(), Router("Chord", "spy", factory=lambda s: Exploding()),
-        1, tmp_path / "state.json",
+        Stub(),
+        Router("Chord", "spy", factory=lambda s: Exploding()),
+        1,
+        tmp_path / "state.json",
     )
 
     # Three polls: the point is that it is not offered again on each one.
@@ -298,8 +319,10 @@ def test_the_rest_of_the_backlog_still_gets_its_turn(tmp_path):
             return []
 
     w = watcher.Watcher(
-        Stub(), Router("Chord", "spy", factory=lambda s: Flaky()),
-        1, tmp_path / "state.json",
+        Stub(),
+        Router("Chord", "spy", factory=lambda s: Flaky()),
+        1,
+        tmp_path / "state.json",
     )
     asyncio.run(w.poll())
     assert calls == ["ENG-1", "ENG-2", "ENG-3"]
@@ -330,8 +353,10 @@ def test_a_harness_failure_is_still_recorded_as_before(tmp_path, capsys):
             return []
 
     w = watcher.Watcher(
-        Stub(), Router("Chord", "spy", factory=lambda s: Missing()),
-        1, tmp_path / "state.json",
+        Stub(),
+        Router("Chord", "spy", factory=lambda s: Missing()),
+        1,
+        tmp_path / "state.json",
     )
     asyncio.run(w.poll())
     assert w.handed_over == 1
@@ -358,8 +383,10 @@ def test_the_failure_reason_cannot_forge_a_log_line(tmp_path, capsys):
             return []
 
     w = watcher.Watcher(
-        Stub(), Router("Chord", "spy", factory=lambda s: Hostile()),
-        1, tmp_path / "state.json",
+        Stub(),
+        Router("Chord", "spy", factory=lambda s: Hostile()),
+        1,
+        tmp_path / "state.json",
     )
     asyncio.run(w.poll())
     out = capsys.readouterr().out
@@ -410,9 +437,7 @@ def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path, banners):
     said = banners
 
     async def scenario():
-        w = watcher.Watcher(
-            stub_linear({**BASE}), spy_router(), 1, tmp_path / "s.json"
-        )
+        w = watcher.Watcher(stub_linear({**BASE}), spy_router(), 1, tmp_path / "s.json")
         await w.poll()
 
     asyncio.run(scenario())
@@ -425,7 +450,11 @@ def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path, banners):
     "case",
     [
         # A label naming a harness chord.toml never curated.
-        {"name": "unknown_route", "labels": ["Chord/nobody-defined"], "final": "skipped"},
+        {
+            "name": "unknown_route",
+            "labels": ["Chord/nobody-defined"],
+            "final": "skipped",
+        },
         # Curated and valid, but the command it names is not installed, so it
         # cannot be built at all.
         {"name": "unbuildable", "factory": "raises", "final": "skipped"},
@@ -437,8 +466,8 @@ def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path, banners):
     ids=lambda case: case["name"],
 )
 def test_every_way_an_issue_does_not_get_worked_on_says_so(
-    monkeypatch, tmp_path, case
-, banners):
+    monkeypatch, tmp_path, case, banners
+):
     """The paths that used to only write to the log.
 
     An issue that stops without a banner looks exactly like an issue being worked
@@ -476,7 +505,9 @@ def test_every_way_an_issue_does_not_get_worked_on_says_so(
     assert body, "a bare title tells nobody what went wrong"
 
 
-def test_a_failure_supersedes_the_banner_that_said_it_had_started(monkeypatch, tmp_path, banners):
+def test_a_failure_supersedes_the_banner_that_said_it_had_started(
+    monkeypatch, tmp_path, banners
+):
     """Two outcomes for one issue, not two problems to read.
 
     A hand-over announces itself before the harness runs, because a run can take
@@ -539,7 +570,7 @@ def test_a_refusal_names_who_and_why(monkeypatch, tmp_path, banners):
 
     asyncio.run(scenario())
 
-    (title, body), = said.said
+    ((title, body),) = said.said
     assert title == "ENG-1 refused"
     assert "stranger" in body and "allowed_actors" in body
 
@@ -558,9 +589,7 @@ def test_nothing_being_handed_over_is_still_quiet(monkeypatch, tmp_path, banners
     said = banners
 
     async def scenario():
-        w = watcher.Watcher(
-            Empty(), spy_router(), 1, tmp_path / "s.json"
-        )
+        w = watcher.Watcher(Empty(), spy_router(), 1, tmp_path / "s.json")
         for _ in range(3):
             await w.poll()
 
@@ -592,7 +621,9 @@ def test_an_issue_with_no_id_is_not_announced(monkeypatch, tmp_path, banners):
     assert said.said == []
 
 
-def test_a_discussion_that_could_not_be_read_is_not_announced(monkeypatch, tmp_path, banners):
+def test_a_discussion_that_could_not_be_read_is_not_announced(
+    monkeypatch, tmp_path, banners
+):
     """Work still happened, so there is nothing to announce.
 
     The missing comments are a degradation and the log says so. A banner for it
@@ -611,9 +642,7 @@ def test_a_discussion_that_could_not_be_read_is_not_announced(monkeypatch, tmp_p
             raise LinearError("no discussion for you")
 
     async def scenario():
-        w = watcher.Watcher(
-            Stub(), spy_router(), 1, tmp_path / "s.json"
-        )
+        w = watcher.Watcher(Stub(), spy_router(), 1, tmp_path / "s.json")
         await w.poll()
 
     asyncio.run(scenario())
@@ -663,8 +692,10 @@ def test_an_odd_issue_is_either_run_or_recorded(tmp_path, mutation, runs):
             return []
 
     w = watcher.Watcher(
-        Stub(), Router("Chord", "spy", factory=lambda s: Harness()),
-        1, tmp_path / "state.json",
+        Stub(),
+        Router("Chord", "spy", factory=lambda s: Harness()),
+        1,
+        tmp_path / "state.json",
     )
     asyncio.run(asyncio.wait_for(w.poll(), timeout=10))
     assert len(seen) == (1 if runs else 0)

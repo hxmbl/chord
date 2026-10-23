@@ -21,8 +21,7 @@ class EventSource(ABC):
 
     async def wait(self, timeout: float) -> bool:
         if not self.active and (
-            not self.consume_pending_when_inactive
-            or self._generation == self._consumed
+            not self.consume_pending_when_inactive or self._generation == self._consumed
         ):
             await asyncio.sleep(timeout)
             return False

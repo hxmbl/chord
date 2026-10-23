@@ -409,8 +409,7 @@ class Watcher:
             # keychain read is not free and this runs every interval forever.
             if not self._renew_token() and not await self._renew_with_linear(True):
                 self._problem(
-                    f"{exc} Run `chord setup` to sign in again; "
-                    "this Chord picks it up."
+                    f"{exc} Run `chord setup` to sign in again; this Chord picks it up."
                 )
                 await self._tell_signed_out(f"Linear refused the token: {exc}.")
                 return False
@@ -574,7 +573,7 @@ class Watcher:
                 f"names a harness chord.toml doesn't define."
             )
             self._problem(
-                f"  to retry it: add [harnesses.\"{exc.name}\"] to chord.toml, then "
+                f'  to retry it: add [harnesses."{exc.name}"] to chord.toml, then '
                 f"drop {_key(issue_id)} from {self._path.name}."
             )
             await notify.skipped(
@@ -698,7 +697,9 @@ class Watcher:
                     "Chord has held this issue to prevent a duplicate."
                 )
             thread_id = result["thread_id"]
-            log(f"  T3 thread {thread_id} accepted; inspect with `chord t3 show {identifier}`.")
+            log(
+                f"  T3 thread {thread_id} accepted; inspect with `chord t3 show {identifier}`."
+            )
             self._remember(issue_id, t3_thread=thread_id, identifier=identifier)
         else:
             log("  handed over.")
@@ -816,7 +817,11 @@ class Watcher:
             return True
 
         actor_id = routed.who.id if routed.who else None
-        asked = f"added {self._router.default_name!r}" if routed.who else "created the issue"
+        asked = (
+            f"added {self._router.default_name!r}"
+            if routed.who
+            else "created the issue"
+        )
         if routed.who is None:
             creator = issue.get("creator")
             actor_id = str(creator.get("id")) if isinstance(creator, dict) else None
@@ -841,7 +846,9 @@ class Watcher:
             )
 
         _spacer()
-        self._problem(f"{identifier} skipped: {subject}, and that is not in allowed_actors.")
+        self._problem(
+            f"{identifier} skipped: {subject}, and that is not in allowed_actors."
+        )
         _spacer()
         self._problem(
             f"  to allow them: add their Linear user id to allowed_actors in chord.toml "
@@ -851,7 +858,9 @@ class Watcher:
         # issue at all: it is the only record that somebody asked this machine to
         # run a command and was refused. The log has it, but the log is only read
         # when somebody already suspects something.
-        await notify.refused(identifier, f"{subject}, and that is not in allowed_actors.")
+        await notify.refused(
+            identifier, f"{subject}, and that is not in allowed_actors."
+        )
         self._remember(issue_id)
         return False
 
@@ -989,6 +998,8 @@ def _t3_state(
             or not isinstance(entry.get("identifier"), str)
             or not entry["identifier"].strip()
         ):
-            raise StateError("T3 pending dispatch state in the Chord state file is malformed.")
+            raise StateError(
+                "T3 pending dispatch state in the Chord state file is malformed."
+            )
         pending[str(key)] = {"identifier": entry["identifier"]}
     return threads, pending

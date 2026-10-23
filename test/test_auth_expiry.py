@@ -244,12 +244,12 @@ def test_it_recovers_again_on_the_next_expiry(tmp_path):
     # the next one and succeeds. So the expired token appears twice per round:
     # once for the failing attempt, once for the next round's failing attempt.
     assert client.tokens == [
-        None,      # nothing adopted yet
-        "first",   # retry in round 1
-        "first",   # round 2's failing attempt
+        None,  # nothing adopted yet
+        "first",  # retry in round 1
+        "first",  # round 2's failing attempt
         "second",  # retry in round 2
         "second",  # round 3's failing attempt
-        "third",   # retry in round 3
+        "third",  # retry in round 3
     ]
 
 
@@ -349,9 +349,7 @@ def test_a_client_that_cannot_be_given_a_token_is_not_retried(tmp_path, capsys):
     assert "chord setup" in capsys.readouterr().out
 
 
-def test_a_keychain_that_will_not_open_does_not_take_the_watcher_down(
-    tmp_path, capsys
-):
+def test_a_keychain_that_will_not_open_does_not_take_the_watcher_down(tmp_path, capsys):
     client = Expiring("fresh")
 
     def broken():
@@ -393,7 +391,9 @@ def test_a_renewed_token_actually_reaches_the_request(monkeypatch):
         status_code = 200
 
         def json(self):
-            return {"data": {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}}
+            return {
+                "data": {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+            }
 
     class Client:
         def __init__(self, *a, **k): ...

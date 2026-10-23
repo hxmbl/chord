@@ -107,7 +107,11 @@ class Webhook(EventSource):
             try:
                 async with asyncio.timeout(READ_TIMEOUT):
                     status, body = await self._respond(reader)
-            except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
+            except (
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+                TimeoutError,
+            ):
                 pass
             except asyncio.CancelledError:
                 # `chord stop`. Reply as best we can in the `finally`, then let

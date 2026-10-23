@@ -17,7 +17,9 @@ from chord.routing import Router
 runner = CliRunner()
 
 
-def fake_t3(tmp_path, monkeypatch, *, start_output=None, show_output=None, send_output=None):
+def fake_t3(
+    tmp_path, monkeypatch, *, start_output=None, show_output=None, send_output=None
+):
     """Install a fake CLI which records argv/stdin and emits scripted JSON."""
     directory = tmp_path / "bin"
     directory.mkdir()
@@ -183,9 +185,7 @@ def test_t3_timeout_is_reported_as_ambiguous(tmp_path, monkeypatch):
     directory = tmp_path / "bin"
     directory.mkdir()
     executable = directory / "t3"
-    executable.write_text(
-        f"#!{sys.executable}\nimport time\ntime.sleep(30)\n"
-    )
+    executable.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
     executable.chmod(0o755)
     monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setattr(harness, "HARNESS_TIMEOUT", 0.05)

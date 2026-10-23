@@ -457,7 +457,9 @@ class Linear:
                     # The wrapper being absent is how Linear says "no such
                     # issue", which is an empty answer, not a broken one.
                     return nodes, False
-                connection = connection.get(inner) if isinstance(connection, dict) else None
+                connection = (
+                    connection.get(inner) if isinstance(connection, dict) else None
+                )
             if not isinstance(connection, dict):
                 raise LinearError(
                     f"Linear sent back a {field} connection of the wrong shape "
@@ -510,9 +512,7 @@ class Linear:
             async with asyncio.timeout(RETRY_BUDGET):
                 response = await self._request(query, variables)
         except TimeoutError as exc:
-            raise LinearError(
-                f"Linear didn't answer within {RETRY_BUDGET}s."
-            ) from exc
+            raise LinearError(f"Linear didn't answer within {RETRY_BUDGET}s.") from exc
 
         if response.status_code in (401, 403):
             # The status and nothing more: the body can carry workspace detail,
@@ -559,9 +559,7 @@ class Linear:
             raise LinearError("Linear sent back no data.")
         return data
 
-    async def _request(
-        self, query: str, variables: dict[str, Any]
-    ) -> httpx.Response:
+    async def _request(self, query: str, variables: dict[str, Any]) -> httpx.Response:
         """POST one query, retrying transport failures, 5xx and 429.
 
         `RETRY_MAX_ATTEMPTS` bounds the attempts; the caller's `RETRY_BUDGET`

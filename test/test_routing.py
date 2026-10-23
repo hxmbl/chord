@@ -412,8 +412,11 @@ def test_history_decides_which_of_several_labels_is_newest(tmp_path, capsys):
     """Not "most specific": the newest label added, whatever it happens to be."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")], history=[change("2026-03-01", "Chord/opencode", who=BY_BOB),
-                change("2026-01-01", "Chord", who=BY_ALICE)]
+        [issue(1, "Chord", "Chord/opencode")],
+        history=[
+            change("2026-03-01", "Chord/opencode", who=BY_BOB),
+            change("2026-01-01", "Chord", who=BY_ALICE),
+        ],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -428,8 +431,10 @@ def test_a_bare_trigger_label_loses_to_a_narrower_older_one(tmp_path, capsys):
     stub = StubLinear(
         [issue(1, "Chord", "Chord/opencode")],
         # `Chord` added after `Chord/opencode`: the issue was handed back.
-        history=[change("2026-03-01", "Chord", who=BY_ALICE),
-                change("2026-01-01", "Chord/opencode", who=BY_BOB)],
+        history=[
+            change("2026-03-01", "Chord", who=BY_ALICE),
+            change("2026-01-01", "Chord/opencode", who=BY_BOB),
+        ],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -467,7 +472,8 @@ def test_history_that_mentions_no_route_falls_back_too(tmp_path, capsys):
     """A route applied long enough ago to be off the history page."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")], history=[change("2026-03-01", "Bug"), change("2026-01-01", "Research")]
+        [issue(1, "Chord", "Chord/opencode")],
+        history=[change("2026-03-01", "Bug"), change("2026-01-01", "Research")],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
@@ -479,7 +485,8 @@ def test_an_uncured_route_is_skipped_and_says_which_label(tmp_path, capsys):
     """Not run on the default: doing the work wrong is worse than not."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/typo-here")], history=[change("2026-03-01", "Chord/typo-here", who=BY_ALICE)]
+        [issue(1, "Chord", "Chord/typo-here")],
+        history=[change("2026-03-01", "Chord/typo-here", who=BY_ALICE)],
     )
     w = build(tmp_path, stub, spy, CURATED)
     asyncio.run(w.poll())
