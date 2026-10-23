@@ -9,6 +9,7 @@ import asyncio
 import signal
 import subprocess
 import time
+from datetime import UTC, datetime
 from typing import NoReturn
 
 import typer
@@ -25,7 +26,7 @@ from chord.config import (
     init_file,
     load,
 )
-from chord.harness import HarnessError
+from chord.harness import HarnessError, command_line
 from chord.linear import Linear
 from chord.paths import project_root
 from chord.routing import Router
@@ -191,8 +192,10 @@ def info():
     """Show what Chord is set up to do."""
     config = _config()
     pid = daemon.running_pid()
+    deliveries: list[dict[str, str]] = []
     try:
         count = len(watcher.read_state(daemon.STATE_FILE))
+        deliveries = watcher.read_deliveries(daemon.STATE_FILE)
     except StateError as exc:
         count = None
         state_note = str(exc)
@@ -226,6 +229,8 @@ def info():
     typer.echo(f"  config     {_config_line(config)}")
     if count is not None:
         typer.echo(f"  handed     {_plural(count, 'issue')} so far")
+    for line in _deliveries(deliveries, running=pid is not None):
+        typer.echo(line)
     if state_note:
         typer.echo(f"  note       {state_note}")
     for line in _authorisation(config):
@@ -442,9 +447,13 @@ def _labels(config: Config) -> list[str]:
     lead = "  labels     "
     lines: list[str] = []
     for index, route in enumerate(routes):
+        # A harness known by name says what it runs, so `opencode` isn't
+        # mistaken for the interactive TUI that plain `opencode` starts.
+        runs = command_line(route.spelling)
+        shown = f"{route.spelling}  ({runs})" if runs else route.spelling
         lines.append(
             f"{lead if index == 0 else ' ' * len(lead)}"
-            f"{route.label.ljust(width)}  {route.spelling}"
+            f"{route.label.ljust(width)}  {shown}"
         )
         if route.label in broken:
             lines.append(
@@ -662,6 +671,70 @@ def _remaining(seconds: float) -> str:
     if seconds < 60 * 60 * 24:
         return f"{seconds // (60 * 60)}h {seconds % (60 * 60) // 60}m"
     return f"{seconds // (60 * 60 * 24)}d {seconds % (60 * 60 * 24) // (60 * 60)}h"
+
+
+# How many recent hand-overs `chord info` lists. The newest is the one people
+# look for; a few behind it show whether it is a pattern.
+RECENT_DELIVERIES = 5
+
+
+def _deliveries(entries: list[dict[str, str]], *, running: bool) -> list[str]:
+    """The newest hand-overs, newest first: did each reach its harness, and then?
+
+    The quiet half of delivery. A hand-over that works posts no banner, so this
+    is where somebody checks that the issue got there — including while the
+    harness is still working on it, which is the point of keeping "delivered"
+    apart from "finished".
+    """
+    lines = []
+    for entry in reversed(entries[-RECENT_DELIVERIES:]):
+        label = "delivery  " if not lines else "          "
+        lines.append(f"  {label} {_delivery(entry, running=running)}")
+    return lines
+
+
+def _delivery(entry: dict[str, str], *, running: bool) -> str:
+    who = entry.get("identifier", "?")
+    harness = entry.get("harness", "?")
+    status = entry.get("status", "")
+    sent = _clock(entry.get("delivered_at"))
+    ended = _clock(entry.get("ended_at"))
+    if status == watcher.UNDELIVERED:
+        return f"{who} NOT delivered to {harness} ({ended})"
+    if status == watcher.UNCONFIRMED:
+        return f"{who} unconfirmed at {harness} ({ended}); held to avoid a duplicate"
+    head = f"{who} delivered to {harness} at {sent}"
+    if status == watcher.DELIVERED:
+        # Still "delivered" with no watcher running means it was interrupted
+        # without the chance to say so — a crash, not `chord stop`.
+        return f"{head}, still running" if running else f"{head}, never finished"
+    if status == watcher.FINISHED:
+        return f"{head}, finished {ended}"
+    if status == watcher.FAILED:
+        return f"{head}, failed {ended}"
+    if status == watcher.STOPPED:
+        return f"{head}, stopped {ended}"
+    if status == watcher.ACCEPTED:
+        return f"{head}; T3 Code has it now"
+    return f"{head} ({status})"
+
+
+def _clock(stamp: str | None) -> str:
+    """A UTC stamp from the state file as this machine's local time.
+
+    Just the time for today, because that is the case people check; the date
+    too otherwise, so yesterday's 23:59 doesn't read as tonight's.
+    """
+    if not stamp:
+        return "?"
+    try:
+        when = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return stamp
+    local = when.astimezone()
+    if local.date() == datetime.now().astimezone().date():
+        return local.strftime("%H:%M")
+    return local.strftime("%Y-%m-%d %H:%M")
 
 
 def _plural(count: int, noun: str) -> str:

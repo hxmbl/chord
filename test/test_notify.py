@@ -84,49 +84,41 @@ def test_each_end_says_what_happened_and_why(monkeypatch):
     only_osascript(monkeypatch)
     rec = recorder(monkeypatch)
 
-    run(notify.received("ENG-201", "opencode"))
     run(notify.failed("ENG-201", "`opencode` exited 1."))
     run(notify.skipped("ENG-201", "'Chord/typo' names a harness chord.toml lacks."))
     run(notify.refused("ENG-201", "sam added 'Chord', and that isn't allowed."))
 
     assert rec.banners == [
-        ("ENG-201 received", "Sent to opencode."),
         ("ENG-201 failed", "`opencode` exited 1."),
         ("ENG-201 skipped", "'Chord/typo' names a harness chord.toml lacks."),
         ("ENG-201 refused", "sam added 'Chord', and that isn't allowed."),
     ]
 
 
-def test_a_hand_over_is_announced_once_not_at_both_ends(monkeypatch):
-    """One banner per issue, which is the point.
+def test_a_hand_over_that_works_has_no_banner_at_all(monkeypatch):
+    """Delivery is confirmed quietly, not announced.
 
-    It was two: "started" when the hand-over began and "finished" when it ended.
-    Two notifications saying one thing — the issue went to a harness — and a
-    backlog of ten is twenty banners, which is how a notification gets ignored.
+    It was "received" on every hand-over, and before that "started" and
+    "finished": Chord shouting to say nothing was wrong. The watcher records
+    delivery in its log and state for `chord info` instead, so there is no verb
+    here for a hand-over that went to plan.
     """
-    on(monkeypatch, "darwin")
-    only_osascript(monkeypatch)
-    rec = recorder(monkeypatch)
-
-    run(notify.received("ENG-201", "opencode"))
-
-    assert len(rec.banners) == 1
+    assert not hasattr(notify, "received")
     assert not hasattr(notify, "finished"), "there is no second end to announce"
 
 
-def test_the_four_ends_are_distinguishable_at_a_glance(monkeypatch):
-    """Four outcomes, four titles. A reader who sees only the title has to be
-    able to tell a working agent from a refused one."""
+def test_the_ends_are_distinguishable_at_a_glance(monkeypatch):
+    """Three outcomes, three titles. A reader who sees only the title has to be
+    able to tell a failed agent from a refused one."""
     on(monkeypatch, "darwin")
     only_osascript(monkeypatch)
     rec = recorder(monkeypatch)
 
-    for verb in ("received", "failed", "skipped", "refused"):
+    for verb in ("failed", "skipped", "refused"):
         run(getattr(notify, verb)("ENG-201", "because"))
 
     titles = [title for title, _ in rec.banners]
     assert titles == [
-        "ENG-201 received",
         "ENG-201 failed",
         "ENG-201 skipped",
         "ENG-201 refused",
@@ -209,7 +201,7 @@ def test_outcomes_for_one_issue_share_a_group(monkeypatch):
     rec = recorder(monkeypatch)
 
     run(notify.skipped("ENG-201", "Chord/typo names no harness."))
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     groups = {command[command.index("-group") + 1] for command in rec.commands}
     assert len(groups) == 1, "two outcomes for one issue should land in one group"
@@ -222,8 +214,8 @@ def test_different_issues_do_not_share_a_group(monkeypatch):
     monkeypatch.setattr(notify, "_osascript", lambda: None)
     rec = recorder(monkeypatch)
 
-    run(notify.received("ENG-201", "opencode"))
-    run(notify.received("ENG-202", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
+    run(notify.failed("ENG-202", "`opencode` exited 1."))
 
     groups = {command[command.index("-group") + 1] for command in rec.commands}
     assert len(groups) == 2
@@ -261,7 +253,7 @@ def test_terminal_notifier_is_preferred_when_it_is_there(monkeypatch):
     monkeypatch.setattr(notify, "_osascript", lambda: "/usr/bin/osascript")
     rec = recorder(monkeypatch)
 
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     assert len(rec.commands) == 1
     assert rec.commands[0][0] == "/opt/tn"
@@ -274,7 +266,7 @@ def test_osascript_covers_the_machine_with_no_cask_on_it(monkeypatch):
     monkeypatch.setattr(notify, "_osascript", lambda: "/usr/bin/osascript")
     rec = recorder(monkeypatch)
 
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     assert len(rec.commands) == 1
     assert rec.commands[0][0] == "/usr/bin/osascript"
@@ -287,7 +279,7 @@ def test_one_notifier_failing_is_not_a_reason_to_drop_the_banner(monkeypatch):
     monkeypatch.setattr(notify, "_osascript", lambda: "/usr/bin/osascript")
     rec = recorder(monkeypatch, [False])
 
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     assert len(rec.commands) == 2, "it should have tried osascript after"
 
@@ -298,7 +290,7 @@ def test_a_successful_notifier_is_not_asked_twice(monkeypatch):
     monkeypatch.setattr(notify, "_osascript", lambda: "/usr/bin/osascript")
     rec = recorder(monkeypatch, [True])
 
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     assert len(rec.commands) == 1
 
@@ -309,7 +301,7 @@ def test_a_machine_with_nothing_to_notify_with_is_silent(monkeypatch):
     no_tools(monkeypatch)
     rec = recorder(monkeypatch)
 
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     assert rec.commands == []
 
@@ -330,15 +322,15 @@ def test_the_library_still_serves_linux(monkeypatch):
     monkeypatch.setitem(
         sys.modules, "desktop_notifier", SimpleNamespace(DesktopNotifier=Fake)
     )
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
-    assert sent == [("ENG-201 received", "Sent to opencode.")]
+    assert sent == [("ENG-201 failed", "`opencode` exited 1.")]
 
 
 def test_a_missing_library_off_macos_is_silent(monkeypatch):
     on(monkeypatch, "linux")
     monkeypatch.setitem(sys.modules, "desktop_notifier", None)
-    run(notify.received("ENG-201", "opencode"))  # must not raise
+    run(notify.failed("ENG-201", "`opencode` exited 1."))  # must not raise
 
 
 def test_no_failure_mode_ever_escapes(monkeypatch):
@@ -354,7 +346,7 @@ def test_no_failure_mode_ever_escapes(monkeypatch):
         raise RuntimeError("the notifier is having a bad day")
 
     monkeypatch.setattr(notify, "_deliver", explode)
-    run(notify.received("ENG-201", "opencode"))
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
 
 
 def test_cancellation_still_travels(monkeypatch):
@@ -368,7 +360,7 @@ def test_cancellation_still_travels(monkeypatch):
 
     monkeypatch.setattr(notify, "_deliver", cancel)
     with pytest.raises(asyncio.CancelledError):
-        run(notify.received("ENG-201", "opencode"))
+        run(notify.failed("ENG-201", "`opencode` exited 1."))
 
 
 # --- delivering, for real ---

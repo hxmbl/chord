@@ -1,21 +1,25 @@
-"""Desktop notifications: what happened to an issue, and why.
+"""Desktop notifications: what went wrong with an issue, and why.
 
-**One banner per issue, whichever way it went.** That is the whole shape. A
-watcher can have a hundred issues in a backlog and the only thing worth saying
-about any of them is how it ended — so the ends are four verbs, exactly one of
-which fires for any issue, and there is no notification for a step along the way.
+**One banner per issue that didn't go to plan, and silence for one that did.**
+A watcher can have a hundred issues in a backlog, and the thing worth
+interrupting somebody for is the issue that is *not* being worked on — so the
+banners are three verbs, at most one of which fires for any issue.
 
-It was two banners per issue once: "started" when the hand-over began and
-"finished" when it ended, which is two notifications to say one thing. The
-interesting half of a hand-over is that it happened; the interesting half of the
-failure is that it did not; and the middle is a step, not an event.
+It used to be one banner per issue whichever way it went, with "received"
+fired as the hand-over started. That made every working hand-over a pop-up,
+which is Chord shouting to say that nothing is wrong. Knowing the issue got
+there is still worth having, so it is kept, quietly: the watcher records the
+moment the harness has the issue in its log and in `state.json`, and `chord
+info` shows it ("ENG-201 delivered to claude at 23:59, still running"). Before
+that it was two banners per issue — "started" and "finished" — which is two
+notifications to say one thing.
 
 Every banner is two halves. A title naming what happened, and a line underneath
 saying why — "ENG-201 failed" over "`opencode` exited 1". A banner is read at a
 glance by somebody who did not ask for it, so the title has to stand on its own
 and the reason has to be underneath it rather than woven into it.
 
-The four verbs exist rather than one `send(title, message)` taking two free
+The verbs exist rather than one `send(title, message)` taking two free
 strings because that is what lets the halves disagree. It happened: a hand-over
 that raised sent "Chord done" over "ENG-201 did not finish", which is the one
 banner nobody can act on — the title says there is nothing to do and the body
@@ -62,8 +66,8 @@ from typing import Any
 from chord.text import one_line
 
 # The prefix of a notification group. Notifications in one group replace one
-# another rather than stacking, which is the whole reason a watcher can announce
-# both ends of a hand-over without leaving a wall of banners behind.
+# another rather than stacking, so a later word about an issue replaces an earlier
+# one instead of leaving a wall of banners behind.
 GROUP = "chord"
 
 # How long a notifier gets. It is a one-shot command whose entire job is to hand
@@ -95,17 +99,6 @@ OSASCRIPT = "/usr/bin/osascript"
 # test does not take `shutil` away from the rest of Chord — `harness.build`
 # resolves commands the same way and needs the real one to find them.
 _find = shutil.which
-
-
-async def received(thing: str, where: str) -> None:
-    """`thing` has been picked up and handed to `where`.
-
-    One banner for the whole hand-over, fired as it happens rather than when it
-    ends — a harness can run for half an hour, and the news is that work started
-    where you didn't start it. There is deliberately no `finished` to go with it:
-    see the module docstring.
-    """
-    await send(f"{thing} received", f"Sent to {where}.", group=_group(thing))
 
 
 async def failed(thing: str, why: object) -> None:
@@ -261,10 +254,9 @@ def _macos(title: str, message: str, group: str | None) -> list[list[str]]:
             title,
             "-message",
             message,
-            # Collapse this issue's banners into one. Without it, a watcher that
-            # announces both ends of a hand-over leaves the finished banner
-            # stacked under the started one, and the second is the only one
-            # still true.
+            # Collapse this issue's banners into one. Without it, a second
+            # banner about the same issue stacks under the first, and only the
+            # newer one is still true.
             "-group",
             group or GROUP,
         ]

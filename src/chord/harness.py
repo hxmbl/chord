@@ -19,6 +19,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
@@ -66,6 +67,9 @@ HARNESS_TIMEOUT = _harness_timeout()
 # never says why.
 _REAP_TIMEOUT = 5.0
 
+# The default harness's command line: OpenCode's scripted form, prompt on stdin.
+OPENCODE_ARGV = ("opencode", "run")
+
 # Linux refuses a single command-line argument longer than 128 KiB
 # (MAX_ARG_STRLEN), whatever the total limit is. Below that, with room to spare,
 # for the one preset that has to take the issue as an argument.
@@ -73,6 +77,18 @@ MAX_PROMPT_ARGUMENT = 100_000
 
 # How much of a failed harness's last line goes into the failure message.
 _REASON_LENGTH = 160
+
+# How long a freshly started harness has to fall over before Chord counts the
+# issue as delivered. Writing to a pipe only proves the kernel took the bytes:
+# a harness that dies on startup (a bad flag, a missing login) never read them.
+# So delivery is "the whole issue went in, stdin was closed cleanly, and the
+# harness was still running (or had exited 0) this long after starting". Short,
+# because it is a wait on every hand-over, and a harness that exits sooner
+# answers sooner.
+DELIVERY_GRACE = 1.0
+
+# Told once the harness has the issue, while it may still be working on it.
+Delivered = Callable[[], None]
 
 
 class HarnessError(Exception):
@@ -251,10 +267,18 @@ class PrintHarness:
 
     name = "print"
 
-    async def send(self, prompt: str, cwd: Path | None = None) -> None:
+    async def send(
+        self,
+        prompt: str,
+        cwd: Path | None = None,
+        *,
+        on_delivered: Delivered | None = None,
+    ) -> None:
         if cwd:
             logging.write(f"# Working directory: {cwd}\n")
         logging.write(prompt)
+        if on_delivered is not None:
+            on_delivered()
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
@@ -314,6 +338,27 @@ def _close_transport(process: asyncio.subprocess.Process) -> None:
         transport.close()
 
 
+async def _feed(pipe: asyncio.StreamWriter, data: bytes) -> bool:
+    """Write all of `data` to a harness's stdin and close it. Whether it took it.
+
+    `communicate()` used to do this, and it swallows a broken pipe on purpose —
+    which is exactly the case that matters here: a harness that hung up on its
+    input never got the issue. An empty write (the prompt went on the command
+    line) can't be refused, so only a real one is checked.
+    """
+    try:
+        if data:
+            pipe.write(data)
+            await pipe.drain()
+        pipe.close()
+        await pipe.wait_closed()
+    except (BrokenPipeError, ConnectionResetError):
+        with contextlib.suppress(Exception):
+            pipe.close()
+        return not data
+    return True
+
+
 class CommandHarness:
     """Runs a command with the issue on its standard input.
 
@@ -337,7 +382,21 @@ class CommandHarness:
         # bounded, so an issue too long for it is refused before anything runs.
         self.prompt_as_argument = prompt_as_argument
 
-    async def send(self, prompt: str, cwd: Path | None = None) -> None:
+    async def send(
+        self,
+        prompt: str,
+        cwd: Path | None = None,
+        *,
+        on_delivered: Delivered | None = None,
+    ) -> None:
+        """Run the harness on `prompt`, telling `on_delivered` once it has it.
+
+        `on_delivered` is called at most once, while the harness may still be
+        running: see `DELIVERY_GRACE` for what counts. A harness that never got
+        the issue (it closed its input early, or died on startup) raises without
+        calling it, so the caller can tell "never arrived" from "arrived, then
+        failed".
+        """
         argv = self.argv
         stdin = prompt.encode()
         if self.prompt_as_argument:
@@ -359,8 +418,8 @@ class CommandHarness:
                 # Its own session, so the whole harness tree can be signalled as
                 # one. Without it, `kill()` reaches only the process we spawned,
                 # and a harness that leaves anything running keeps its share of
-                # the stdout pipe open -- at which point `communicate()` below
-                # never returns and the watcher is stuck rather than reporting
+                # the stdout pipe open -- at which point reading its output
+                # never finishes and the watcher is stuck rather than reporting
                 # the timeout it just detected.
                 start_new_session=True,
                 cwd=str(cwd) if cwd else None,
@@ -372,14 +431,14 @@ class CommandHarness:
 
         try:
             # stderr was merged into stdout above, so everything the harness
-            # said arrives in the first slot and the second is always None.
-            output, _ = await asyncio.wait_for(
-                process.communicate(stdin), HARNESS_TIMEOUT
+            # said arrives on the one pipe.
+            output = await asyncio.wait_for(
+                self._drive(process, stdin, on_delivered), HARNESS_TIMEOUT
             )
         except TimeoutError as exc:
             # Logged before any attempt to tidy up, because the tidy-up is
-            # exactly what used to fail silently. `communicate()` waits for the
-            # pipe to close, and a grandchild holding the write end means it
+            # exactly what used to fail silently. Reading the output waits for
+            # the pipe to close, and a grandchild holding the write end means it
             # never does; the timeout was detected, and saying so cannot wait on
             # the thing that would hang.
             logging.error(
@@ -413,6 +472,44 @@ class CommandHarness:
                 "Its full output is in the log."
             )
 
+    async def _drive(
+        self,
+        process: asyncio.subprocess.Process,
+        stdin: bytes,
+        on_delivered: Delivered | None,
+    ) -> bytes:
+        """Feed the harness, confirm it took the issue, and collect its output.
+
+        The output is read from the start, alongside the write, so a harness
+        that prints a lot before it has read its whole input can't deadlock
+        against a full pipe in each direction.
+        """
+        assert process.stdin is not None and process.stdout is not None
+        reader = asyncio.ensure_future(process.stdout.read())
+        exited = asyncio.ensure_future(process.wait())
+        try:
+            accepted = await _feed(process.stdin, stdin)
+            await asyncio.wait({exited}, timeout=DELIVERY_GRACE)
+            if not accepted and (not exited.done() or process.returncode == 0):
+                # It hung up on its input and either kept going or exited
+                # cleanly: whatever it is doing, it isn't working on this issue.
+                # A non-zero exit falls through to the usual failure instead,
+                # which carries the reason it gave.
+                await self._terminate(process)
+                raise HarnessError(
+                    f"`{self.name}` closed its input before reading the whole "
+                    "issue, so it never got it. Check it reads the prompt on stdin."
+                )
+            if accepted and not process.returncode and on_delivered is not None:
+                on_delivered()
+            output = await reader
+            await exited
+            return output
+        finally:
+            for task in (reader, exited):
+                if not task.done():
+                    task.cancel()
+
     async def _terminate(self, process: asyncio.subprocess.Process) -> None:
         """Stop a harness and everything it started, then let go of its output.
 
@@ -439,12 +536,23 @@ class CommandHarness:
 
 
 class OpenCodeHarness(CommandHarness):
-    """The default harness: the `opencode` command."""
+    """The default harness: OpenCode's non-interactive `opencode run`.
+
+    Plain `opencode` starts the terminal UI, which waits for a person nobody
+    is there to be. `opencode run` is the scripted form: with no message
+    argument and stdin not a terminal, it reads the whole prompt from stdin
+    (`opencode run [message..]`, https://opencode.ai/docs/cli/#run). No flag is
+    needed to keep it from prompting — a permission that would ask is refused
+    rather than waited on, and OpenCode's defaults already allow edits and
+    shell commands in the directory it starts in. `--auto` would approve the
+    rest too, which is more than Chord should decide for anyone; add it in a
+    curated `command` if your OpenCode config asks for things.
+    """
 
     name = "opencode"
 
     def __init__(self) -> None:
-        super().__init__(["opencode"])
+        super().__init__(list(OPENCODE_ARGV), self.name)
 
 
 class Preset(NamedTuple):
@@ -516,6 +624,26 @@ def _preset(name: str) -> CommandHarness:
         name,
         prompt_as_argument=preset.prompt_as_argument,
     )
+
+
+def command_line(spec: HarnessSpec) -> str | None:
+    """What a harness known by name actually runs, for `chord info` to show.
+
+    None for anything spelled out as a command already, since its spelling is
+    its command line. Read from the same tables `build` uses, without touching
+    the PATH, so the line cannot drift from what runs.
+    """
+    if isinstance(spec, list):
+        if len(spec) != 1:
+            return None
+        spec = spec[0]
+    if spec == OpenCodeHarness.name:
+        return " ".join(OPENCODE_ARGV)
+    if spec in PRESETS:
+        preset = PRESETS[spec]
+        line = " ".join([preset.executables[0], *preset.args])
+        return f"{line} <issue>" if preset.prompt_as_argument else line
+    return None
 
 
 def missing(spec: HarnessSpec) -> str | None:

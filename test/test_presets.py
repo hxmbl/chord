@@ -111,6 +111,25 @@ def test_claude_reads_the_issue_on_stdin(tmp_path, monkeypatch):
     ]
 
 
+def test_the_opencode_default_runs_opencode_run_with_the_issue_on_stdin(
+    tmp_path, monkeypatch
+):
+    """Plain `opencode` is the TUI, which waits for a person who isn't there.
+
+    `opencode run` with no message argument reads the prompt from stdin when
+    stdin isn't a terminal (https://opencode.ai/docs/cli/#run), so the issue
+    goes there, as for every other stdin harness, and nothing else is passed.
+    """
+    stand_in(tmp_path / "bin", "opencode")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    built = build("opencode")
+    assert built.name == "opencode"
+    asyncio.run(built.send("the issue", cwd=tmp_path))
+    record = tmp_path / "bin" / "record"
+    assert record.with_suffix(".stdin").read_text() == "the issue"
+    assert record.with_suffix(".args").read_text().split() == ["run"]
+
+
 def test_codex_reads_the_issue_on_stdin(tmp_path, monkeypatch):
     stand_in(tmp_path / "bin", "codex")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")

@@ -16,6 +16,10 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - `chord start` refuses to spawn while any route can't start
   (`Router.problems()`: build errors plus a PATH lookup), listing all of them;
   `chord info` marks the same routes `! can't run:`
+- `chord info` shows the newest five hand-overs from `state.json`'s
+  `deliveries`, newest first ("ENG-1 delivered to claude at 23:59, still
+  running"), in local time, and next to a harness known by name what it runs
+  (`opencode  (opencode run)`, via `harness.command_line`)
 - `chord info` prints the accepted labels as a list, because Chord never
   creates a label and the set is kept in step by hand — adding one is what makes
   the machine run a harness
@@ -75,8 +79,17 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
   recorded skip; a held T3 dispatch is the one exception
 - Resolves the repository after authorisation, and hands it to the harness as
   its working directory (`repo.py`)
-- Announces one banner per issue: received, failed, skipped, or refused — the
-  paths that used to be log-only now say so out loud
+- Announces an issue that didn't go to plan with one banner — failed,
+  skipped, or refused; a hand-over that works posts none
+- Confirms delivery quietly: the harness calls `on_delivered` once it has the
+  issue, the watcher logs `delivered to <harness>.` and writes a `deliveries`
+  entry to `state.json` straight away, then updates it when the run ends
+  (`delivered` → `finished` / `failed` / `stopped`; `not delivered` when the
+  harness never got it, with `it never reached <harness>.` in the log;
+  `accepted` for T3; `unconfirmed` for a held T3 dispatch). A harness that
+  can't confirm (T3, test fakes) counts as delivered when `send` returns
+- `deliveries` is trimmed with `handed_over`, and read leniently: it is a
+  record for `chord info`, never consulted on whether to run anything
 - Never raises: logs problems and continues
 - Integrates with webhooks and subscriptions for faster response
 
@@ -119,7 +132,10 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 ### Harness Execution
 **`src/chord/harness.py`** - Running external tools
 - Built-in: `print` harness (writes to log for debugging/inspection)
-- Built-in: `opencode` harness (the default)
+- Built-in: `opencode` harness (the default): `opencode run` with the issue on
+  stdin (`OPENCODE_ARGV`); `run` reads a piped prompt when given no message
+  argument, and refuses rather than waits on a permission prompt, so no flag is
+  added (`--auto` is left to a curated command)
 - Built-in: `t3` harness (the official T3 Code CLI; dispatch-only — the thread
   id is reported and dropped, and a pending marker only prevents a duplicate
   send)
@@ -135,6 +151,13 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
   start and info; a command given by path isn't checked (it runs in the issue's
   repository)
 - Command harness: runs any command with issue on stdin
+- Delivery confirmation: stdin is written and closed by hand (`_feed`), not
+  `communicate()`, because `communicate()` swallows the broken pipe that means
+  "never got it"; output is read alongside so neither pipe can deadlock. Then
+  `DELIVERY_GRACE` (1s): still running, or exited 0, means delivered and
+  `on_delivered` is called; a non-zero exit inside it, or a harness that hung
+  up on its input, means not delivered (the latter is killed). `PrintHarness`
+  confirms after writing
 - Protocol-based design for extensibility
 - Issues sent via stdin to avoid command-line length limits
 - Captures stdout/stderr and logs them
@@ -181,9 +204,11 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 ### Utilities
 
 **`src/chord/notify.py`** - Desktop notifications
-- **One banner per issue, whichever way it went** — four verbs, exactly one of
-  which fires per issue, and nothing at all for a step along the way
-- Four verbs (`received`, `failed`, `skipped`, `refused`) rather than one
+- **One banner per issue that didn't go to plan, silence for one that did** —
+  three verbs, at most one of which fires per issue; delivery is confirmed in
+  the log, `state.json` and `chord info` instead (there used to be a
+  `received` banner on every hand-over)
+- Three verbs (`failed`, `skipped`, `refused`) rather than one
   free-form `send`, so the title cannot contradict the body
 - macOS asks the daemon by a route that needs no app bundle, because Chord is a
   bare unsigned `python3` and `UNUserNotificationCenter` is unreachable from one:
@@ -242,6 +267,8 @@ context.py (render to text)
     ↓
 harness.py (send to external tool via stdin)
     ↓
+watcher.py (delivered: one log line + state.json, no banner)
+    ↓
 Harness output (logged to chord.log)
 ```
 
@@ -250,7 +277,9 @@ Harness output (logged to chord.log)
 **Project state** (`~/.chord/sessions/<project>/`):
 - `chord.pid` - Watcher process ID
 - `chord.log` - Watcher's log (what `chord watch` follows)
-- `state.json` - Issue IDs that have been handed over
+- `state.json` - Issue IDs that have been handed over (`handed_over`), held
+  T3 dispatches (`t3_pending`), and what became of each recent hand-over
+  (`deliveries`: identifier, harness, status, `delivered_at`, `ended_at`)
 - `chord.lock` - File lock for start serialization
 
 **Configuration** (searched upward from CWD):
@@ -311,11 +340,13 @@ Tests are in `test/` directory:
 - `test_cli.py` - CLI commands, including the `chord info` label showcase
 - `test_config.py` - Configuration loading, including the curation table
 - `test_daemon.py` - Process management
-- `test_delivery.py` - The path from a Linear issue to a harness, and one
-  banner per issue
+- `test_delivery.py` - The path from a Linear issue to a harness, and a
+  banner only for an issue that didn't go to plan
+- `test_delivered.py` - Quiet delivery confirmation: what counts as delivered,
+  what the watcher records, and what `chord info` shows
 - `test_findings.py` - Issue handling
 - `test_harness.py` - Running an external command without letting it run away
-- `test_presets.py` - The Claude Code / Codex / Cursor presets against stand-in
+- `test_presets.py` - The opencode default and the Claude Code / Codex / Cursor presets against stand-in
   executables, the PATH check in start/info/setup, and what a failure says
 - `test_log_safety.py` - What untrusted text is allowed to do to the log
 - `test_notify.py` - Notification shape, platform routing, injection safety, and

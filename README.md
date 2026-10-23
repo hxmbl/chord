@@ -117,8 +117,9 @@ supported; the project config wins.
 # The label that triggers a run. Default: "Chord".
 label = "Chord"
 
-# What does the work by default: "opencode", a preset ("claude", "codex",
-# "cursor"), "print", or a command. Default: "opencode".
+# What does the work by default: "opencode" (runs `opencode run`, the issue on
+# stdin), a preset ("claude", "codex", "cursor"), "print", or a command.
+# Default: "opencode".
 harness = "opencode"
 
 # Seconds between checks of Linear. Default: 60, floor 5.
@@ -203,7 +204,8 @@ permission mode, and project directory. Chord does not elevate permissions,
 merge work, or create commits.
 
 Chord's part ends at a successful send. Once `t3 thread start` accepts the
-task, the thread id is logged and Chord lets go: it never polls the thread,
+task — which is what counts as delivered for T3, shown in `chord info` as
+"T3 Code has it now" — the thread id is logged and Chord lets go: it never polls the thread,
 follows up on it, or reports how the run went. Reading the work — or asking it
 anything — happens in T3 Code itself.
 
@@ -298,7 +300,7 @@ workspace and the set Chord answers to are two things you keep in step by hand,
 so `chord info` is the only place the second can be read before it matters:
 
 ```
-  labels     Chord                            opencode
+  labels     Chord                            opencode  (opencode run)
              Chord/claude                     claude
              Add these in Linear by hand — Chord never creates a
              label. Adding one is what makes this machine run a
@@ -358,12 +360,12 @@ there is no `chord.toml` setting for it.
 
 ## Notifications
 
-**One banner per issue, whichever way it went.** Four outcomes, four verbs:
+**A banner for an issue that didn't go to plan, and silence for one that did.**
+Three outcomes, three verbs:
 
 | What happened                 | Title              | Body                                          |
 | ----------------------------- | ------------------ | --------------------------------------------- |
-| Picked up and sent            | `ENG-201 received` | `Sent to opencode.`                           |
-| The harness didn't finish     | `ENG-201 failed`   | `` `opencode` exited 1. ``                    |
+| The harness didn't finish, or never got it | `ENG-201 failed`   | `` `opencode` exited 1. ``       |
 | Stopped before it started     | `ENG-201 skipped`  | `'Chord/typo' names a harness chord.toml doesn't define.` |
 | Asked by someone not allowed  | `ENG-201 refused`  | `sam added 'Chord', and that is not in allowed_actors.` |
 
@@ -377,10 +379,28 @@ can act on.
 `refused` has its own verb on purpose. It isn't a malfunction; the allowlist did
 the one thing it's there for, and you want to know it fired.
 
-**Nothing is announced for a step along the way.** A hand-over used to say
-"started" and then "finished" — two banners to say one thing, and a backlog of
-ten issues is twenty banners, which is how a notification gets ignored. One
-banner per issue is the whole rule: a queue with nothing wrong with it is silent.
+**A hand-over that works isn't announced; it's confirmed quietly.** It used to
+post "ENG-201 received" on every hand-over (and before that "started" and then
+"finished"), which is Chord shouting to say nothing is wrong. You still get to
+know the issue got there: once the harness has it, the watcher logs one line —
+`delivered to claude.` — and records it in `state.json`, and `chord info` shows
+it, even while the harness is still working:
+
+```
+  delivery   ENG-201 delivered to claude at 23:59, still running
+             ENG-200 delivered to opencode at 23:41, finished 23:52
+             ENG-199 NOT delivered to codex (23:30)
+```
+
+"Delivered" means the harness started, took the whole issue on stdin, stdin was
+closed cleanly, and it was still running (or had exited 0) a second later. For
+Cursor, which takes the issue as an argument, it means it started and stayed
+up. It is kept apart from how the run ended — `finished`, `failed`, or `stopped`
+by `chord stop` — so you can tell the message arrived long before the harness is
+done. A harness that never got the issue (command missing, dead on startup, or
+hung up on its input) is the loud case: the `failed` banner, `it never reached
+<harness>.` in the log, and `NOT delivered` in `chord info`. `chord info` lists
+the newest five.
 
 Everything announced is a case where an issue was going to be worked on and
 wasn't, or where work was going to happen and something stopped it. Those used
@@ -389,9 +409,8 @@ being worked on — right up until somebody opens the ticket and finds nothing h
 happened for a week. The log still has all of it; the banner is what saves you
 from reaching for the log first.
 
-All outcomes for one issue share a group, so the newest replaces the rest. If a
-skipped issue gets its fix and is handed over, the banner that says so replaces
-the one saying it was skipped, rather than sitting under it.
+All banners for one issue share a group, so a newer one replaces an older one
+rather than sitting under it.
 
 **Where they go depends on the platform, and Chord asks rather than assumes.**
 macOS attributes every banner to a bundle identity, and the only Apple API that
@@ -556,7 +575,16 @@ only, and that the URL in Linear has the `/webhook` path on the end.
 `[harnesses.<name>]`, `command` means the same thing, and the entry's name is
 what a `Chord/<name>` label routes to.
 
-**`opencode`** is the default built-in harness. **`print`** is a built-in
+**`opencode`** is the default built-in harness. It runs `opencode run`,
+OpenCode's non-interactive form, with the issue on stdin: with no message
+argument and stdin not a terminal, `opencode run` reads the prompt from stdin
+([docs](https://opencode.ai/docs/cli/#run)). Plain `opencode` would start the
+terminal UI and wait for a person. No flag is needed to keep it from
+prompting: in `run` mode a permission that would ask is refused rather than
+waited on, and OpenCode's defaults already allow edits and shell commands in
+the directory it starts in. Chord doesn't add `--auto` (approve everything not
+denied); curate `["opencode", "run", "--auto"]` yourself if your OpenCode config
+asks for things you want approved. **`print`** is a built-in
 debugging harness: it writes the issue to Chord's log so you can see exactly
 what would be handed over before trusting it with a real agent.
 
@@ -774,7 +802,7 @@ Linear project:
 | --------------- | ----------------------------------- |
 | `chord.pid`     | The watcher's process, if running   |
 | `chord.log`     | What `chord watch` follows          |
-| `state.json`    | Which issues have been handed over  |
+| `state.json`    | Which issues have been handed over, and whether each reached its harness |
 | `chord.lock`    | Held while `chord start` is running |
 
 The project is the nearest directory containing a `chord.toml`, so `chord stop`

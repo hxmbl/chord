@@ -14,7 +14,13 @@ from typing import Any, NamedTuple
 
 from chord import daemon, logging, notify, subscribe
 from chord.context import Issue, render
-from chord.harness import HarnessError, T3ClientError, T3CodeHarness
+from chord.harness import (
+    CommandHarness,
+    HarnessError,
+    PrintHarness,
+    T3ClientError,
+    T3CodeHarness,
+)
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
 from chord.paths import project_root
 from chord.performance import instrumented
@@ -40,6 +46,22 @@ STATE_CAP = 1000
 # Above `linear.TIMEOUT` on purpose, so the request timeout is what fires when
 # Linear is merely slow.
 POLL_TIMEOUT = 60
+
+
+# What became of a hand-over, as `state.json` and `chord info` say it. Delivery
+# and the harness's own result are kept apart on purpose: "it got there" is
+# worth knowing half an hour before "it finished".
+DELIVERED = "delivered"  # the harness has the issue and is working on it
+FINISHED = "finished"  # delivered, and the harness exited 0
+FAILED = "failed"  # delivered, then the harness failed or timed out
+STOPPED = "stopped"  # delivered, then `chord stop` ended it
+ACCEPTED = "accepted"  # delivered to T3 Code, whose work it now is
+UNDELIVERED = "not delivered"  # the harness never got it
+UNCONFIRMED = "unconfirmed"  # T3 Code may have it; held to avoid a duplicate
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 class StateError(Exception):
@@ -176,6 +198,7 @@ class Watcher:
             raise StateError(f"{state_path} doesn't look like a Chord state file.")
         self._seen = {str(key): str(value) for key, value in handed_over.items()}
         self._t3_pending = _t3_pending_state(saved)
+        self._deliveries = _delivery_state(saved)
         self._last_problem: str | None = None
         # The ids in the page currently being walked, so trimming the state
         # file never drops one of them (see `_remember`).
@@ -600,6 +623,13 @@ class Watcher:
             await notify.skipped(
                 identifier, f"{route_label(self._router.label, chosen.route)}: {exc}"
             )
+            self._track(
+                issue_id,
+                identifier,
+                route_label(self._router.label, chosen.route),
+                UNDELIVERED,
+                write=False,
+            )
             self._remember(issue_id)
             return
 
@@ -636,19 +666,34 @@ class Watcher:
             # the conversation around it, and the log says so.
             self._problem(f"no discussion for {identifier}: {exc}")
 
-        # One banner for the whole hand-over rather than one for each end, fired as
-        # it happens: a harness can run for half an hour, and the news is that
-        # work started where you didn't start it. Naming the harness is also the
-        # point of the body — it is the only place you get told where it went.
-        # It is announced before the harness runs, so a launch that fails is
-        # superseded by `notify.failed` below rather than standing on its own.
-        await notify.received(identifier, harness.name)
+        # No banner here. A hand-over that works is recorded quietly: one log
+        # line and a status in `state.json` that `chord info` reads, the moment
+        # the harness has the issue rather than when it finishes. Only an issue
+        # that didn't go to plan is announced, below.
+        prompt = render({**issue, "comments": comments})
+        delivered = False
+
+        def on_delivered() -> None:
+            nonlocal delivered
+            if delivered:
+                return
+            delivered = True
+            log(f"  delivered to {harness.name}.")
+            self._track(issue_id, identifier, harness.name, DELIVERED)
+
         try:
             if isinstance(harness, T3CodeHarness):
                 self._mark_t3_pending(issue_id, identifier)
-            result = await harness.send(
-                render({**issue, "comments": comments}), cwd=where.path
-            )
+            if isinstance(harness, CommandHarness | PrintHarness):
+                result = await harness.send(
+                    prompt, cwd=where.path, on_delivered=on_delivered
+                )
+            else:
+                # A harness that can't say when it has the issue (T3 Code, or
+                # one supplied from outside) has it once it returns.
+                result = await harness.send(prompt, cwd=where.path)
+                if not isinstance(harness, T3CodeHarness):
+                    on_delivered()
         except HarnessError as exc:
             # Recorded as handed over even though it wasn't, on purpose. A
             # harness that is simply missing would otherwise be retried on
@@ -659,6 +704,16 @@ class Watcher:
             held = isinstance(harness, T3CodeHarness) and (
                 isinstance(exc, T3ClientError) and exc.uncertain
             )
+            if delivered:
+                status = FAILED
+            elif held:
+                status = UNCONFIRMED
+            else:
+                # The distinction the delivery record exists for: this one
+                # never reached the harness, so nothing is working on it.
+                self._problem(f"  it never reached {harness.name}.")
+                status = UNDELIVERED
+            self._track(issue_id, identifier, harness.name, status, write=False)
             if isinstance(harness, T3CodeHarness) and not held:
                 self._clear_t3_pending(issue_id)
             if not held:
@@ -681,6 +736,8 @@ class Watcher:
             # never runs again — at-most-once where the contract is
             # at-least-once.
             if isinstance(exc, asyncio.CancelledError):
+                if delivered:
+                    self._track(issue_id, identifier, harness.name, STOPPED)
                 raise
             # Every other `BaseException` — `KeyboardInterrupt`, a library
             # raising something outside `Exception`, a `SystemExit` from a
@@ -696,6 +753,13 @@ class Watcher:
             # duplicate for the possibility of never running the work at all,
             # which is the worse of the two.
             await notify.failed(identifier, f"{type(exc).__name__}: {exc}")
+            self._track(
+                issue_id,
+                identifier,
+                harness.name,
+                FAILED if delivered else UNDELIVERED,
+                write=False,
+            )
             self._remember(issue_id)
             raise
 
@@ -713,8 +777,10 @@ class Watcher:
             # the thread back, follow up, or report how it went.
             log(f"  T3 thread {result['thread_id']} accepted; out of Chord's hands.")
             self._clear_t3_pending(issue_id)
+            self._track(issue_id, identifier, harness.name, ACCEPTED, write=False)
         else:
-            log("  handed over.")
+            log(f"  {harness.name} finished.")
+            self._track(issue_id, identifier, harness.name, FINISHED, write=False)
         self._remember(issue_id)
 
     async def _resolve(
@@ -890,8 +956,46 @@ class Watcher:
     def _clear_t3_pending(self, issue_id: object) -> None:
         self._t3_pending.pop(_key(issue_id), None)
 
+    def _track(
+        self,
+        issue_id: object,
+        identifier: str,
+        harness: str,
+        status: str,
+        *,
+        write: bool = True,
+    ) -> None:
+        """Note what became of a hand-over, for `chord info` to read.
+
+        Written straight away for the steps that happen while the harness is
+        still running (delivered, stopped), because that is when somebody
+        wants to see them; the end of a hand-over is written by `_remember`,
+        which follows it. Losing the write is said once and costs nothing else:
+        this is a record for people, not something Chord decides on.
+        """
+        key = _key(issue_id)
+        now = _now()
+        entry = self._deliveries.pop(key, None) or {}
+        entry.update(identifier=identifier, harness=harness, status=status)
+        if status in (UNDELIVERED, UNCONFIRMED):
+            entry.pop("delivered_at", None)
+        else:
+            entry.setdefault("delivered_at", now)
+        if status in (FINISHED, FAILED, STOPPED, UNDELIVERED, UNCONFIRMED):
+            entry["ended_at"] = now
+        # Re-inserted, so the newest hand-over is last, as in `handed_over`.
+        self._deliveries[key] = entry
+        if not write:
+            return
+        try:
+            self._write_state()
+        except OSError as exc:
+            self._problem(
+                f"couldn't record {identifier} in {self._path}: {exc.strerror}"
+            )
+
     def _remember(self, issue_id: object) -> None:
-        self._seen[_key(issue_id)] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._seen[_key(issue_id)] = _now()
         # Keep the newest entries; dicts hold insertion order, so the tail is
         # the most recent. An id in the page currently being walked is kept
         # regardless: insertion order is hand-over order, and the query does not
@@ -902,6 +1006,9 @@ class Watcher:
         keep = set(newest) | self._in_page
         trimmed = {key: when for key, when in self._seen.items() if key in keep}
         self._seen = trimmed
+        self._deliveries = {
+            key: entry for key, entry in self._deliveries.items() if key in trimmed
+        }
         try:
             self._write_state()
         except OSError as exc:
@@ -914,6 +1021,8 @@ class Watcher:
         state: dict[str, object] = {"handed_over": self._seen}
         if self._t3_pending:
             state["t3_pending"] = self._t3_pending
+        if self._deliveries:
+            state["deliveries"] = self._deliveries
         daemon._write_private(self._path, json.dumps(state, indent=2) + "\n")
 
     def _problem(self, message: str) -> None:
@@ -984,3 +1093,32 @@ def _t3_pending_state(saved: dict[str, Any]) -> dict[str, dict[str, str]]:
             )
         pending[str(key)] = {"identifier": entry["identifier"]}
     return pending
+
+
+def _delivery_state(saved: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """What became of each recent hand-over, as an earlier run left it.
+
+    Lenient where the rest of the state file is strict: this is a record for
+    `chord info`, never consulted on whether to run anything, so an entry that
+    doesn't parse is dropped rather than stopping the watcher.
+    """
+    raw = saved.get("deliveries", {})
+    if not isinstance(raw, dict):
+        return {}
+    kept: dict[str, dict[str, str]] = {}
+    for key, entry in raw.items():
+        if isinstance(entry, dict) and all(
+            isinstance(entry.get(field), str)
+            for field in ("identifier", "harness", "status")
+        ):
+            kept[str(key)] = {
+                field: value
+                for field, value in entry.items()
+                if isinstance(field, str) and isinstance(value, str)
+            }
+    return kept
+
+
+def read_deliveries(path: Path) -> list[dict[str, str]]:
+    """The recorded hand-overs, oldest first, for `chord info`."""
+    return list(_delivery_state(read_state_document(path)).values())

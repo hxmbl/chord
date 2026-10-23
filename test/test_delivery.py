@@ -18,6 +18,7 @@ a minute, invisible from outside the log.
 """
 
 import asyncio
+import json
 import pathlib
 import subprocess
 from types import SimpleNamespace
@@ -394,7 +395,7 @@ def test_the_failure_reason_cannot_forge_a_log_line(tmp_path, capsys):
     assert HarnessError  # imported for the policy test above
 
 
-# --- one banner per issue, whichever way it went ---
+# --- a banner for an issue that didn't go to plan, and quiet for one that did ---
 
 
 def stub_linear(issue):
@@ -426,13 +427,14 @@ def spy_router(allowed_actors=(), harnesses=None, fail=None):
     )
 
 
-def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path, banners):
-    """Received and sent, in one banner.
+def test_a_successful_hand_over_is_quiet(monkeypatch, tmp_path, banners):
+    """Delivered, confirmed, and not announced.
 
-    It announced the hand-over twice — "started", then "finished" — which is two
-    notifications for one event, and a backlog of ten issues is twenty banners.
-    That is how a notification gets ignored, and the second banner only ever
-    repeated that the first one had already said.
+    It was a "received" banner on every hand-over, and before that "started"
+    and "finished". The owner's words: know the message got to the harness
+    without Chord having to scream. So the confirmation is a log line and a
+    status in the state file that `chord info` reads, and the screen stays
+    clear.
     """
     said = banners
 
@@ -442,8 +444,13 @@ def test_a_successful_hand_over_says_one_thing(monkeypatch, tmp_path, banners):
 
     asyncio.run(scenario())
 
-    assert said.titles == ["ENG-1 received"]
-    assert said.said[0][1] == "Sent to spy."
+    assert said.said == []
+    saved = json.loads((tmp_path / "s.json").read_text())
+    entry = saved["deliveries"]["1"]
+    assert entry["identifier"] == "ENG-1"
+    assert entry["harness"] == "spy"
+    assert entry["status"] == watcher.FINISHED
+    assert entry["delivered_at"] and entry["ended_at"]
 
 
 @pytest.mark.parametrize(
@@ -505,16 +512,11 @@ def test_every_way_an_issue_does_not_get_worked_on_says_so(
     assert body, "a bare title tells nobody what went wrong"
 
 
-def test_a_failure_supersedes_the_banner_that_said_it_had_started(
-    monkeypatch, tmp_path, banners
-):
-    """Two outcomes for one issue, not two problems to read.
+def test_a_failure_is_the_only_banner(monkeypatch, tmp_path, banners):
+    """A harness that fails is still loud, and alone: nothing came before it.
 
-    A hand-over announces itself before the harness runs, because a run can take
-    half an hour and silence for half an hour is indistinguishable from a
-    watcher that died. If the harness then fails, that failure replaces the
-    announcement rather than joining it — they share a group, and the newest is
-    the one still true.
+    A run that is going fine says so in `chord info` rather than on screen, so
+    the one banner is the one somebody has to act on.
     """
     said = banners
 
@@ -531,7 +533,7 @@ def test_a_failure_supersedes_the_banner_that_said_it_had_started(
 
     asyncio.run(scenario())
 
-    assert said.titles == ["ENG-1 received", "ENG-1 failed"]
+    assert said.titles == ["ENG-1 failed"]
 
 
 def test_a_refusal_names_who_and_why(monkeypatch, tmp_path, banners):
@@ -627,7 +629,7 @@ def test_a_discussion_that_could_not_be_read_is_not_announced(
     """Work still happened, so there is nothing to announce.
 
     The missing comments are a degradation and the log says so. A banner for it
-    would be noise on top of the one that says the work started.
+    would be noise about an issue that is being worked on.
     """
     said = banners
 
@@ -647,7 +649,7 @@ def test_a_discussion_that_could_not_be_read_is_not_announced(
 
     asyncio.run(scenario())
 
-    assert [title for title, _ in said.said] == ["ENG-1 received"]
+    assert said.said == []
 
 
 # --- render is the last stop before a harness, so it must not be the first ---

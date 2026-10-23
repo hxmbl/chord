@@ -164,8 +164,8 @@ def _project(say: Callable[[str], None], viewer: dict) -> None:
 
     tools = installed_tools()
     if not tools:
-        say("   No coding tool found on PATH; using opencode. Install it, or")
-        say("   point `harness` in the config at another command later.")
+        say("   No coding tool found on PATH; using opencode (`opencode run`).")
+        say("   Install it, or point `harness` in the config at another command.")
         tool = "opencode"
     elif len(tools) == 1:
         tool = tools[0]
