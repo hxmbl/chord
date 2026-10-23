@@ -82,7 +82,11 @@ class T3ClientError(HarnessError):
 
 
 class T3CodeHarness:
-    """Dispatches work to T3 Code through its supported `t3 thread` CLI."""
+    """Dispatches work to T3 Code through its supported `t3 thread` CLI.
+
+    Sending is the whole job: once T3 accepts the thread, the work belongs to
+    T3 Code. Chord never reads a thread back, follows up, or waits on a run.
+    """
 
     name = "t3"
 
@@ -142,78 +146,11 @@ class T3CodeHarness:
             "project_id": project_id,
         }
 
-    async def show_thread(self, thread_id: str) -> dict[str, Any]:
-        output = await self._run(
-            [self.executable, "thread", "show", "--json", thread_id], None, None
-        )
-        result = self._json_object(output.stdout, "show")
-        thread = result.get("thread")
-        messages = result.get("messages")
-        if (
-            not isinstance(thread, dict)
-            or thread.get("threadId") != thread_id
-            or not isinstance(thread.get("status"), str)
-            or not isinstance(thread.get("pendingRequestCount"), int)
-            or isinstance(thread.get("pendingRequestCount"), bool)
-            or thread["pendingRequestCount"] < 0
-            or not isinstance(messages, list)
-            or any(
-                not isinstance(message, dict)
-                or message.get("role") not in ("user", "assistant")
-                or not isinstance(message.get("text"), str)
-                for message in messages
-            )
-        ):
-            raise T3ClientError(
-                "T3 returned malformed thread output. Update the T3 Code CLI and retry."
-            )
-        return result
-
-    async def send_follow_up(
-        self, thread_id: str, message: str, *, wait: bool = False
-    ) -> dict[str, Any]:
-        argv = [self.executable, "thread", "send", thread_id, "-", "--json"]
-        if wait:
-            argv.append("--wait")
-        output = await self._run(
-            argv, message, None, wait_exit_codes={1, 2} if wait else set()
-        )
-        result = self._json_object(output.stdout, "send")
-        if result.get("threadId") != thread_id:
-            raise T3ClientError("T3 returned a response for an unexpected thread.")
-        if wait:
-            if (
-                not isinstance(result.get("status"), str)
-                or "reply" not in result
-                or "error" not in result
-                or result.get("reply") is not None
-                and not isinstance(result.get("reply"), str)
-                or result.get("error") is not None
-                and not isinstance(result.get("error"), str)
-            ):
-                raise T3ClientError("T3 returned malformed wait output.")
-            expected = {"completed": 0, "waiting": 2}
-            status = result["status"]
-            if status not in expected and output.returncode != 1:
-                raise T3ClientError("T3 returned an unknown run status.")
-            if status in expected and output.returncode != expected[status]:
-                raise T3ClientError("T3 returned an inconsistent run status.")
-            if status not in {"completed", "waiting"} and output.returncode != 1:
-                raise T3ClientError("T3 returned an inconsistent run status.")
-        elif not isinstance(result.get("runId"), str) or result.get("delivery") not in (
-            "sent",
-            "queued",
-        ):
-            raise T3ClientError("T3 returned malformed send output.")
-        return result
-
     async def _run(
         self,
         argv: list[str],
         stdin: str | None,
         cwd: Path | None,
-        *,
-        wait_exit_codes: set[int] | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -255,8 +192,7 @@ class T3CodeHarness:
         if returncode is None:
             raise T3ClientError("T3 CLI ended without a recorded exit status.")
         result = subprocess.CompletedProcess(argv, returncode, stdout, stderr)
-        permitted = wait_exit_codes or set()
-        if returncode != 0 and returncode not in permitted:
+        if returncode != 0:
             detail = stderr.decode(errors="replace").casefold()
             if "no t3 code project matches" in detail:
                 raise T3ClientError(
@@ -266,11 +202,6 @@ class T3CodeHarness:
             if "no running t3 code server" in detail:
                 raise T3ClientError(
                     "No T3 Code server is running. Start T3 Code, then retry."
-                )
-            if "no longer available" in detail or "thread not found" in detail:
-                raise T3ClientError(
-                    "The saved T3 thread is unavailable. Confirm it still exists in "
-                    "T3 Code and that Chord is using the same T3 environment."
                 )
             raise T3ClientError(
                 f"T3 CLI exited with status {returncode}; check the T3 Code server "

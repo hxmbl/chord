@@ -9,7 +9,7 @@ import sys
 import pytest
 from typer.testing import CliRunner
 
-from chord import config, daemon, harness, watcher
+from chord import config, harness, watcher
 from chord.cli import app
 from chord.linear import IssuePage
 from chord.routing import Router
@@ -17,9 +17,7 @@ from chord.routing import Router
 runner = CliRunner()
 
 
-def fake_t3(
-    tmp_path, monkeypatch, *, start_output=None, show_output=None, send_output=None
-):
+def fake_t3(tmp_path, monkeypatch, *, start_output=None):
     """Install a fake CLI which records argv/stdin and emits scripted JSON."""
     directory = tmp_path / "bin"
     directory.mkdir()
@@ -28,20 +26,6 @@ def fake_t3(
     start_json = json.dumps(
         start_output
         or {"threadId": "thread-1", "projectId": "project-1", "runId": "run-1"}
-    )
-    show_json = json.dumps(
-        show_output
-        or {
-            "thread": {
-                "threadId": "thread-1",
-                "status": "running",
-                "pendingRequestCount": 0,
-            },
-            "messages": [{"role": "assistant", "text": "working"}],
-        }
-    )
-    send_json = json.dumps(
-        send_output or {"threadId": "thread-1", "runId": "run-2", "delivery": "sent"}
     )
     executable.write_text(
         f"""#!{sys.executable}
@@ -56,13 +40,6 @@ with open(os.environ["T3_TEST_LOG"], "a") as stream:
 command = argv[1]
 if command == "start":
     print({start_json!r})
-elif command == "show":
-    print({show_json!r})
-elif command == "send":
-    result = json.loads({send_json!r})
-    print(json.dumps(result))
-    if "status" in result:
-        raise SystemExit(0 if result["status"] == "completed" else 2 if result["status"] == "waiting" else 1)
 else:
     raise SystemExit(64)
 """
@@ -113,53 +90,6 @@ def test_t3_dispatch_uses_resolved_project_and_safe_stdin(tmp_path, monkeypatch)
     ]
     assert call["stdin"] == "task body"
     assert call["cwd"] == str(project)
-
-
-def test_t3_follow_up_and_inspection_parse_documented_shapes(tmp_path, monkeypatch):
-    _, log = fake_t3(tmp_path, monkeypatch)
-    cli = harness.T3CodeHarness()
-
-    shown = asyncio.run(cli.show_thread("thread-1"))
-    sent = asyncio.run(cli.send_follow_up("thread-1", "continue"))
-
-    assert shown["thread"]["status"] == "running"
-    assert shown["messages"][0]["text"] == "working"
-    assert sent["delivery"] == "sent"
-    calls = calls_from(log)
-    assert calls[0]["argv"] == ["thread", "show", "--json", "thread-1"]
-    assert calls[1]["argv"] == ["thread", "send", "thread-1", "-", "--json"]
-    assert calls[1]["stdin"] == "continue"
-
-
-@pytest.mark.parametrize(
-    ("status", "returncode"),
-    [("completed", 0), ("failed", 1), ("waiting", 2)],
-)
-def test_t3_wait_distinguishes_completion_failure_and_input(
-    tmp_path, monkeypatch, status, returncode
-):
-    result = {
-        "threadId": "thread-1",
-        "runId": "run-2",
-        "status": status,
-        "reply": "finished" if status == "completed" else None,
-        "error": "provider failed" if status == "failed" else None,
-    }
-    directory = tmp_path / "bin"
-    directory.mkdir()
-    executable = directory / "t3"
-    encoded = json.dumps(result)
-    executable.write_text(
-        f"#!{sys.executable}\nprint({encoded!r})\nraise SystemExit({returncode})\n"
-    )
-    executable.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ.get('PATH', '')}")
-
-    parsed = asyncio.run(
-        harness.T3CodeHarness().send_follow_up("thread-1", "continue", wait=True)
-    )
-    assert parsed["status"] == status
-    assert parsed["reply"] == result["reply"]
 
 
 def test_t3_missing_cli_has_installation_guidance(monkeypatch):
@@ -225,7 +155,7 @@ def make_watcher(tmp_path, cli, state_path):
     )
 
 
-def test_t3_thread_mapping_survives_restart(tmp_path, monkeypatch):
+def test_t3_dispatch_hands_over_once_and_keeps_no_thread_mapping(tmp_path, monkeypatch):
     fake_t3(tmp_path, monkeypatch)
     state = tmp_path / "state.json"
     cli = harness.T3CodeHarness()
@@ -233,80 +163,27 @@ def test_t3_thread_mapping_survives_restart(tmp_path, monkeypatch):
     asyncio.run(make_watcher(tmp_path, cli, state).poll())
 
     saved = json.loads(state.read_text())
-    assert saved["t3_threads"]["issue-id"] == {
-        "thread_id": "thread-1",
-        "identifier": "ENG-1",
-    }
+    assert "t3_threads" not in saved, "the thread id is T3 Code's, not Chord's"
     assert "issue-id" not in saved.get("t3_pending", {})
 
     restarted = make_watcher(tmp_path, cli, state)
     asyncio.run(restarted.poll())
     assert restarted.handed_over == 1
+    assert len(calls_from(tmp_path / "calls.jsonl")) == 1, "sent exactly once"
 
 
-def test_chord_commands_use_only_the_saved_issue_thread(tmp_path, monkeypatch):
+def test_chord_has_no_t3_tunnel_commands(tmp_path, monkeypatch):
+    """Dispatch and let go: there is deliberately no way back into a thread."""
     _, log = fake_t3(tmp_path, monkeypatch)
-    state = tmp_path / "state.json"
-    state.write_text(
-        json.dumps(
-            {
-                "handed_over": {"issue-id": "now"},
-                "t3_threads": {
-                    "issue-id": {"thread_id": "thread-1", "identifier": "ENG-1"}
-                },
-            }
-        )
-    )
-    monkeypatch.setattr(daemon, "STATE_FILE", state)
 
-    shown = runner.invoke(app, ["t3", "show", "ENG-1"])
-    sent = runner.invoke(app, ["t3", "send", "issue-id", "continue"])
-    unknown = runner.invoke(app, ["t3", "show", "thread-not-mapped"])
-
-    assert shown.exit_code == 0, shown.output
-    assert "ENG-1  thread-1  running" in shown.output
-    assert sent.exit_code == 0, sent.output
-    assert "Follow-up sent" in sent.output
-    assert unknown.exit_code == 1
-    assert len(calls_from(log)) == 2
-
-
-@pytest.mark.parametrize(
-    ("status", "exit_code"),
-    [("completed", 0), ("failed", 1), ("waiting", 2)],
-)
-def test_chord_follow_up_reports_terminal_state(
-    tmp_path, monkeypatch, status, exit_code
-):
-    _, log = fake_t3(
-        tmp_path,
-        monkeypatch,
-        send_output={
-            "threadId": "thread-1",
-            "runId": "run-2",
-            "status": status,
-            "reply": "finished" if status == "completed" else None,
-            "error": "provider failed" if status == "failed" else None,
-        },
-    )
-    state = tmp_path / "state.json"
-    state.write_text(
-        json.dumps(
-            {
-                "handed_over": {"issue-id": "now"},
-                "t3_threads": {
-                    "issue-id": {"thread_id": "thread-1", "identifier": "ENG-1"}
-                },
-            }
-        )
-    )
-    monkeypatch.setattr(daemon, "STATE_FILE", state)
-
-    result = runner.invoke(app, ["t3", "send", "ENG-1", "continue", "--wait"])
-
-    assert result.exit_code == exit_code, result.output
-    assert f"T3 run status: {status}." in result.output
-    assert len(calls_from(log)) == 1
+    for argv in (
+        ["t3", "show", "ENG-1"],
+        ["t3", "send", "ENG-1", "continue"],
+    ):
+        result = runner.invoke(app, argv)
+        assert result.exit_code != 0, result.output
+        assert "No such command" in result.output
+    assert calls_from(log) == []
 
 
 def test_interrupted_t3_dispatch_is_not_repeated(tmp_path, monkeypatch):

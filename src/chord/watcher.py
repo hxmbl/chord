@@ -175,7 +175,7 @@ class Watcher:
         if not isinstance(handed_over, dict):
             raise StateError(f"{state_path} doesn't look like a Chord state file.")
         self._seen = {str(key): str(value) for key, value in handed_over.items()}
-        self._t3_threads, self._t3_pending = _t3_state(saved)
+        self._t3_pending = _t3_pending_state(saved)
         self._last_problem: str | None = None
         # The ids in the page currently being walked, so trimming the state
         # file never drops one of them (see `_remember`).
@@ -519,9 +519,8 @@ class Watcher:
         if _key(issue_id) in self._t3_pending:
             _spacer()
             self._problem(
-                f"{identifier} has an interrupted T3 dispatch with no recorded thread id; "
-                "not retrying to avoid creating a duplicate. Check `t3 thread list`, "
-                "then clear this issue's pending state only when safe to retry."
+                f"{identifier} has an unconfirmed T3 dispatch; Chord is holding "
+                "it to avoid sending a possible duplicate."
             )
             self._remember(issue_id)
             return
@@ -696,14 +695,14 @@ class Watcher:
                     "T3 returned no thread id; dispatch may have been accepted. "
                     "Chord has held this issue to prevent a duplicate."
                 )
-            thread_id = result["thread_id"]
-            log(
-                f"  T3 thread {thread_id} accepted; inspect with `chord t3 show {identifier}`."
-            )
-            self._remember(issue_id, t3_thread=thread_id, identifier=identifier)
+            # Accepted is the end of it. The thread id is reported, not kept:
+            # from here the task is T3 Code's to run, and Chord will not read
+            # the thread back, follow up, or report how it went.
+            log(f"  T3 thread {result['thread_id']} accepted; out of Chord's hands.")
+            self._clear_t3_pending(issue_id)
         else:
             log("  handed over.")
-            self._remember(issue_id)
+        self._remember(issue_id)
 
     async def _resolve(
         self, issue: Issue, identifier: str, issue_id: Any
@@ -878,20 +877,8 @@ class Watcher:
     def _clear_t3_pending(self, issue_id: object) -> None:
         self._t3_pending.pop(_key(issue_id), None)
 
-    def _remember(
-        self,
-        issue_id: object,
-        *,
-        t3_thread: str | None = None,
-        identifier: str | None = None,
-    ) -> None:
+    def _remember(self, issue_id: object) -> None:
         self._seen[_key(issue_id)] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        if t3_thread is not None:
-            self._t3_threads[_key(issue_id)] = {
-                "thread_id": t3_thread,
-                "identifier": identifier or _key(issue_id),
-            }
-            self._clear_t3_pending(issue_id)
         # Keep the newest entries; dicts hold insertion order, so the tail is
         # the most recent. An id in the page currently being walked is kept
         # regardless: insertion order is hand-over order, and the query does not
@@ -912,8 +899,6 @@ class Watcher:
     def _write_state(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         state: dict[str, object] = {"handed_over": self._seen}
-        if self._t3_threads:
-            state["t3_threads"] = self._t3_threads
         if self._t3_pending:
             state["t3_pending"] = self._t3_pending
         daemon._write_private(self._path, json.dumps(state, indent=2) + "\n")
@@ -963,36 +948,19 @@ def read_state(path: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in handed_over.items()}
 
 
-def read_t3_threads(
-    path: Path,
-) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
-    """Persisted issue-to-thread associations and interrupted dispatches."""
-    return _t3_state(read_state_document(path))
+def _t3_pending_state(saved: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Interrupted dispatches, each still held so no duplicate thread starts.
 
-
-def _t3_state(
-    saved: dict[str, Any],
-) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
-    raw_threads = saved.get("t3_threads", {})
-    raw_pending = saved.get("t3_pending", {})
-    if not isinstance(raw_threads, dict) or not isinstance(raw_pending, dict):
-        raise StateError("T3 thread state in the Chord state file is malformed.")
-    threads: dict[str, dict[str, str]] = {}
-    for key, entry in raw_threads.items():
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("thread_id"), str)
-            or not entry["thread_id"].strip()
-            or not isinstance(entry.get("identifier"), str)
-            or not entry["identifier"].strip()
-        ):
-            raise StateError("T3 thread state in the Chord state file is malformed.")
-        threads[str(key)] = {
-            "thread_id": entry["thread_id"],
-            "identifier": entry["identifier"],
-        }
+    A leftover `t3_threads` key from an older install is ignored rather than
+    parsed: Chord no longer keeps issue-to-thread mappings.
+    """
+    raw = saved.get("t3_pending", {})
+    if not isinstance(raw, dict):
+        raise StateError(
+            "T3 pending dispatch state in the Chord state file is malformed."
+        )
     pending: dict[str, dict[str, str]] = {}
-    for key, entry in raw_pending.items():
+    for key, entry in raw.items():
         if (
             not isinstance(entry, dict)
             or not isinstance(entry.get("identifier"), str)
@@ -1002,4 +970,4 @@ def _t3_state(
                 "T3 pending dispatch state in the Chord state file is malformed."
             )
         pending[str(key)] = {"identifier": entry["identifier"]}
-    return threads, pending
+    return pending
