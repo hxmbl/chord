@@ -110,8 +110,6 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 | `chord setup`            | Connect Chord to Linear. Once.                          |
 | `chord init`             | Write the stock `chord.toml`, annotated.               |
 | `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
-| `chord t3 show ISSUE`    | Inspect the T3 thread saved for a Linear issue.        |
-| `chord t3 send ISSUE MESSAGE` | Send a follow-up to that issue's T3 thread.       |
 | `chord start`            | Watch in the background.                                |
 | `chord refresh`          | Renew the token now. Chord also does it on its own.     |
 | `chord stop`       | Stop watching.                                          |
@@ -227,30 +225,22 @@ worktree. `provider` and `model` must be configured together; `branch` requires
 permission mode, and project directory. Chord does not elevate permissions,
 merge work, or create commits.
 
-Chord saves the returned T3 thread ID with its originating Linear issue in
-`~/.chord/sessions/`. Inspect or continue only threads Chord associated with an
-issue:
+Chord's part ends at a successful send. Once `t3 thread start` accepts the
+task, the thread id is logged and Chord lets go: it never polls the thread,
+follows up on it, or reports how the run went. Reading the work — or asking it
+anything — happens in T3 Code itself.
 
-```bash
-chord t3 show ENG-123
-chord t3 send ENG-123 "Please add a regression test"
-chord t3 send ENG-123 "Run the focused test and report the result" --wait
-```
-
-Without `--wait`, a follow-up is reported as sent or queued, not completed.
-With `--wait`, Chord preserves T3's completed, failed, and waiting-for-an-answer
-outcomes. `show` reports current state and latest messages, including pending
-requests that need a person in T3 Code. Chord saves a pending-dispatch marker
-before `t3 thread start`; if interrupted before recording the returned ID, it
-will not automatically start a duplicate. Check `t3 thread list` and resolve
+The one thing Chord still holds is its own send: a pending-dispatch marker is
+written before `t3 thread start`, so a dispatch interrupted before it was
+confirmed is not automatically repeated. Check `t3 thread list` and resolve
 the issue manually before retrying. To retry, remove that issue's id from both
 `t3_pending` and `handed_over` in the project's `~/.chord/sessions/.../state.json`
 only after confirming that no T3 thread was created.
 
 T3 support depends on the installed CLI's `t3 thread` commands and JSON output.
 Chord does not adopt arbitrary threads from `t3 thread list`; that command is
-only useful for manual recovery if a launch was interrupted before its ID was
-saved.
+only useful for manual recovery if a launch was interrupted before it was
+confirmed.
 
 ## Who can trigger a run
 

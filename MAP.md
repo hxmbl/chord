@@ -8,9 +8,6 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Nine commands: `setup`, `init`, `harness add`, `refresh`, `start`, `stop`,
   `watch`, `info`, `help`
   (`help` forwards to the command you name, and `_serve` is hidden)
-- Plus the `t3` sub-app: `t3 show ISSUE` (the saved thread's status and
-  messages) and `t3 send ISSUE MESSAGE` (a follow-up, optionally `--wait`);
-  both only operate on threads Chord mapped to a Linear issue
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
 - All commands are thin wrappers that validate state before calling other modules
@@ -104,8 +101,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 **`src/chord/harness.py`** - Running external tools
 - Built-in: `print` harness (writes to log for debugging/inspection)
 - Built-in: `opencode` harness (the default)
-- Built-in: `t3` harness (the official T3 Code CLI; issue-to-thread mappings
-  live in the project's state file, so a retry knows whether a thread exists)
+- Built-in: `t3` harness (the official T3 Code CLI; dispatch-only — the thread
+  id is reported and dropped, and a pending marker only prevents a duplicate
+  send)
 - Command harness: runs any command with issue on stdin
 - Protocol-based design for extensibility
 - Issues sent via stdin to avoid command-line length limits
