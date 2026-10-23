@@ -28,78 +28,54 @@ a trigger that reads and forwards.
 
 - [uv](https://docs.astral.sh/uv/)
 - Python 3.11 or newer
-- A Linear OAuth application (for authentication)
+- A Linear account (`chord setup` walks you through making the OAuth app)
 
 Chord asks Linear for the `read` scope only. It never writes to Linear.
 
 ## Setup
 
-### 1. Create a Linear OAuth application
-
-In Linear: **Settings → Security & access → OAuth applications → New OAuth
-application**.
-
-- **Redirect URL**: `http://127.0.0.1:23841/callback`
-- **Permissions**: `read`
-
-Linear shows the client secret once, at creation. Copy it somewhere safe.
-
-### 2. Put the credentials in `.env`
-
 ```bash
-LINEAR_CLIENT_ID="your client id"
-LINEAR_CLIENT_SECRET="your client secret"
+uv tool install git+https://github.com/hxmbl/chord
+chord setup
 ```
 
-`.env` is already git-ignored, and the token itself never goes near it — see
-[Credentials](#credentials) below.
+`chord setup` asks a few questions and does the rest. Pressing Enter takes the
+default every time:
 
-### 3. Connect to Linear
+1. **Your Linear app.** Chord signs in through an OAuth app you own. Setup says
+   where to make one in Linear (redirect URL `http://127.0.0.1:23841/callback`,
+   permission `read`), then takes the client ID and secret and saves them to
+   `.env`. It offers to git-ignore `.env` if your repository would commit it.
+2. **Signing in.** Your browser opens, Linear asks you to confirm, and the token
+   goes in your keychain. Chord renews it on its own from then on.
+3. **This project.** The label that sends an issue to Chord (`Chord` by
+   default) and the coding tool to hand it to, picked from the ones it finds
+   installed. You're added to `allowed_actors`, so only you can trigger a run
+   until you add teammates. That's written to `.config/chord/chord.toml`.
 
-```bash
-uv sync
-uv run chord setup
-```
+Every step that's already done is skipped, so running it again is safe. It
+never overwrites a `chord.toml` you already have, and it never touches Linear.
 
-This opens a browser, asks Linear to confirm, and puts the resulting token in
-your keychain. `chord setup` is the only step that needs a person.
-
-### 4. (Optional) Set up a Linear webhook for instant notifications
-
-Without a webhook, Chord polls Linear every 60 seconds (configurable). To get
-instant notifications when issues are labeled:
-
-1. In Linear: **Settings → Integrations → Webhooks → Add webhook**
-2. **URL**: `http://<your-external-url>:23842/webhook` (see note below)
-3. **Events**: Select "Issue created" and "Issue updated"
-4. **Teams**: Select the team(s) you want to watch
-
-**Note on the URL**: Chord's webhook listens on `127.0.0.1:23842` by default, which
-only works from your machine. To receive Linear webhooks, expose this port publicly
-using a tunnel service (like ngrok, Cloudflare Tunnel, or Tailscale) and use
-that public URL. Run `chord info` to see the exact webhook URL Chord is listening on.
-
-If you skip this step, polling still works — webhooks are purely for speed. See
-[Webhooks](#webhooks) for what the receiver does with a request, how to
-authenticate it, and how to tell whether it is working.
-
-### 5. Start watching
+Then create the label in Linear (Chord never creates one) and start watching:
 
 ```bash
-uv run chord start
+chord start
 ```
 
-Put the `Chord` label on an issue. Within a minute (or instantly with webhooks) it
-appears in the log:
+`chord start` runs setup first if Chord isn't signed in yet. Put the label on an
+issue and, within a minute, it appears in the log:
 
 ```bash
-uv run chord watch
+chord watch
 ```
 
-That is the whole loop, and it works with no config file at all.
-
-To send a particular issue somewhere else, label it `Chord/<name>` — see
+To send a particular issue somewhere else, label it `Chord/<name>`. See
 [Routing](#routing).
+
+### Webhooks (optional)
+
+Without a webhook Chord polls Linear every 60 seconds. For instant pick-up, see
+[Webhooks](#webhooks); `chord info` prints the URL to give Linear.
 
 ---
 
@@ -107,10 +83,10 @@ To send a particular issue somewhere else, label it `Chord/<name>` — see
 
 | Command                  | What it does                                            |
 | ------------------------ | ------------------------------------------------------- |
-| `chord setup`            | Connect Chord to Linear. Once.                          |
+| `chord setup`            | Get Chord ready. Safe to run again.                     |
 | `chord init`             | Write the stock `chord.toml`, annotated.               |
 | `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
-| `chord start`            | Watch in the background.                                |
+| `chord start`            | Watch in the background. Sets up first if needed.       |
 | `chord refresh`          | Renew the token now. Chord also does it on its own.     |
 | `chord stop`       | Stop watching.                                          |
 | `chord watch`      | Follow the log, live.                                   |
@@ -130,7 +106,7 @@ each with a comment — and `chord harness add NAME -- CMD ...` curates a
 harness for you, creating the file if there isn't one:
 
 ```bash
-uv run chord harness add big-pickle -- opencode run --model big-pickle
+chord harness add big-pickle -- opencode run --model big-pickle
 ```
 
 It prints the `Chord/<name>` label to create in Linear, because Chord never
