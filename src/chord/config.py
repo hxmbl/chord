@@ -49,10 +49,17 @@ _SETTINGS = frozenset(
         "webhook_port",
         "webhook_secret",
         "allowed_actors",
+        "notify",
     }
 )
 _HARNESS_KEYS = frozenset({"command"})
 _T3_KEYS = frozenset({"provider", "model", "worktree", "branch"})
+_NOTIFY_KEYS = frozenset({"received"})
+
+# Whether an issue that reached its harness gets a banner. On by default, as it
+# was before delivery was confirmed quietly: the banner is how most people
+# learn that work started somewhere they didn't start it.
+DEFAULT_NOTIFY_RECEIVED = True
 
 
 class ConfigError(Exception):
@@ -65,6 +72,18 @@ class T3Options:
     model: str | None = None
     worktree: str | None = None
     branch: str | None = None
+
+
+@dataclass(frozen=True)
+class NotifyOptions:
+    """Which desktop banners Chord posts.
+
+    Only the good news is optional. An issue that failed, was skipped or was
+    refused is not being worked on, and saying so is the reason banners exist,
+    so those have no switch.
+    """
+
+    received: bool = DEFAULT_NOTIFY_RECEIVED
 
 
 def spell(spec: HarnessSpec) -> str:
@@ -102,10 +121,18 @@ webhook_secret = ""
 # prints your Linear user id.
 # allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 
+# Tables come last — everything after a `[table]` header belongs to it, so the
+# settings above must be written before the first one of these.
+
+# Desktop banners. An issue that failed, was skipped or was refused always gets
+# one. `received` is the banner for an issue that reached its harness ("ENG-201
+# received"), posted once delivery is confirmed; false keeps that quiet, and
+# the log and `chord info` still record every delivery. Default: true.
+[notify]
+received = true
+
 # Extra named harnesses: a `Chord/<name>` label routes to the one called
-# `<name>`. `chord harness add` writes these for you. Tables come last —
-# everything after a `[table]` header belongs to it, so the settings above
-# must be written before the first one of these.
+# `<name>`. `chord harness add` writes these for you.
 #
 # [harnesses."opencode/big-pickle"]
 # command = ["opencode", "run", "--model", "big-pickle"]
@@ -213,6 +240,7 @@ class Config:
     webhook_port: int = DEFAULT_WEBHOOK_PORT
     webhook_secret: str = ""
     allowed_actors: tuple[str, ...] = ()
+    notify: NotifyOptions = field(default_factory=NotifyOptions)
     path: Path = field(default_factory=lambda: config_path()[0])
     from_file: bool = False
 
@@ -243,6 +271,7 @@ def defaults(path: Path | None = None) -> Config:
         webhook_port=DEFAULT_WEBHOOK_PORT,
         webhook_secret="",
         allowed_actors=(),
+        notify=NotifyOptions(),
         path=path or config_path()[0],
         from_file=False,
     )
@@ -338,6 +367,7 @@ def _build(raw: dict, path: Path) -> Config:
         webhook_port=webhook_port,
         webhook_secret=webhook_secret,
         allowed_actors=_allowed_actors(raw.get("allowed_actors", []), path),
+        notify=_notify_options(raw.get("notify", {}), path),
         path=path,
         from_file=True,
     )
@@ -365,6 +395,25 @@ def _t3_options(value: object, path: Path) -> T3Options:
     if options["branch"] and not options["worktree"]:
         raise ConfigError(f"`t3.branch` in {path} requires `t3.worktree`.")
     return T3Options(**options)
+
+
+def _notify_options(value: object, path: Path) -> NotifyOptions:
+    """The `[notify]` table. Strict like `[t3]`: a misspelled key would
+    otherwise leave a banner on that somebody believes they turned off."""
+    if not isinstance(value, dict):
+        raise ConfigError(f"`notify` in {path} has to be a table.")
+    extra = set(value) - _NOTIFY_KEYS
+    if extra:
+        names = ", ".join(f"`{key}`" for key in sorted(extra))
+        raise ConfigError(
+            f"`notify` in {path} has settings Chord doesn't know: {names}."
+        )
+    received = value.get("received", DEFAULT_NOTIFY_RECEIVED)
+    if not isinstance(received, bool):
+        raise ConfigError(
+            f"`notify.received` in {path} has to be true or false, unquoted."
+        )
+    return NotifyOptions(received=received)
 
 
 def _allowed_actors(value: object, path: Path) -> tuple[str, ...]:

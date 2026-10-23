@@ -225,6 +225,7 @@ def info():
     typer.echo(f"  webhook    {webhook_line}")
     for line in _notify():
         typer.echo(line)
+    typer.echo(f"  received   {_received_line(config)}")
     typer.echo(f"  linear     {_linear_line()}")
     typer.echo(f"  config     {_config_line(config)}")
     if count is not None:
@@ -355,6 +356,8 @@ async def _watch() -> None:
             # The directory where Chord was started, used as the base for
             # repository resolution.
             start_dir=project_root(),
+            # `[notify] received`: a banner when an issue reaches its harness.
+            notify_received=config.notify.received,
         )
     except StateError as exc:
         watcher.log(str(exc))
@@ -496,6 +499,18 @@ def _notify() -> list[str]:
         "  notify     nothing, so no notifications are sent.",
         "             Nothing else here can report that, so watch `chord watch`.",
     ]
+
+
+def _received_line(config: Config) -> str:
+    """Whether an issue that reaches its harness gets a banner.
+
+    Shown with the setting's name, because it is the one banner with a switch
+    and somebody wondering why they got (or didn't get) one should be able to
+    find it from here.
+    """
+    if config.notify.received:
+        return "banner when an issue reaches its harness ([notify] received = true)"
+    return "no banner on delivery ([notify] received = false); log and info only"
 
 
 def _authorisation(config: Config) -> list[str]:

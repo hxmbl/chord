@@ -11,8 +11,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
 - All commands are thin wrappers that validate state before calling other modules
-- `chord info` stays offline: daemon state, the labels Chord will act on, and
-  which notification route is in use, without touching the network
+- `chord info` stays offline: daemon state, the labels Chord will act on,
+  which notification route is in use, and whether a delivery gets a banner
+  (`received   ... ([notify] received = true)`), without touching the network
 - `chord start` refuses to spawn while any route can't start
   (`Router.problems()`: build errors plus a PATH lookup), listing all of them;
   `chord info` marks the same routes `! can't run:`
@@ -41,7 +42,11 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Falls back to user config `~/.chord/chord.toml`
 - Falls back to defaults if no config exists
 - Settings: `label`, `harness`, `harnesses`, `interval`, `webhook_port`,
-  `allowed_actors`
+  `allowed_actors`, `t3`, `notify`
+- `[notify] received` (bool, default true) switches the "received" banner on
+  confirmed delivery; strict like `[t3]` (unknown keys and non-bools refused).
+  The stock file writes it uncommented, at its default, before the tables that
+  `curate()` appends after it
 - `harnesses` is the curation table: `<name>` to a command
 - `allowed_actors` is a list of Linear **user ids**; ids and not names because
   Linear lets anyone rewrite their own display name
@@ -80,7 +85,11 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Resolves the repository after authorisation, and hands it to the harness as
   its working directory (`repo.py`)
 - Announces an issue that didn't go to plan with one banner — failed,
-  skipped, or refused; a hand-over that works posts none
+  skipped, or refused. A hand-over that works posts `received` at the moment
+  delivery is confirmed (from `on_delivered`, as a task run alongside the
+  harness; for T3 once it is accepted) when `[notify] received` is on, the
+  default (`Watcher(notify_received=...)`). A later `failed` waits for it, so
+  it lands second and replaces it in the issue's group
 - Confirms delivery quietly: the harness calls `on_delivered` once it has the
   issue, the watcher logs `delivered to <harness>.` and writes a `deliveries`
   entry to `state.json` straight away, then updates it when the run ends
@@ -204,11 +213,12 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 ### Utilities
 
 **`src/chord/notify.py`** - Desktop notifications
-- **One banner per issue that didn't go to plan, silence for one that did** —
-  three verbs, at most one of which fires per issue; delivery is confirmed in
-  the log, `state.json` and `chord info` instead (there used to be a
-  `received` banner on every hand-over)
-- Three verbs (`failed`, `skipped`, `refused`) rather than one
+- **At most one banner per issue** — `failed`, `skipped`, `refused` always;
+  `received` ("ENG-1 received" / "Delivered to claude.") on confirmed delivery
+  unless `[notify] received = false`. Delivery is also recorded in the log,
+  `state.json` and `chord info` either way. (b201600 removed `received`; it
+  came back behind the setting, now on delivery rather than at hand-over start)
+- Four verbs (`received`, `failed`, `skipped`, `refused`) rather than one
   free-form `send`, so the title cannot contradict the body
 - macOS asks the daemon by a route that needs no app bundle, because Chord is a
   bare unsigned `python3` and `UNUserNotificationCenter` is unreachable from one:
@@ -267,7 +277,7 @@ context.py (render to text)
     ↓
 harness.py (send to external tool via stdin)
     ↓
-watcher.py (delivered: one log line + state.json, no banner)
+watcher.py (delivered: log line + state.json, "received" banner if on)
     ↓
 Harness output (logged to chord.log)
 ```
@@ -338,12 +348,14 @@ Tests are in `test/` directory:
 - `test_authorise.py` - The `allowed_actors` allowlist and attribution
 - `test_boundaries.py` - Linear answers that are not what the query asked for
 - `test_cli.py` - CLI commands, including the `chord info` label showcase
-- `test_config.py` - Configuration loading, including the curation table
+- `test_config.py` - Configuration loading, including the curation table and
+  `[notify]` validation
 - `test_daemon.py` - Process management
-- `test_delivery.py` - The path from a Linear issue to a harness, and a
-  banner only for an issue that didn't go to plan
-- `test_delivered.py` - Quiet delivery confirmation: what counts as delivered,
-  what the watcher records, and what `chord info` shows
+- `test_delivery.py` - The path from a Linear issue to a harness, its one
+  banner, and `notify_received=False` keeping a working hand-over quiet
+- `test_delivered.py` - Delivery confirmation: what counts as delivered, what
+  the watcher records, what `chord info` shows, and the `received` banner going
+  out while the harness is still running
 - `test_findings.py` - Issue handling
 - `test_harness.py` - Running an external command without letting it run away
 - `test_presets.py` - The opencode default and the Claude Code / Codex / Cursor presets against stand-in

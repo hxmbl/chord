@@ -1,18 +1,22 @@
-"""Desktop notifications: what went wrong with an issue, and why.
+"""Desktop notifications: what happened to an issue, and why.
 
-**One banner per issue that didn't go to plan, and silence for one that did.**
-A watcher can have a hundred issues in a backlog, and the thing worth
-interrupting somebody for is the issue that is *not* being worked on — so the
-banners are three verbs, at most one of which fires for any issue.
+**At most one banner per issue.** A watcher can have a hundred issues in a
+backlog, and the thing always worth interrupting somebody for is the issue that
+is *not* being worked on — so `failed`, `skipped` and `refused` always post.
+`received`, the banner for an issue that reached its harness, is the one that
+can be switched off: `[notify] received = false` in chord.toml. It is on by
+default.
 
-It used to be one banner per issue whichever way it went, with "received"
-fired as the hand-over started. That made every working hand-over a pop-up,
-which is Chord shouting to say that nothing is wrong. Knowing the issue got
-there is still worth having, so it is kept, quietly: the watcher records the
-moment the harness has the issue in its log and in `state.json`, and `chord
-info` shows it ("ENG-201 delivered to claude at 23:59, still running"). Before
-that it was two banners per issue — "started" and "finished" — which is two
-notifications to say one thing.
+`received` is posted when delivery is confirmed — the harness has the whole
+issue and survived starting up — rather than as the hand-over begins, so it
+means what it says. A harness that then fails replaces it with `failed` (they
+share a group). Whether or not the banner is on, the watcher records every
+delivery quietly, in its log and in `state.json`, and `chord info` shows it
+("ENG-201 delivered to claude at 23:59, still running"). Being able to turn the
+banner off is why: for somebody who doesn't want a pop-up every time nothing is
+wrong, that record is the confirmation. Before any of this it was two banners
+per issue — "started" and "finished" — which is two notifications to say one
+thing, and there is still no `finished`.
 
 Every banner is two halves. A title naming what happened, and a line underneath
 saying why — "ENG-201 failed" over "`opencode` exited 1". A banner is read at a
@@ -99,6 +103,17 @@ OSASCRIPT = "/usr/bin/osascript"
 # test does not take `shutil` away from the rest of Chord — `harness.build`
 # resolves commands the same way and needs the real one to find them.
 _find = shutil.which
+
+
+async def received(thing: str, where: str) -> None:
+    """`thing` has reached `where`, which is working on it now.
+
+    Called once delivery is confirmed rather than when the run ends: a harness
+    can work for half an hour, and the news is that work started somewhere you
+    didn't start it. Naming the harness is the point of the body. The watcher
+    posts it only when `[notify] received` is on.
+    """
+    await send(f"{thing} received", f"Delivered to {where}.", group=_group(thing))
 
 
 async def failed(thing: str, why: object) -> None:

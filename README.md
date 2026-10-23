@@ -137,11 +137,18 @@ webhook_secret = ""
 # "Who can trigger a run" section below before leaving it that way.
 allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 
-# Extra named harnesses. A `Chord/<name>` label routes an issue to the one
-# called `<name>` instead of the default. See "Routing" below.
-#
 # Tables come last: in TOML everything after a `[table]` header belongs to that
 # table, so `interval` above has to be written before the first one of these.
+
+# Desktop banners. Failed, skipped and refused always post one. `received` is
+# the banner for an issue that reached its harness, posted once delivery is
+# confirmed; false keeps deliveries quiet (the log and `chord info` still show
+# every one). Default: true. See "Notifications" below.
+[notify]
+received = true
+
+# Extra named harnesses. A `Chord/<name>` label routes an issue to the one
+# called `<name>` instead of the default. See "Routing" below.
 [harnesses."opencode/big-pickle"]
 command = ["opencode", "run", "--model", "big-pickle"]
 
@@ -360,11 +367,12 @@ there is no `chord.toml` setting for it.
 
 ## Notifications
 
-**A banner for an issue that didn't go to plan, and silence for one that did.**
-Three outcomes, three verbs:
+**At most one banner per issue: the ones that didn't go to plan always, and a
+delivery unless you turn it off.** Four outcomes, four verbs:
 
 | What happened                 | Title              | Body                                          |
 | ----------------------------- | ------------------ | --------------------------------------------- |
+| The harness has the issue (`[notify] received`, on by default) | `ENG-201 received` | `Delivered to opencode.` |
 | The harness didn't finish, or never got it | `ENG-201 failed`   | `` `opencode` exited 1. ``       |
 | Stopped before it started     | `ENG-201 skipped`  | `'Chord/typo' names a harness chord.toml doesn't define.` |
 | Asked by someone not allowed  | `ENG-201 refused`  | `sam added 'Chord', and that is not in allowed_actors.` |
@@ -379,12 +387,28 @@ can act on.
 `refused` has its own verb on purpose. It isn't a malfunction; the allowlist did
 the one thing it's there for, and you want to know it fired.
 
-**A hand-over that works isn't announced; it's confirmed quietly.** It used to
-post "ENG-201 received" on every hand-over (and before that "started" and then
-"finished"), which is Chord shouting to say nothing is wrong. You still get to
-know the issue got there: once the harness has it, the watcher logs one line —
-`delivered to claude.` — and records it in `state.json`, and `chord info` shows
-it, even while the harness is still working:
+**`received` fires on confirmed delivery, and is the one banner you can switch
+off.** It goes out the moment the harness has the issue (see below for what
+that means), not as the hand-over starts and not when the run ends, so it says
+the issue got there rather than that Chord tried. A harness that then fails
+replaces it with `failed`. For T3 Code, delivery is T3 accepting the task. There
+is no "finished" banner: a harness can run for half an hour, and the news is
+that work started somewhere you didn't start it.
+
+```toml
+[notify]
+received = false   # default true
+```
+
+turns it off for a quiet screen; `failed`, `skipped` and `refused` have no
+switch, because an issue that is not being worked on is what banners are for.
+`chord info` says which way it is set (`received   banner when an issue reaches
+its harness ([notify] received = true)`).
+
+**Delivery is recorded quietly either way.** Once the harness has the issue, the
+watcher logs one line — `delivered to claude.` — and records it in
+`state.json`, and `chord info` shows it, even while the harness is still
+working:
 
 ```
   delivery   ENG-201 delivered to claude at 23:59, still running

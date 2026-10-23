@@ -509,6 +509,28 @@ def test_info_says_where_notifications_go(
     assert "notify     terminal-notifier" in result.stdout
 
 
+def test_info_says_whether_a_delivery_gets_a_banner(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
+    """The one banner with a switch, shown with the switch's name."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+    assert result.exit_code == 0, result.output
+    assert "received   banner when an issue reaches its harness" in result.stdout
+    assert "[notify] received = true" in result.stdout
+
+    config = tmp_path / ".config" / "chord" / "chord.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[notify]\nreceived = false\n")
+    result = runner.invoke(app, ["info"])
+    assert result.exit_code == 0, result.output
+    assert "received   no banner on delivery" in result.stdout
+    assert "[notify] received = false" in result.stdout
+
+
 def test_info_admits_when_no_notifier_exists(
     keyring_backend, no_env, monkeypatch, tmp_path
 ):

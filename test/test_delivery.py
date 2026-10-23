@@ -427,14 +427,12 @@ def spy_router(allowed_actors=(), harnesses=None, fail=None):
     )
 
 
-def test_a_successful_hand_over_is_quiet(monkeypatch, tmp_path, banners):
-    """Delivered, confirmed, and not announced.
+def test_a_successful_hand_over_says_received_once(monkeypatch, tmp_path, banners):
+    """One banner, on confirmed delivery, and the quiet record as well.
 
-    It was a "received" banner on every hand-over, and before that "started"
-    and "finished". The owner's words: know the message got to the harness
-    without Chord having to scream. So the confirmation is a log line and a
-    status in the state file that `chord info` reads, and the screen stays
-    clear.
+    `[notify] received` is on by default, which is the behaviour from before
+    delivery was confirmed quietly: one "received" banner naming the harness.
+    The log line and the state entry are kept regardless.
     """
     said = banners
 
@@ -444,13 +442,55 @@ def test_a_successful_hand_over_is_quiet(monkeypatch, tmp_path, banners):
 
     asyncio.run(scenario())
 
-    assert said.said == []
+    assert said.said == [("ENG-1 received", "Delivered to spy.")]
     saved = json.loads((tmp_path / "s.json").read_text())
     entry = saved["deliveries"]["1"]
     assert entry["identifier"] == "ENG-1"
     assert entry["harness"] == "spy"
     assert entry["status"] == watcher.FINISHED
     assert entry["delivered_at"] and entry["ended_at"]
+
+
+def test_received_off_makes_a_successful_hand_over_quiet(tmp_path, banners):
+    """`[notify] received = false`: no banner, and nothing else changes.
+
+    The owner's words when it was first made quiet: know the message got to the
+    harness without Chord having to scream. So with the banner off, the
+    confirmation is still the log line and the state entry `chord info` reads.
+    """
+
+    async def scenario():
+        w = watcher.Watcher(
+            stub_linear({**BASE}),
+            spy_router(),
+            1,
+            tmp_path / "s.json",
+            notify_received=False,
+        )
+        await w.poll()
+
+    asyncio.run(scenario())
+
+    assert banners.said == []
+    entry = json.loads((tmp_path / "s.json").read_text())["deliveries"]["1"]
+    assert entry["status"] == watcher.FINISHED
+    assert entry["delivered_at"]
+
+
+def test_received_off_leaves_failures_loud(tmp_path, banners):
+    async def scenario():
+        w = watcher.Watcher(
+            stub_linear({**BASE}),
+            spy_router(fail=HarnessError("`spy` exited 1.")),
+            1,
+            tmp_path / "s.json",
+            notify_received=False,
+        )
+        await w.poll()
+
+    asyncio.run(scenario())
+
+    assert banners.titles == ["ENG-1 failed"]
 
 
 @pytest.mark.parametrize(
@@ -626,10 +666,10 @@ def test_an_issue_with_no_id_is_not_announced(monkeypatch, tmp_path, banners):
 def test_a_discussion_that_could_not_be_read_is_not_announced(
     monkeypatch, tmp_path, banners
 ):
-    """Work still happened, so there is nothing to announce.
+    """Work still happened, so the only banner is the ordinary one.
 
-    The missing comments are a degradation and the log says so. A banner for it
-    would be noise about an issue that is being worked on.
+    The missing comments are a degradation and the log says so. A banner of its
+    own would be noise about an issue that is being worked on.
     """
     said = banners
 
@@ -649,7 +689,7 @@ def test_a_discussion_that_could_not_be_read_is_not_announced(
 
     asyncio.run(scenario())
 
-    assert said.said == []
+    assert said.titles == ["ENG-1 received"]
 
 
 # --- render is the last stop before a harness, so it must not be the first ---

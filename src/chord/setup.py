@@ -182,6 +182,8 @@ def _project(say: Callable[[str], None], viewer: dict) -> None:
     except ConfigError as exc:
         raise SetupError(str(exc)) from exc
     say(f"   Wrote {written}.")
+    say("   Each issue that reaches the tool gets a desktop banner; set")
+    say("   `received = false` under [notify] there to keep deliveries quiet.")
     if allowed:
         say("   Only you can trigger a run. Add teammates to allowed_actors there.")
 

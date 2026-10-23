@@ -84,41 +84,49 @@ def test_each_end_says_what_happened_and_why(monkeypatch):
     only_osascript(monkeypatch)
     rec = recorder(monkeypatch)
 
+    run(notify.received("ENG-201", "opencode"))
     run(notify.failed("ENG-201", "`opencode` exited 1."))
     run(notify.skipped("ENG-201", "'Chord/typo' names a harness chord.toml lacks."))
     run(notify.refused("ENG-201", "sam added 'Chord', and that isn't allowed."))
 
     assert rec.banners == [
+        ("ENG-201 received", "Delivered to opencode."),
         ("ENG-201 failed", "`opencode` exited 1."),
         ("ENG-201 skipped", "'Chord/typo' names a harness chord.toml lacks."),
         ("ENG-201 refused", "sam added 'Chord', and that isn't allowed."),
     ]
 
 
-def test_a_hand_over_that_works_has_no_banner_at_all(monkeypatch):
-    """Delivery is confirmed quietly, not announced.
+def test_a_hand_over_is_announced_once_not_at_both_ends(monkeypatch):
+    """One banner for a delivery, which the watcher can switch off.
 
-    It was "received" on every hand-over, and before that "started" and
-    "finished": Chord shouting to say nothing was wrong. The watcher records
-    delivery in its log and state for `chord info` instead, so there is no verb
-    here for a hand-over that went to plan.
+    It was two: "started" and "finished", two notifications saying one thing.
+    `received` is the one, posted once delivery is confirmed, and only when
+    `[notify] received` is on.
     """
-    assert not hasattr(notify, "received")
-    assert not hasattr(notify, "finished"), "there is no second end to announce"
-
-
-def test_the_ends_are_distinguishable_at_a_glance(monkeypatch):
-    """Three outcomes, three titles. A reader who sees only the title has to be
-    able to tell a failed agent from a refused one."""
     on(monkeypatch, "darwin")
     only_osascript(monkeypatch)
     rec = recorder(monkeypatch)
 
-    for verb in ("failed", "skipped", "refused"):
+    run(notify.received("ENG-201", "opencode"))
+
+    assert rec.banners == [("ENG-201 received", "Delivered to opencode.")]
+    assert not hasattr(notify, "finished"), "there is no second end to announce"
+
+
+def test_the_ends_are_distinguishable_at_a_glance(monkeypatch):
+    """Four outcomes, four titles. A reader who sees only the title has to be
+    able to tell a working agent from a failed or refused one."""
+    on(monkeypatch, "darwin")
+    only_osascript(monkeypatch)
+    rec = recorder(monkeypatch)
+
+    for verb in ("received", "failed", "skipped", "refused"):
         run(getattr(notify, verb)("ENG-201", "because"))
 
     titles = [title for title, _ in rec.banners]
     assert titles == [
+        "ENG-201 received",
         "ENG-201 failed",
         "ENG-201 skipped",
         "ENG-201 refused",

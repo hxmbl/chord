@@ -44,6 +44,63 @@ def test_unknown_setting_is_rejected(tmp_path):
         config.load(path)
 
 
+# --- [notify] ---
+
+
+def test_the_received_banner_is_on_with_no_file(tmp_path):
+    """No config file restores the behaviour from before deliveries went quiet."""
+    assert config.load(tmp_path / "nothing.toml").notify.received is True
+
+
+def test_the_received_banner_is_on_when_the_file_does_not_say(tmp_path):
+    path = tmp_path / "chord.toml"
+    path.write_text('label = "Chord"\n')
+    assert config.load(path).notify.received is True
+
+
+def test_the_received_banner_can_be_turned_off(tmp_path):
+    path = tmp_path / "chord.toml"
+    path.write_text("[notify]\nreceived = false\n")
+    assert config.load(path).notify.received is False
+
+
+@pytest.mark.parametrize(
+    "text,message",
+    [
+        ('[notify]\nreceived = "no"\n', "true or false"),
+        ("[notify]\nreceived = 0\n", "true or false"),
+        ("[notify]\nrecieved = false\n", "doesn't know: `recieved`"),
+        ('notify = "off"\n', "has to be a table"),
+    ],
+)
+def test_notify_is_validated(tmp_path, text, message):
+    """A typo here would leave a banner on that somebody believes is off."""
+    path = tmp_path / "chord.toml"
+    path.write_text(text)
+    with pytest.raises(config.ConfigError, match=message):
+        config.load(path)
+
+
+def test_the_stock_file_offers_the_switch_at_its_default():
+    import tomllib
+
+    raw = tomllib.loads(config.STOCK)
+    assert raw["notify"] == {"received": True}
+    assert "received = false" not in config.STOCK.split("[notify]")[0]
+    assert config._build(raw, config.config_path()[0]).notify.received is True
+
+
+def test_a_curated_harness_appended_to_the_stock_file_leaves_notify_alone(
+    tmp_path, monkeypatch
+):
+    """`chord harness add` appends a table after `[notify]`; both must survive."""
+    monkeypatch.chdir(tmp_path)
+    path, _ = config.curate("big", ["opencode", "run"])
+    cfg = config.load(path)
+    assert cfg.notify.received is True
+    assert cfg.harnesses == {"big": ["opencode", "run"]}
+
+
 def test_interval_floor_is_enforced(tmp_path):
     path = tmp_path / "chord.toml"
     path.write_text("interval = 1\n")

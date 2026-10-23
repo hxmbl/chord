@@ -71,6 +71,8 @@ def test_enter_all_the_way_through_gives_a_working_setup(
     )
     assert "Create the label 'Chord' in Linear" in result.output
     assert "Run `chord start`" in result.output
+    assert cfg["notify"] == {"received": True}, "a delivery banner is the default"
+    assert "`received = false` under [notify]" in result.output
 
 
 def test_the_tool_is_chosen_from_the_ones_installed(project, signs_in, monkeypatch):

@@ -144,7 +144,7 @@ def repo(path):
     return path
 
 
-def make_watcher(tmp_path, cli, state_path):
+def make_watcher(tmp_path, cli, state_path, **options):
     project = repo(tmp_path / "project")
     return watcher.Watcher(
         LinearStub(),
@@ -152,6 +152,7 @@ def make_watcher(tmp_path, cli, state_path):
         1,
         state_path,
         start_dir=project,
+        **options,
     )
 
 
@@ -170,6 +171,40 @@ def test_t3_dispatch_hands_over_once_and_keeps_no_thread_mapping(tmp_path, monke
     asyncio.run(restarted.poll())
     assert restarted.handed_over == 1
     assert len(calls_from(tmp_path / "calls.jsonl")) == 1, "sent exactly once"
+
+
+def test_t3_accepted_is_when_the_received_banner_goes_out(
+    tmp_path, monkeypatch, banners
+):
+    """T3 Code can't say sooner that it has the issue; accepted is delivery."""
+    fake_t3(tmp_path, monkeypatch)
+    asyncio.run(
+        make_watcher(tmp_path, harness.T3CodeHarness(), tmp_path / "s.json").poll()
+    )
+    assert banners.said == [("ENG-1 received", "Delivered to t3.")]
+
+
+def test_t3_received_banner_follows_the_setting(tmp_path, monkeypatch, banners):
+    fake_t3(tmp_path, monkeypatch)
+    w = make_watcher(
+        tmp_path, harness.T3CodeHarness(), tmp_path / "s.json", notify_received=False
+    )
+    asyncio.run(w.poll())
+    assert banners.said == []
+
+
+def test_an_uncertain_t3_dispatch_is_not_announced_as_received(
+    tmp_path, monkeypatch, banners
+):
+    fake_t3(tmp_path, monkeypatch)
+    cli = harness.T3CodeHarness()
+
+    async def uncertain(_prompt, cwd=None):
+        raise harness.T3ClientError("launch response lost", uncertain=True)
+
+    cli.send = uncertain
+    asyncio.run(make_watcher(tmp_path, cli, tmp_path / "s.json").poll())
+    assert "ENG-1 received" not in banners.titles
 
 
 def test_chord_has_no_t3_tunnel_commands(tmp_path, monkeypatch):

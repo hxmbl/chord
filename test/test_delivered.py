@@ -1,10 +1,11 @@
 """Knowing the issue reached the harness, without Chord having to scream.
 
-A hand-over that works posts no banner. Instead the watcher confirms delivery —
-the harness started, took the whole issue, and was still running (or had
-exited 0) a moment later — and records it quietly: one log line, and a status
-in `state.json` that `chord info` reads while the harness is still working.
-Failing to deliver stays loud, as it always was.
+The watcher confirms delivery — the harness started, took the whole issue, and
+was still running (or had exited 0) a moment later — and records it quietly:
+one log line, and a status in `state.json` that `chord info` reads while the
+harness is still working. The "received" banner fires at that same moment when
+`[notify] received` is on (the default); with it off, the quiet record is the
+whole confirmation. Failing to deliver stays loud, as it always was.
 
 Delivery is kept apart from the harness's own result, because "it got there"
 is worth knowing half an hour before "it finished".
@@ -53,9 +54,11 @@ class Linear:
         return []
 
 
-def watching(tmp_path, harness):
+def watching(tmp_path, harness, *, notify_received=True):
     router = Router("Chord", "x", factory=lambda spec: harness)
-    return watcher.Watcher(Linear(), router, 1, tmp_path / "state.json")
+    return watcher.Watcher(
+        Linear(), router, 1, tmp_path / "state.json", notify_received=notify_received
+    )
 
 
 def delivery(tmp_path) -> dict:
@@ -136,7 +139,7 @@ def test_the_print_harness_confirms_too(capsys):
 def test_the_state_says_delivered_before_the_harness_finishes(tmp_path, banners):
     """`chord info` reads this file, so this is what somebody sees mid-run."""
     h = CommandHarness(["sh", "-c", "cat >/dev/null; sleep 1"], "claude")
-    w = watching(tmp_path, h)
+    w = watching(tmp_path, h, notify_received=False)
     seen = []
 
     async def scenario():
@@ -157,7 +160,33 @@ def test_the_state_says_delivered_before_the_harness_finishes(tmp_path, banners)
     assert after["status"] == watcher.FINISHED
     assert after["harness"] == "claude" and after["identifier"] == "ENG-9"
     assert after["delivered_at"] <= after["ended_at"]
-    assert banners.said == [], "a delivery that worked must not post a banner"
+    assert banners.said == [], "with `received` off, a delivery that worked is quiet"
+
+
+def test_the_received_banner_fires_on_delivery_not_at_the_end(tmp_path, banners):
+    """The banner says it got there, so it goes out while the harness works.
+
+    Not as the hand-over starts (a harness that dies on startup never got it)
+    and not when it finishes (that can be half an hour later).
+    """
+    h = CommandHarness(["sh", "-c", "cat >/dev/null; sleep 1"], "claude")
+    w = watching(tmp_path, h)
+    while_running = []
+
+    async def scenario():
+        task = asyncio.create_task(w.poll())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not task.done():
+            if banners.said:
+                while_running.append(list(banners.said))
+                break
+            await asyncio.sleep(0.02)
+        await task
+
+    asyncio.run(scenario())
+
+    assert while_running == [[("ENG-9 received", "Delivered to claude.")]]
+    assert banners.titles == ["ENG-9 received"], "one banner, not one per end"
 
 
 def test_delivery_is_one_calm_log_line(tmp_path, capsys, banners):
@@ -174,6 +203,15 @@ def test_delivered_then_failed_is_told_apart_from_never_delivered(tmp_path, bann
     entry = delivery(tmp_path)
     assert entry["status"] == watcher.FAILED
     assert "delivered_at" in entry, "it did arrive, and that is worth keeping"
+    # It did arrive, so it was announced; the failure lands second and, sharing
+    # the issue's group, replaces it.
+    assert banners.titles == ["ENG-9 received", "ENG-9 failed"]
+
+
+def test_received_off_still_fails_loudly(tmp_path, banners):
+    h = CommandHarness(["sh", "-c", "cat >/dev/null; sleep 0.4; exit 3"], "claude")
+    asyncio.run(watching(tmp_path, h, notify_received=False).poll())
+    assert delivery(tmp_path)["status"] == watcher.FAILED
     assert banners.titles == ["ENG-9 failed"], "a failure stays loud"
 
 

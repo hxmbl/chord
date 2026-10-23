@@ -187,8 +187,12 @@ class Watcher:
         renew: Callable[[], str | None] | None = None,
         start_dir: Path | None = None,
         freshen: Callable[[bool], Awaitable[str | None]] | None = None,
+        notify_received: bool = True,
     ) -> None:
         self._linear = linear
+        # `[notify] received`: whether a confirmed delivery gets a banner. The
+        # quiet record of it (log line, state.json) is kept either way.
+        self._notify_received = notify_received
         self._router = router
         self._interval = interval
         self._path = state_path
@@ -666,20 +670,34 @@ class Watcher:
             # the conversation around it, and the log says so.
             self._problem(f"no discussion for {identifier}: {exc}")
 
-        # No banner here. A hand-over that works is recorded quietly: one log
-        # line and a status in `state.json` that `chord info` reads, the moment
-        # the harness has the issue rather than when it finishes. Only an issue
-        # that didn't go to plan is announced, below.
+        # A hand-over that works is recorded quietly the moment the harness has
+        # the issue, rather than when it finishes: one log line and a status in
+        # `state.json` that `chord info` reads. The "received" banner goes out
+        # at the same moment when `[notify] received` is on (the default), so it
+        # means the issue got there rather than that Chord tried. It runs
+        # alongside the harness, and is waited on before any `failed` banner so
+        # that one lands second and replaces it.
         prompt = render({**issue, "comments": comments})
         delivered = False
+        announced: asyncio.Future[None] | None = None
 
         def on_delivered() -> None:
-            nonlocal delivered
+            nonlocal delivered, announced
             if delivered:
                 return
             delivered = True
             log(f"  delivered to {harness.name}.")
             self._track(issue_id, identifier, harness.name, DELIVERED)
+            if self._notify_received:
+                announced = asyncio.ensure_future(
+                    notify.received(identifier, harness.name)
+                )
+
+        async def settle() -> None:
+            # `notify.send` never raises bar cancellation and bounds its own
+            # wait, so this cannot hold a hand-over up for long.
+            if announced is not None and not announced.done():
+                await announced
 
         try:
             if isinstance(harness, T3CodeHarness):
@@ -725,6 +743,7 @@ class Watcher:
                     f"  to retry it: drop {_key(issue_id)} from {self._path.name}."
                 )
             self._remember(issue_id)
+            await settle()
             await notify.failed(identifier, exc)
             return
         except BaseException as exc:
@@ -736,6 +755,8 @@ class Watcher:
             # never runs again — at-most-once where the contract is
             # at-least-once.
             if isinstance(exc, asyncio.CancelledError):
+                if announced is not None and not announced.done():
+                    announced.cancel()
                 if delivered:
                     self._track(issue_id, identifier, harness.name, STOPPED)
                 raise
@@ -752,6 +773,7 @@ class Watcher:
             # in-progress marker written before the run, would trade this
             # duplicate for the possibility of never running the work at all,
             # which is the worse of the two.
+            await settle()
             await notify.failed(identifier, f"{type(exc).__name__}: {exc}")
             self._track(
                 issue_id,
@@ -778,10 +800,16 @@ class Watcher:
             log(f"  T3 thread {result['thread_id']} accepted; out of Chord's hands.")
             self._clear_t3_pending(issue_id)
             self._track(issue_id, identifier, harness.name, ACCEPTED, write=False)
-        else:
-            log(f"  {harness.name} finished.")
-            self._track(issue_id, identifier, harness.name, FINISHED, write=False)
+            self._remember(issue_id)
+            # Accepted is T3 Code's delivery: it can't say sooner that it has
+            # the issue, so this is when the banner is true.
+            if self._notify_received:
+                await notify.received(identifier, harness.name)
+            return
+        log(f"  {harness.name} finished.")
+        self._track(issue_id, identifier, harness.name, FINISHED, write=False)
         self._remember(issue_id)
+        await settle()
 
     async def _resolve(
         self, issue: Issue, identifier: str, issue_id: Any
