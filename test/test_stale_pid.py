@@ -36,8 +36,9 @@ _SPAWNED: list = []
 
 
 def spawn(argv):
-    process = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(
+        argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     _SPAWNED.append(process)
     time.sleep(0.4)
     return process

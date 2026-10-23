@@ -8,6 +8,9 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Nine commands: `setup`, `init`, `harness add`, `refresh`, `start`, `stop`,
   `watch`, `info`, `help`
   (`help` forwards to the command you name, and `_serve` is hidden)
+- Plus the `t3` sub-app: `t3 show ISSUE` (the saved thread's status and
+  messages) and `t3 send ISSUE MESSAGE` (a follow-up, optionally `--wait`);
+  both only operate on threads Chord mapped to a Linear issue
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
 - All commands are thin wrappers that validate state before calling other modules
@@ -78,6 +81,7 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Detects repositories by asking Git for its top level rather than looking for a
   `.git` entry, which is a file in a linked worktree and a directory elsewhere
 
+### Linear API Client
 **`src/chord/linear.py`** - GraphQL API interactions
 - Reads issues matching a route filter with pagination (up to 1000 per poll)
 - Reads an issue's label history as `LabelChange` records, newest first, each
@@ -96,11 +100,12 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Uses file locking to prevent race conditions on start
 - Validates process is actually a Chord watcher before stopping
 
-### Linear API Client
 ### Harness Execution
 **`src/chord/harness.py`** - Running external tools
 - Built-in: `print` harness (writes to log for debugging/inspection)
 - Built-in: `opencode` harness (the default)
+- Built-in: `t3` harness (the official T3 Code CLI; issue-to-thread mappings
+  live in the project's state file, so a retry knows whether a thread exists)
 - Command harness: runs any command with issue on stdin
 - Protocol-based design for extensibility
 - Issues sent via stdin to avoid command-line length limits
@@ -184,6 +189,15 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Handles legacy `chord.toml` vs new `.config/chord/chord.toml`
 - Identifies project root for daemon state
 
+**`src/chord/performance.py`** - Performance instrumentation
+- An `instrumented` decorator that logs one structured `PERF` line per call:
+  file, function, duration in ms, success/failure
+- Measurements exist to inform a future rewrite decision, so only log lines —
+  no histograms or dashboards
+- A bool return value is the outcome, because `poll` and the webhook handler
+  answer failures rather than raise them; `CancelledError` logs as a clean
+  stop, because that is what `chord stop` does
+
 ## Data Flow
 
 ```
@@ -262,6 +276,7 @@ Harness output (logged to chord.log)
 Tests are in `test/` directory:
 - `test_at_least_once.py` - The at-least-once contract, and the margin around it
 - `test_auth_expiry.py` - Token refresh across a long-running daemon
+- `test_auto_renew.py` - The token renewing itself, so nobody runs `chord refresh`
 - `test_authorise.py` - The `allowed_actors` allowlist and attribution
 - `test_boundaries.py` - Linear answers that are not what the query asked for
 - `test_cli.py` - CLI commands, including the `chord info` label showcase
@@ -275,11 +290,14 @@ Tests are in `test/` directory:
 - `test_notify.py` - Notification shape, platform routing, injection safety, and
   the one-banner-per-issue rule
 - `test_pagination.py` - Linear pagination
+- `test_performance.py` - The instrumentation, measured by what it writes down
 - `test_permissions.py` - What Chord writes to disk, and who can read it
 - `test_process_identity.py` - `chord stop` signalling only Chord's own processes
+- `test_repo.py` - Which repository an issue gets worked on, and when it refuses
 - `test_routing.py` - Label grammar, curation, and which harness runs
 - `test_stale_pid.py` - A stale pid file not wedging `chord start`
 - `test_subscribe.py` - WebSocket subscriptions
+- `test_t3.py` - The T3 Code CLI integration, with a local executable standing in
 - `test_watcher.py` - Main polling loop
 - `test_webhook.py` - Webhook handling
 - `test_webhook_secret.py` - The webhook shared secret

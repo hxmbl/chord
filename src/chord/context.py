@@ -80,7 +80,14 @@ def render(issue: Issue) -> str:
     if labels:
         lines.append(f"Labels: {', '.join(labels)}")
 
-    lines += ["", BEGIN, "", "## Description", "", _text(issue.get("description")).strip() or _ABSENT]
+    lines += [
+        "",
+        BEGIN,
+        "",
+        "## Description",
+        "",
+        _text(issue.get("description")).strip() or _ABSENT,
+    ]
 
     comments = _records(issue.get("comments"))
     if comments:

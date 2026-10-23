@@ -80,7 +80,14 @@ def run_once(tmp_path, label_names):
 
 @pytest.mark.parametrize(
     "label",
-    ["Chord//claude", "Chord/claude/", "Chord/", "Chord//", "Chord///", "Chord//claude//"],
+    [
+        "Chord//claude",
+        "Chord/claude/",
+        "Chord/",
+        "Chord//",
+        "Chord///",
+        "Chord//claude//",
+    ],
 )
 def test_a_malformed_route_never_reaches_the_default_harness(tmp_path, label):
     """The regression.
@@ -96,9 +103,7 @@ def test_a_malformed_route_never_reaches_the_default_harness(tmp_path, label):
     )
 
 
-@pytest.mark.parametrize(
-    "label", ["Chord//claude", "Chord/claude/", "Chord/"]
-)
+@pytest.mark.parametrize("label", ["Chord//claude", "Chord/claude/", "Chord/"])
 def test_a_malformed_route_is_skipped_and_says_so(tmp_path, label):
     """Not silently dropped either: the person who labelled it can fix it."""
     ran, w, out = run_once(tmp_path, [label])
@@ -180,7 +185,8 @@ def test_an_empty_suffix_names_nothing_rather_than_the_default():
 
 
 @pytest.mark.parametrize(
-    "name", ["Chordle", "Chordle/route", "chord", "Something/Chord", "ChordX", "Chord ", ""]
+    "name",
+    ["Chordle", "Chordle/route", "chord", "Something/Chord", "ChordX", "Chord ", ""],
 )
 def test_something_that_is_not_a_route_label_is_still_not_one(name):
     """Unchanged: a label that is not a route at all is not a route."""

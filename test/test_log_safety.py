@@ -205,9 +205,7 @@ def test_the_character_class_has_no_accidental_range():
         assert ord(start) <= ord(end), "a reversed range slipped in"
     # Control characters are meant to be stripped. Printable ones are not, and
     # the whole regression was a printable hyphen ending up in the class.
-    printable = {
-        c for c in map(chr, range(0x20, 0x7F)) if text._UNSAFE.fullmatch(c)
-    }
+    printable = {c for c in map(chr, range(0x20, 0x7F)) if text._UNSAFE.fullmatch(c)}
     assert printable == set(), (
         f"printable ASCII is now being stripped: "
         f"{sorted(hex(ord(c)) for c in printable)}"
@@ -280,8 +278,10 @@ def test_a_hostile_title_cannot_forge_a_log_entry(tmp_path, hostile):
     """
     path = tmp_path / "state.json"
     w = watcher.Watcher(
-        Stub([issue(title=hostile)]), Router("Chord", "spy", factory=lambda s: Spy()),
-        1, path,
+        Stub([issue(title=hostile)]),
+        Router("Chord", "spy", factory=lambda s: Spy()),
+        1,
+        path,
     )
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -308,7 +308,8 @@ def test_the_identifier_still_reads_correctly_in_the_log(tmp_path):
     w = watcher.Watcher(
         Stub([issue(title="a normal title")]),
         Router("Chord", "spy", factory=lambda s: Spy()),
-        1, path,
+        1,
+        path,
     )
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -338,8 +339,12 @@ def test_linear_error_text_is_flattened_too(monkeypatch):
         async def comments(self, i):
             return []
 
-    w = watcher.Watcher(L(), Router("Chord", "spy", factory=lambda s: Refuses()),
-                        1, pathlib.Path("/nonexistent/state.json"))
+    w = watcher.Watcher(
+        L(),
+        Router("Chord", "spy", factory=lambda s: Refuses()),
+        1,
+        pathlib.Path("/nonexistent/state.json"),
+    )
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         asyncio.run(w.poll())

@@ -126,9 +126,7 @@ def test_a_renewal_another_chord_just_made_is_used_not_repeated(
     assert exchange == [], "spent a refresh token Linear had already rotated"
 
 
-def test_a_refused_refresh_says_to_sign_in_again(
-    stored_token, no_env, monkeypatch
-):
+def test_a_refused_refresh_says_to_sign_in_again(stored_token, no_env, monkeypatch):
     from chord.credentials import _oauth_clients
 
     _client, OAuthError = _oauth_clients()

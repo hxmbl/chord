@@ -127,9 +127,7 @@ def test_a_stalled_request_is_answered_rather_than_held(stall):
             await hook.stop()
 
     reply = asyncio.run(scenario())
-    assert b"400" in status_of(reply), (
-        f"held open with no answer: {status_of(reply)!r}"
-    )
+    assert b"400" in status_of(reply), f"held open with no answer: {status_of(reply)!r}"
 
 
 def test_a_normal_webhook_is_unaffected_by_the_bounds():
@@ -213,7 +211,9 @@ def test_a_wrong_or_missing_secret_is_refused(headers):
             await hook.stop()
 
     reply = asyncio.run(scenario())
-    assert b"401" in status_of(reply), f"a bad secret was accepted: {status_of(reply)!r}"
+    assert b"401" in status_of(reply), (
+        f"a bad secret was accepted: {status_of(reply)!r}"
+    )
     assert b"200" not in status_of(reply)
 
 
@@ -225,7 +225,9 @@ def test_optional_whitespace_around_the_secret_is_not_part_of_it():
     headers would start getting 401s for a secret it is sending correctly.
     """
     for padding in (b" ", b"  ", b"\t"):
-        payload = post(headers=b"X-Chord-Secret: " + padding + b"s3cret" + padding + b"\r\n")
+        payload = post(
+            headers=b"X-Chord-Secret: " + padding + b"s3cret" + padding + b"\r\n"
+        )
 
         async def scenario(payload=payload):
             hook = Webhook(port=free_port(), secret="s3cret")
@@ -339,10 +341,22 @@ def test_the_secret_is_never_echoed():
     "payload,expected",
     [
         pytest.param(post(method=b"GET"), b"404", id="wrong-method"),
-        pytest.param(b"POST /elsewhere HTTP/1.1\r\nContent-Length: 0\r\n\r\n", b"404", id="wrong-path"),
+        pytest.param(
+            b"POST /elsewhere HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+            b"404",
+            id="wrong-path",
+        ),
         pytest.param(b"GET\r\n\r\n", b"400", id="truncated-request-line"),
-        pytest.param(b"POST /webhook HTTP/1.1\r\nContent-Length: abc\r\n\r\n", b"400", id="length-not-a-number"),
-        pytest.param(b"POST /webhook HTTP/1.1\r\nContent-Length: -3\r\n\r\n", b"400", id="negative-length"),
+        pytest.param(
+            b"POST /webhook HTTP/1.1\r\nContent-Length: abc\r\n\r\n",
+            b"400",
+            id="length-not-a-number",
+        ),
+        pytest.param(
+            b"POST /webhook HTTP/1.1\r\nContent-Length: -3\r\n\r\n",
+            b"400",
+            id="negative-length",
+        ),
         pytest.param(
             b"POST /webhook HTTP/1.1\r\nContent-Length: 5\r\n\r\nab",
             b"400",
@@ -424,6 +438,7 @@ def test_stopping_twice_is_harmless():
 
     asyncio.run(scenario())
 
+
 # --- malformed requests are answered, not logged with a traceback ---
 
 
@@ -432,10 +447,16 @@ def test_stopping_twice_is_harmless():
     [
         pytest.param(b"\x00\x01\x02\r\n\r\n", "no spaces at all", id="no-tokens"),
         pytest.param(b"GET\r\n\r\n", "one token", id="one-token"),
-        pytest.param(b"POST /webhook HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
-                     "a negative length", id="negative-length"),
-        pytest.param(b"POST /webhook HTTP/1.1\r\nContent-Length: 1e3\r\n\r\n",
-                     "a length that is not an integer", id="float-length"),
+        pytest.param(
+            b"POST /webhook HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+            "a negative length",
+            id="negative-length",
+        ),
+        pytest.param(
+            b"POST /webhook HTTP/1.1\r\nContent-Length: 1e3\r\n\r\n",
+            "a length that is not an integer",
+            id="float-length",
+        ),
     ],
 )
 def test_a_malformed_request_is_answered_without_a_traceback(payload, why, caplog):
@@ -448,6 +469,7 @@ def test_a_malformed_request_is_answered_without_a_traceback(payload, why, caplo
     So the shapes that can be recognised are recognised and answered, and the
     catch-all is left for genuinely unforeseen cases.
     """
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="")
         await hook.start()
@@ -463,6 +485,7 @@ def test_a_malformed_request_is_answered_without_a_traceback(payload, why, caplo
 
 def test_a_normal_garbage_request_is_still_unlogged(caplog):
     """And the ordinary malformed shapes never reach the catch-all either."""
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="")
         await hook.start()
@@ -483,6 +506,7 @@ def test_a_normal_garbage_request_is_still_unlogged(caplog):
 
 def test_the_request_line_needs_exactly_three_parts():
     """A request line that is only a method is a bad request, not a crash."""
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="")
         await hook.start()
@@ -496,6 +520,7 @@ def test_the_request_line_needs_exactly_three_parts():
 
 def test_a_well_formed_request_still_answers_200():
     """So the tolerance above has not broken the happy path."""
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="")
         await hook.start()
@@ -561,6 +586,7 @@ def test_a_refused_request_is_reported_as_a_failure(payload):
     "Did not raise" would report every 400, 401 and 404 as a success, which is
     a measurement pointing the wrong way.
     """
+
     async def scenario():
         hook = Webhook(secret="s3cret")
         return await hook._handle(reader_for(payload), FakeWriter())
@@ -574,6 +600,7 @@ def test_a_cancelled_request_still_closes_its_socket():
     Cancellation used to re-raise straight past the write and the close, leaking
     the connection — and `stop()` waits for the handlers, so it never finished.
     """
+
     async def scenario():
         hook = Webhook(secret="")
 
@@ -596,6 +623,7 @@ def test_a_refused_secret_says_so_in_the_log(caplog):
     """Otherwise a lockout is invisible: every delivery 401s, live updates fall
     back to polling, and nothing distinguishes a wrong secret from one that
     cannot be transmitted at all."""
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="s3cret")
         await hook.start()
@@ -621,6 +649,7 @@ def test_a_non_ascii_secret_sent_as_latin1_is_accepted():
     sent the standard way was refused forever, and a lockout looks exactly like
     a wrong secret.
     """
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="café")
         await hook.start()
@@ -634,6 +663,7 @@ def test_a_non_ascii_secret_sent_as_latin1_is_accepted():
 
 def test_a_non_ascii_secret_sent_as_utf8_is_accepted():
     """A modern client may encode the header that way; refusing it is a lockout."""
+
     async def scenario():
         hook = Webhook(port=free_port(), secret="café")
         await hook.start()

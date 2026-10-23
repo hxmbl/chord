@@ -159,7 +159,7 @@ def test_a_failure_never_claims_to_have_finished(monkeypatch):
 
     run(notify.failed("ENG-201", RuntimeError("exited 1")))
 
-    (title, message), = rec.banners
+    ((title, message),) = rec.banners
     assert title == "ENG-201 failed"
     for wrong in ("done", "finished", "complete"):
         assert wrong not in title.lower(), f"{title!r} contradicts {message!r}"
@@ -173,7 +173,9 @@ def test_the_reason_survives_into_the_body(monkeypatch):
 
     run(notify.failed("ENG-201", "Harness `claude` timed out after 1800s."))
 
-    assert rec.banners == [("ENG-201 failed", "Harness `claude` timed out after 1800s.")]
+    assert rec.banners == [
+        ("ENG-201 failed", "Harness `claude` timed out after 1800s.")
+    ]
 
 
 def test_a_multi_line_reason_is_flattened(monkeypatch):
@@ -188,7 +190,7 @@ def test_a_multi_line_reason_is_flattened(monkeypatch):
 
     run(notify.failed("ENG-201", "line one\nline two\x1b[31m red"))
 
-    (_title, message), = rec.banners
+    ((_title, message),) = rec.banners
     assert "\n" not in message and "\x1b" not in message
     assert message == "line one line two [31m red"
 
@@ -325,7 +327,9 @@ def test_the_library_still_serves_linux(monkeypatch):
         async def send(self, title, message):
             sent.append((title, message))
 
-    monkeypatch.setitem(sys.modules, "desktop_notifier", SimpleNamespace(DesktopNotifier=Fake))
+    monkeypatch.setitem(
+        sys.modules, "desktop_notifier", SimpleNamespace(DesktopNotifier=Fake)
+    )
     run(notify.received("ENG-201", "opencode"))
 
     assert sent == [("ENG-201 received", "Sent to opencode.")]

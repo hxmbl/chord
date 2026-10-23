@@ -105,11 +105,15 @@ async def main(label: str) -> int:
             for n in (node.get("labels") or {}).get("nodes", [])
         }
         matched = {label, *(f"{label}/{c}" for c in router.names)}
-        stray = sorted(n for n in names if n.startswith(f"{label}/") and n not in matched)
+        stray = sorted(
+            n for n in names if n.startswith(f"{label}/") and n not in matched
+        )
         if stray:
             print(f"  !! matched issues carry unrouted labels: {stray}")
         elif not (names & matched):
-            print("  !! no matched issue carries a route label — filter is not filtering")
+            print(
+                "  !! no matched issue carries a route label — filter is not filtering"
+            )
         else:
             print("  -> every matched label is a route Chord would act on")
 
@@ -147,7 +151,9 @@ async def main(label: str) -> int:
 
     header("label history (how 'newest route label' is decided)")
     if nodes:
-        history = await ask(LABEL_HISTORY, {"id": nodes[0].get("id"), "first": 50}, token)
+        history = await ask(
+            LABEL_HISTORY, {"id": nodes[0].get("id"), "first": 50}, token
+        )
         entries = ((history.get("issue") or {}).get("history") or {}).get("nodes")
         if entries is None:
             print("  -> REJECTED")
@@ -159,10 +165,14 @@ async def main(label: str) -> int:
                 # case `botActor` says who. Chord's `allowed_actors` check leans on
                 # this, so it is worth seeing it populated.
                 actor = entry.get("actor")
-                who = f"actor={actor.get('name')!r}" if actor else (
-                    f"bot={(entry.get('botActor') or {}).get('name')!r}"
-                    if entry.get("botActor")
-                    else "actor=null (neither a person nor a bot?)"
+                who = (
+                    f"actor={actor.get('name')!r}"
+                    if actor
+                    else (
+                        f"bot={(entry.get('botActor') or {}).get('name')!r}"
+                        if entry.get("botActor")
+                        else "actor=null (neither a person nor a bot?)"
+                    )
                 )
                 print(f"       {entry.get('createdAt')} added={added} {who}")
             stamps = [e.get("createdAt") for e in entries if e.get("createdAt")]
@@ -182,11 +192,15 @@ async def main(label: str) -> int:
             deep = await ask(
                 LABEL_HISTORY, {"id": nodes[0].get("id"), "first": 200}, token
             )
-            deep_entries = (
-                (deep.get("issue") or {}).get("history") or {}
-            ).get("nodes") or []
-            deep_stamps = [e.get("createdAt") for e in deep_entries if e.get("createdAt")]
-            print(f"  -> first:50 gave {len(stamps)}, first:200 gave {len(deep_stamps)}")
+            deep_entries = ((deep.get("issue") or {}).get("history") or {}).get(
+                "nodes"
+            ) or []
+            deep_stamps = [
+                e.get("createdAt") for e in deep_entries if e.get("createdAt")
+            ]
+            print(
+                f"  -> first:50 gave {len(stamps)}, first:200 gave {len(deep_stamps)}"
+            )
             if deep_stamps:
                 print(
                     "  -> first:N takes the NEWEST N"

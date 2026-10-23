@@ -84,9 +84,7 @@ def build(tmp_path, stub, allowed=(), spy=None):
 
 
 def history(*pairs):
-    return [
-        LabelChange(at=at, labels=list(names), who=who) for at, names, who in pairs
-    ]
+    return [LabelChange(at=at, labels=list(names), who=who) for at, names, who in pairs]
 
 
 def run(w, times=1):
@@ -316,7 +314,11 @@ def test_no_email_or_user_id_reaches_the_harness(tmp_path):
     """
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(creator={"id": ALICE.id, "name": "Alice", "email": "alice@example.com"})],
+        [
+            issue(
+                creator={"id": ALICE.id, "name": "Alice", "email": "alice@example.com"}
+            )
+        ],
         history(("2026-01-01", ("Chord",), ALICE)),
     )
     w, spy = build(tmp_path, stub, allowed=[ALICE.id], spy=spy)
@@ -329,8 +331,13 @@ def test_no_email_or_user_id_reaches_the_harness(tmp_path):
 
 def test_render_ignores_creator_entirely():
     """Belt and braces: the renderer never had a creator field to leak."""
-    out = render({"id": "1", "identifier": "E-1",
-                  "creator": {"id": ALICE.id, "email": "alice@example.com"}})
+    out = render(
+        {
+            "id": "1",
+            "identifier": "E-1",
+            "creator": {"id": ALICE.id, "email": "alice@example.com"},
+        }
+    )
     assert "example.com" not in out
     assert ALICE.id not in out
 
@@ -346,7 +353,7 @@ def test_the_allowlist_is_a_list_of_user_ids_not_names_or_emails(tmp_path):
         ('allowed_actors = ["alice@example.com"]', "email"),
         ('allowed_actors = ["Alice"]', "display name"),
         (f'allowed_actors = "{uuid_of(1)}"', "has to be a list"),
-        ('allowed_actors = [42]', "isn't one"),
+        ("allowed_actors = [42]", "isn't one"),
     ]:
         path = tmp_path / "chord.toml"
         path.write_text(value)
@@ -361,7 +368,7 @@ def test_the_allowlist_normalises_and_dedupes(tmp_path):
 
     path = tmp_path / "chord.toml"
     path.write_text(
-        'allowed_actors = [\n'
+        "allowed_actors = [\n"
         f'  "{uuid_of(2).upper()}",\n'
         f'  "{uuid_of(1)}",\n'
         f'  "{uuid_of(2)}",\n'
@@ -405,7 +412,9 @@ def test_router_refuses_when_it_cannot_tell_who_asked():
 # --- the id has to be obtainable, or the setting is unusable ---
 
 
-def test_chord_info_prints_your_linear_user_id(stored_token, no_env, monkeypatch, tmp_path):
+def test_chord_info_prints_your_linear_user_id(
+    stored_token, no_env, monkeypatch, tmp_path
+):
     """Nobody knows their Linear user id. Linear's UI does not show it.
 
     So if `chord info` did not print it, an id-keyed allowlist could not be
@@ -428,7 +437,9 @@ def test_chord_info_prints_your_linear_user_id(stored_token, no_env, monkeypatch
     assert "1 Linear user id" in result.output
 
 
-def test_chord_info_warns_when_the_allowlist_is_off(keyring_backend, no_env, monkeypatch, tmp_path):
+def test_chord_info_warns_when_the_allowlist_is_off(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
     from typer.testing import CliRunner
 
     from chord import daemon
@@ -494,8 +505,13 @@ def test_a_narrowed_route_is_authorised_by_who_added_it(tmp_path):
     )
     w = watcher.Watcher(
         stub,
-        Router("Chord", "spy", {"claude": "stub"}, factory=lambda s: spy,
-               allowed_actors=(ALICE.id,)),
+        Router(
+            "Chord",
+            "spy",
+            {"claude": "stub"},
+            factory=lambda s: spy,
+            allowed_actors=(ALICE.id,),
+        ),
         1,
         tmp_path / "state.json",
     )
