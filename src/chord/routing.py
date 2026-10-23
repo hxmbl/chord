@@ -18,7 +18,7 @@ question, and `harness_for` is the only place that answers it.
 from collections.abc import Callable, Mapping
 from typing import NamedTuple
 
-from chord.config import SEPARATOR, HarnessSpec, spell
+from chord.config import SEPARATOR, HarnessSpec, T3Options, spell
 from chord.harness import Harness, HarnessError, build
 from chord.performance import instrumented
 
@@ -114,13 +114,14 @@ class Router:
         label: str,
         default: HarnessSpec,
         harnesses: Mapping[str, HarnessSpec] | None = None,
-        factory: Callable[[HarnessSpec], Harness] = build,
+        factory: Callable[[HarnessSpec], Harness] | None = None,
         allowed_actors: tuple[str, ...] = (),
+        t3_options: T3Options | None = None,
     ) -> None:
         self.label = label
         self._default = default
         self._specs: dict[str, HarnessSpec] = dict(harnesses or {})
-        self._factory = factory
+        self._factory = factory or (lambda spec: build(spec, t3_options))
         self._built: dict[str, Harness] = {}
         self._allowed = frozenset(actor.strip().lower() for actor in allowed_actors)
 

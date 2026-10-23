@@ -14,7 +14,7 @@ from typing import Any, NamedTuple
 
 from chord import daemon, logging, notify, subscribe
 from chord.context import Issue, render
-from chord.harness import HarnessError
+from chord.harness import HarnessError, T3ClientError, T3CodeHarness
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
 from chord.paths import project_root
 from chord.performance import instrumented
@@ -170,7 +170,12 @@ class Watcher:
         self._router = router
         self._interval = interval
         self._path = state_path
-        self._seen = read_state(state_path)
+        saved = read_state_document(state_path)
+        handed_over = saved["handed_over"]
+        if not isinstance(handed_over, dict):
+            raise StateError(f"{state_path} doesn't look like a Chord state file.")
+        self._seen = {str(key): str(value) for key, value in handed_over.items()}
+        self._t3_threads, self._t3_pending = _t3_state(saved)
         self._last_problem: str | None = None
         # The ids in the page currently being walked, so trimming the state
         # file never drops one of them (see `_remember`).
@@ -512,6 +517,15 @@ class Watcher:
             _spacer()
             log("  skipped: no id from Linear, so Chord can't record it.")
             return
+        if _key(issue_id) in self._t3_pending:
+            _spacer()
+            self._problem(
+                f"{identifier} has an interrupted T3 dispatch with no recorded thread id; "
+                "not retrying to avoid creating a duplicate. Check `t3 thread list`, "
+                "then clear this issue's pending state only when safe to retry."
+            )
+            self._remember(issue_id)
+            return
 
         chosen = await self._resolve(issue, identifier, issue_id)
         if chosen is None:
@@ -628,7 +642,11 @@ class Watcher:
         # superseded by `notify.failed` below rather than standing on its own.
         await notify.received(identifier, harness.name)
         try:
-            await harness.send(render({**issue, "comments": comments}), cwd=where.path)
+            if isinstance(harness, T3CodeHarness):
+                self._mark_t3_pending(issue_id, identifier)
+            result = await harness.send(
+                render({**issue, "comments": comments}), cwd=where.path
+            )
         except HarnessError as exc:
             # Recorded as handed over even though it wasn't, on purpose. A
             # harness that is simply missing would otherwise be retried on
@@ -636,6 +654,10 @@ class Watcher:
             # run. The failure is in the log, which is where a person looks.
             _spacer()
             self._problem(f"{identifier} didn't finish: {exc}")
+            if isinstance(harness, T3CodeHarness) and not (
+                isinstance(exc, T3ClientError) and exc.uncertain
+            ):
+                self._clear_t3_pending(issue_id)
             self._remember(issue_id)
             await notify.failed(identifier, exc)
             return
@@ -667,8 +689,20 @@ class Watcher:
             raise
 
         _spacer()
-        log("  handed over.")
-        self._remember(issue_id)
+        if isinstance(harness, T3CodeHarness):
+            if not isinstance(result, dict) or not isinstance(
+                result.get("thread_id"), str
+            ):
+                raise HarnessError(
+                    "T3 returned no thread id; dispatch may have been accepted. "
+                    "Chord has held this issue to prevent a duplicate."
+                )
+            thread_id = result["thread_id"]
+            log(f"  T3 thread {thread_id} accepted; inspect with `chord t3 show {identifier}`.")
+            self._remember(issue_id, t3_thread=thread_id, identifier=identifier)
+        else:
+            log("  handed over.")
+            self._remember(issue_id)
 
     async def _resolve(
         self, issue: Issue, identifier: str, issue_id: Any
@@ -821,8 +855,34 @@ class Watcher:
         self._remember(issue_id)
         return False
 
-    def _remember(self, issue_id: object) -> None:
+    def _mark_t3_pending(self, issue_id: object, identifier: str) -> None:
+        key = _key(issue_id)
+        self._t3_pending[key] = {"identifier": identifier}
+        try:
+            self._write_state()
+        except OSError as exc:
+            raise HarnessError(
+                f"Couldn't record the pending T3 dispatch in {self._path}; "
+                "no task was sent."
+            ) from exc
+
+    def _clear_t3_pending(self, issue_id: object) -> None:
+        self._t3_pending.pop(_key(issue_id), None)
+
+    def _remember(
+        self,
+        issue_id: object,
+        *,
+        t3_thread: str | None = None,
+        identifier: str | None = None,
+    ) -> None:
         self._seen[_key(issue_id)] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if t3_thread is not None:
+            self._t3_threads[_key(issue_id)] = {
+                "thread_id": t3_thread,
+                "identifier": identifier or _key(issue_id),
+            }
+            self._clear_t3_pending(issue_id)
         # Keep the newest entries; dicts hold insertion order, so the tail is
         # the most recent. An id in the page currently being walked is kept
         # regardless: insertion order is hand-over order, and the query does not
@@ -834,13 +894,20 @@ class Watcher:
         trimmed = {key: when for key, when in self._seen.items() if key in keep}
         self._seen = trimmed
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            body = json.dumps({"handed_over": trimmed}, indent=2) + "\n"
-            daemon._write_private(self._path, body)
+            self._write_state()
         except OSError as exc:
             # Losing this costs a duplicate hand-over after a restart, which
             # is a much smaller problem than a watcher that stops working.
             self._problem(f"couldn't record {issue_id} in {self._path}: {exc.strerror}")
+
+    def _write_state(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        state: dict[str, object] = {"handed_over": self._seen}
+        if self._t3_threads:
+            state["t3_threads"] = self._t3_threads
+        if self._t3_pending:
+            state["t3_pending"] = self._t3_pending
+        daemon._write_private(self._path, json.dumps(state, indent=2) + "\n")
 
     def _problem(self, message: str) -> None:
         """Report a problem, but only the first time in a row.
@@ -855,16 +922,12 @@ class Watcher:
         log(f"  {message}")
 
 
-def read_state(path: Path) -> dict[str, str]:
-    """Issue id -> when it was handed over, as an earlier run left it.
-
-    Public because `chord info` reports on it, and because a file that has been
-    left corrupt deserves a message that names the way out.
-    """
+def read_state_document(path: Path) -> dict[str, Any]:
+    """Read the persisted watcher data, preserving extra integration state."""
     try:
         text = path.read_text()
     except FileNotFoundError:
-        return {}  # First run. Nothing has been offered yet.
+        return {"handed_over": {}}
     except OSError as exc:
         raise StateError(f"Couldn't read {path}: {exc.strerror}.") from exc
 
@@ -881,4 +944,51 @@ def read_state(path: Path) -> dict[str, str]:
         raise StateError(
             f"{path} doesn't look like a Chord state file. Delete it to start over."
         )
-    return {str(k): str(v) for k, v in handed_over.items()}
+    return raw
+
+
+def read_state(path: Path) -> dict[str, str]:
+    """Issue id -> when it was handed over, as an earlier run left it."""
+    saved = read_state_document(path)
+    handed_over = saved["handed_over"]
+    return {str(key): str(value) for key, value in handed_over.items()}
+
+
+def read_t3_threads(
+    path: Path,
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    """Persisted issue-to-thread associations and interrupted dispatches."""
+    return _t3_state(read_state_document(path))
+
+
+def _t3_state(
+    saved: dict[str, Any],
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    raw_threads = saved.get("t3_threads", {})
+    raw_pending = saved.get("t3_pending", {})
+    if not isinstance(raw_threads, dict) or not isinstance(raw_pending, dict):
+        raise StateError("T3 thread state in the Chord state file is malformed.")
+    threads: dict[str, dict[str, str]] = {}
+    for key, entry in raw_threads.items():
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("thread_id"), str)
+            or not entry["thread_id"].strip()
+            or not isinstance(entry.get("identifier"), str)
+            or not entry["identifier"].strip()
+        ):
+            raise StateError("T3 thread state in the Chord state file is malformed.")
+        threads[str(key)] = {
+            "thread_id": entry["thread_id"],
+            "identifier": entry["identifier"],
+        }
+    pending: dict[str, dict[str, str]] = {}
+    for key, entry in raw_pending.items():
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("identifier"), str)
+            or not entry["identifier"].strip()
+        ):
+            raise StateError("T3 pending dispatch state in the Chord state file is malformed.")
+        pending[str(key)] = {"identifier": entry["identifier"]}
+    return threads, pending

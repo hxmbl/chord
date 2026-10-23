@@ -44,6 +44,7 @@ _SETTINGS = frozenset(
         "label",
         "harness",
         "harnesses",
+        "t3",
         "interval",
         "webhook_port",
         "webhook_secret",
@@ -51,10 +52,19 @@ _SETTINGS = frozenset(
     }
 )
 _HARNESS_KEYS = frozenset({"command"})
+_T3_KEYS = frozenset({"provider", "model", "worktree", "branch"})
 
 
 class ConfigError(Exception):
     """chord.toml says something Chord can't act on."""
+
+
+@dataclass(frozen=True)
+class T3Options:
+    provider: str | None = None
+    model: str | None = None
+    worktree: str | None = None
+    branch: str | None = None
 
 
 def spell(spec: HarnessSpec) -> str:
@@ -97,6 +107,14 @@ webhook_secret = ""
 #
 # [harnesses."opencode/big-pickle"]
 # command = ["opencode", "run", "--model", "big-pickle"]
+
+# Optional T3 Code CLI settings, used when `harness = "t3"` or a route selects
+# the built-in `t3` harness. Provider and model must be set together.
+# [t3]
+# provider = "provider-instance-id"
+# model = "model-slug"
+# worktree = "main"
+# branch = "chord/issue-branch"
 """
 
 
@@ -155,6 +173,7 @@ class Config:
     label: str
     harness: HarnessSpec
     harnesses: dict[str, HarnessSpec] = field(default_factory=dict)
+    t3: T3Options = field(default_factory=T3Options)
     interval: int = DEFAULT_INTERVAL
     webhook_port: int = DEFAULT_WEBHOOK_PORT
     webhook_secret: str = ""
@@ -184,6 +203,7 @@ def defaults(path: Path | None = None) -> Config:
         label=DEFAULT_LABEL,
         harness=DEFAULT_HARNESS,
         harnesses={},
+        t3=T3Options(),
         interval=DEFAULT_INTERVAL,
         webhook_port=DEFAULT_WEBHOOK_PORT,
         webhook_secret="",
@@ -278,6 +298,7 @@ def _build(raw: dict, path: Path) -> Config:
         label=label,
         harness=_spec(raw.get("harness", base.harness), path, "`harness`"),
         harnesses=_harnesses(raw.get("harnesses", {}), path),
+        t3=_t3_options(raw.get("t3", {}), path),
         interval=interval,
         webhook_port=webhook_port,
         webhook_secret=webhook_secret,
@@ -285,6 +306,30 @@ def _build(raw: dict, path: Path) -> Config:
         path=path,
         from_file=True,
     )
+
+
+def _t3_options(value: object, path: Path) -> T3Options:
+    if not isinstance(value, dict):
+        raise ConfigError(f"`t3` in {path} has to be a table.")
+    extra = set(value) - _T3_KEYS
+    if extra:
+        names = ", ".join(f"`{key}`" for key in sorted(extra))
+        raise ConfigError(f"`t3` in {path} has settings Chord doesn't know: {names}.")
+
+    options: dict[str, str | None] = {}
+    for key in _T3_KEYS:
+        entry = value.get(key)
+        if entry is not None and (not isinstance(entry, str) or not entry.strip()):
+            raise ConfigError(f"`t3.{key}` in {path} has to be a non-empty string.")
+        options[key] = entry.strip() if isinstance(entry, str) else None
+
+    if bool(options["provider"]) != bool(options["model"]):
+        raise ConfigError(
+            f"`t3.provider` and `t3.model` in {path} must be set together."
+        )
+    if options["branch"] and not options["worktree"]:
+        raise ConfigError(f"`t3.branch` in {path} requires `t3.worktree`.")
+    return T3Options(**options)
 
 
 def _allowed_actors(value: object, path: Path) -> tuple[str, ...]:

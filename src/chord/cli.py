@@ -24,7 +24,7 @@ from chord.config import (
     init_file,
     load,
 )
-from chord.harness import HarnessError
+from chord.harness import HarnessError, T3CodeHarness
 from chord.linear import Linear
 from chord.paths import project_root
 from chord.routing import Router
@@ -36,6 +36,13 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+t3_app = typer.Typer(
+    help="Inspect and message T3 threads dispatched by Chord.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(t3_app, name="t3")
 
 
 @app.command()
@@ -93,6 +100,74 @@ def harness_add(
         f"Create the label {label!r} in Linear by hand — Chord never creates one."
     )
     typer.echo("`chord info` lists every label Chord acts on.")
+
+
+@t3_app.command("show")
+def t3_show(
+    issue: str = typer.Argument(..., help="Linear issue identifier or id."),
+):
+    """Show the saved T3 thread state and conversation for an issue."""
+    thread = _t3_thread_for_issue(issue)
+    harness = _t3_cli()
+    try:
+        result = asyncio.run(harness.show_thread(thread["thread_id"]))
+    except HarnessError as exc:
+        _fail(str(exc))
+
+    metadata = result["thread"]
+    typer.echo(f"{thread['identifier']}  {metadata['threadId']}  {metadata['status']}")
+    pending = metadata["pendingRequestCount"]
+    if pending:
+        typer.echo(f"Waiting for {pending} answer(s) in T3 Code.")
+    for entry in result["messages"]:
+        typer.echo(f"\n[{entry['role']}]\n{entry['text']}")
+
+
+@t3_app.command("send")
+def t3_send(
+    issue: str = typer.Argument(..., help="Linear issue identifier or id."),
+    message: str = typer.Argument(..., help="Follow-up instruction for the T3 thread."),
+    wait: bool = typer.Option(
+        False,
+        "--wait",
+        help="Wait for this run; report completion, failure, or a request for input.",
+    ),
+):
+    """Send a follow-up to the T3 thread mapped to a Linear issue."""
+    thread = _t3_thread_for_issue(issue)
+    harness = _t3_cli()
+    try:
+        result = asyncio.run(
+            harness.send_follow_up(thread["thread_id"], message, wait=wait)
+        )
+    except HarnessError as exc:
+        _fail(str(exc))
+
+    if not wait:
+        delivery = "queued behind the current turn" if result["delivery"] == "queued" else "sent"
+        typer.echo(
+            f"Follow-up {delivery} to {thread['identifier']} "
+            f"(T3 thread {thread['thread_id']})."
+        )
+        return
+
+    status = result["status"]
+    typer.echo(f"T3 run status: {status}.")
+    if status == "completed":
+        if result["reply"]:
+            typer.echo(result["reply"])
+    elif status == "waiting":
+        typer.echo(
+            f"The thread is waiting for an answer in T3 Code "
+            f"({thread['thread_id']}).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    else:
+        detail = result.get("error")
+        if detail:
+            typer.echo(detail, err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -376,6 +451,42 @@ def _router(config: Config) -> Router:
         config.harness,
         config.harnesses,
         allowed_actors=config.allowed_actors,
+        t3_options=config.t3,
+    )
+
+
+def _t3_cli() -> T3CodeHarness:
+    try:
+        return T3CodeHarness()
+    except HarnessError as exc:
+        _fail(str(exc))
+
+
+def _t3_thread_for_issue(issue: str) -> dict[str, str]:
+    try:
+        threads, pending = watcher.read_t3_threads(daemon.STATE_FILE)
+    except StateError as exc:
+        _fail(str(exc))
+
+    matches = [
+        value
+        for key, value in threads.items()
+        if key == issue or value["identifier"] == issue
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        _fail(f"{issue!r} matches more than one T3 thread; use its Linear issue id.")
+    if issue in pending or any(
+        entry["identifier"] == issue for entry in pending.values()
+    ):
+        _fail(
+            f"{issue!r} has an interrupted T3 dispatch with no saved thread id. "
+            "Check `t3 thread list` before clearing its pending state or retrying."
+        )
+    _fail(
+        f"No T3 thread is saved for {issue!r}. Chord only operates on threads "
+        "associated with a dispatched issue; it does not adopt arbitrary T3 threads."
     )
 
 
