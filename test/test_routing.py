@@ -830,9 +830,13 @@ def test_startup_says_which_routes_are_available(tmp_path, capsys):
 
     asyncio.run(once())
     out = capsys.readouterr().out
-    assert "issues labelled 'Chord'" in out
-    assert "Chord -> opencode -> opencode" in out
-    assert "Chord -> opencode -> space-bunny-free -> opencode run --model" in out
+    assert "Watching Linear. Each label runs:" in out
+    # `label: command`, never joined with an arrow, which read as one longer
+    # label.
+    assert "  Chord: opencode (default)" in out
+    assert "  Chord -> opencode: opencode\n" in out
+    assert "  Chord -> opencode -> space-bunny-free: opencode run --model" in out
+    assert "-> opencode run" not in out
 
 
 def test_startup_admits_when_nothing_is_curated(tmp_path, capsys):
@@ -854,7 +858,9 @@ def test_startup_admits_when_nothing_is_curated(tmp_path, capsys):
             await task
 
     asyncio.run(once())
-    assert "no harness is curated" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "  Chord: opencode (default)" in out
+    assert "Chord ->" not in out
 
 
 # --- Linear.label_history ---

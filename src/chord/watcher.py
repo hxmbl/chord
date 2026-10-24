@@ -24,7 +24,12 @@ from chord.harness import (
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
 from chord.paths import project_root
 from chord.performance import instrumented
-from chord.repo import ResolutionError, resolve
+from chord.repo import (
+    EXPLICIT_PATH_PREFIX,
+    ResolutionError,
+    is_git_repository,
+    resolve,
+)
 from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label, route_of
 from chord.subscribe import Subscription
 from chord.text import one_line
@@ -321,16 +326,14 @@ class Watcher:
         connection costs responsiveness and nothing else, which is why the
         interval wait below is the fallback rather than the other way round.
         """
-        log(f"Watching Linear for issues labelled {self._router.default_name!r}")
-        routes = self._router.routes()
-        curated = [route for route in routes if route.name]
-        if curated:
-            log("  or any label naming a curated harness:")
-            for route in curated:
-                log(f"    {route.label} -> {route.spelling}")
-        else:
-            log("  (no harness is curated, so every issue goes to the default)")
-        log(f"Handing each one to {self._router.harness_for(DEFAULT_ROUTE).name}.")
+        # `label: command`. Not `label -> command`: the arrow is the label's
+        # own separator, so that read as one longer label. A colon can't be
+        # part of a label (Linear refuses it), so it can't be misread.
+        log("Watching Linear. Each label runs:")
+        for route in self._router.routes():
+            default = " (default)" if route.name == DEFAULT_ROUTE else ""
+            log(f"  {route.label}: {route.spelling}{default}")
+        self._say_where_work_happens()
         if not self._router.authorises:
             # Said once, in the log, at startup, because it is the difference
             # between "a label decides where the work goes" and "a label decides
@@ -651,7 +654,10 @@ class Watcher:
             # `_problem` only logs the first time in a row, so polling on it is
             # quiet and picks the issue up as soon as the directory is there.
             _spacer()
-            self._problem(f"{identifier} skipped: {one_line(str(exc))}")
+            if self._problem(f"{identifier} skipped: {one_line(str(exc))}") and (
+                exc.hint
+            ):
+                log(f"  {exc.hint}")
             await notify.skipped(identifier, str(exc))
             return
 
@@ -1055,17 +1061,33 @@ class Watcher:
             state["deliveries"] = self._deliveries
         daemon._write_private(self._path, json.dumps(state, indent=2) + "\n")
 
-    def _problem(self, message: str) -> None:
-        """Report a problem, but only the first time in a row.
+    def _say_where_work_happens(self) -> None:
+        """Warn at startup when issues without a repository have nowhere to go.
+
+        Otherwise the first anyone hears of it is an issue being skipped,
+        which is a poor moment to learn which directory Chord was started in.
+        """
+        root = self._start_dir
+        if is_git_repository(root):
+            log(f"Issues with no repository of their own run in {root}.")
+            return
+        self._problem(
+            f"{root} isn't a Git repository, so each issue needs a Linear "
+            f"project named after a folder in it, or a {EXPLICIT_PATH_PREFIX}] line."
+        )
+
+    def _problem(self, message: str) -> bool:
+        """Report a problem, but only the first time in a row. Whether it did.
 
         A watcher runs for days. Linear being briefly unreachable would
         otherwise fill the log with the same line until nobody wants to read
         the log again.
         """
         if message == self._last_problem:
-            return
+            return False
         self._last_problem = message
         log(f"  {message}")
+        return True
 
 
 def read_state_document(path: Path) -> dict[str, Any]:

@@ -2,7 +2,8 @@
 
 Logs timestamp, file, function/subroutine, duration (ms), and success/failure.
 Measurements collected to inform future Rust rewrite decisions.
-No histograms or dashboards — structured log lines only.
+No histograms or dashboards — structured log lines only, at DEBUG, so they
+appear with `CHORD_LOG_LEVEL=debug` and stay out of everyday output.
 """
 
 import asyncio
@@ -24,7 +25,7 @@ def _log(func, start: float, success: bool) -> None:
         or getattr(func, "__name__", None)
         or type(func).__name__
     )
-    logging.info(
+    logging.debug(
         f"PERF file={where} func={module}.{name} "
         f"duration_ms={duration_ms:.3f} success={'true' if success else 'false'}"
     )

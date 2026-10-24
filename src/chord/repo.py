@@ -47,7 +47,15 @@ FROM_ROOT = "project root (fallback)"
 
 
 class ResolutionError(Exception):
-    """The repository for this issue was named but can't be used."""
+    """The repository for this issue was named but can't be used.
+
+    `hint` is what to do about it, logged on its own line after the reason, so
+    neither has to be cut short to fit one log line.
+    """
+
+    def __init__(self, message: str, hint: str = "") -> None:
+        super().__init__(message)
+        self.hint = hint
 
 
 class Resolution(NamedTuple):
@@ -57,6 +65,10 @@ class Resolution(NamedTuple):
     source: str
 
 
+# What a working-path line looks like, for messages that suggest writing one.
+_LINE_EXAMPLE = f'{EXPLICIT_PATH_PREFIX} "~/path/to/repo"]'
+
+
 def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
     """Find the repository for `issue`, falling back to `start_dir`.
 
@@ -64,50 +76,60 @@ def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
     that name is wrong, or when the fallback directory itself is unusable.
     """
     project_name = _project_name(issue)
+    unmatched: str | None = None
     if project_name:
         found = _find_by_project_name(project_name, start_dir)
-        if found is not None and _is_git_repository(found):
+        if found is not None and is_git_repository(found):
             return Resolution(found, FROM_PROJECT)
         if found is not None:
             # The issue named a directory and it isn't a repository. Falling
             # through to the root would work on the wrong code quietly, so
             # this is the one case where a named-but-wrong location is fatal.
             raise ResolutionError(
-                f"The project '{project_name}' matched {found}, which isn't a Git "
-                f"repository. Either make it one, or rename the directory to "
-                f"'{project_name}', or put an explicit "
-                f'`{EXPLICIT_PATH_PREFIX} "/absolute/path"]` line in the description.'
+                f"its Linear project '{project_name}' matched {found}, which "
+                f"isn't a Git repository.",
+                hint=f"Make it one, or add {_LINE_EXAMPLE} to the description.",
             )
-        logging.info(
-            f"No directory named '{project_name}' in {start_dir} or directly inside it."
-        )
+        unmatched = project_name
 
     explicit = _explicit_path(issue.get("description"))
     if explicit is not None:
         path = explicit if explicit.is_absolute() else (start_dir / explicit)
         path = path.resolve()
-        if _is_git_repository(path):
+        if is_git_repository(path):
             return Resolution(path, FROM_DESCRIPTION)
         raise ResolutionError(
-            f"The `{EXPLICIT_PATH_PREFIX}` line in the description names {path}, "
-            f"which isn't a Git repository. Either make it one, or point the line "
-            f"somewhere else."
+            f"its {EXPLICIT_PATH_PREFIX}] line names {path}, which isn't a Git "
+            f"repository.",
+            hint="Make it one, or point the line somewhere else.",
         )
 
     # Nothing named a location. Work where Chord was started.
-    if _is_git_repository(start_dir):
-        logging.warning(
-            f"No repository named by the issue: falling back to {start_dir}. Add a "
-            f"Linear project matching a directory name, or a "
-            f'`{EXPLICIT_PATH_PREFIX} "/absolute/path"]` line to the description.'
-        )
+    if is_git_repository(start_dir):
+        if unmatched:
+            logging.warning(
+                f"No folder named '{unmatched}' in {start_dir}, so working in "
+                f"{start_dir} itself."
+            )
+        else:
+            logging.warning(
+                f"No repository named by the issue, so working in {start_dir}."
+            )
         return Resolution(start_dir, FROM_ROOT)
 
+    if unmatched:
+        reason = (
+            f"no folder named '{unmatched}' (its Linear project) in {start_dir}, "
+            f"which isn't a Git repository itself."
+        )
+    else:
+        reason = f"it names no repository, and {start_dir} isn't a Git repository."
     raise ResolutionError(
-        f"Nothing named a repository for this issue, and {start_dir} isn't a Git "
-        f"repository either, so there's nowhere to run a harness. Start Chord "
-        f"inside the repository, or put an explicit "
-        f'`{EXPLICIT_PATH_PREFIX} "/absolute/path"]` line in the description.'
+        reason,
+        hint=(
+            f"Start Chord in the repository or the folder holding it, or add "
+            f"{_LINE_EXAMPLE} to the description."
+        ),
     )
 
 
@@ -132,11 +154,25 @@ def _find_by_project_name(project_name: str, start_dir: Path) -> Path | None:
     Deliberately not recursive and deliberately not up the tree. Both were
     ways of matching a directory nobody meant, and a resolution that can reach
     `/` is not one anybody can reason about.
+
+    The name is matched in any case, preferring an exact match: a Linear
+    project is titled `Chord` and its checkout is called `chord`, and on Linux
+    those are different names that nobody means differently.
     """
-    if start_dir.name == project_name and start_dir.is_dir():
+    wanted = project_name.casefold()
+    if start_dir.name.casefold() == wanted and start_dir.is_dir():
         return start_dir
-    candidate = start_dir / project_name
-    return candidate if candidate.is_dir() else None
+    exact = start_dir / project_name
+    if exact.is_dir():
+        return exact
+    try:
+        entries = sorted(start_dir.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.name.casefold() == wanted and entry.is_dir():
+            return entry
+    return None
 
 
 def _explicit_path(description: object) -> Path | None:
@@ -197,7 +233,7 @@ def _explicit_path(description: object) -> Path | None:
     return None
 
 
-def _is_git_repository(path: Path) -> bool:
+def is_git_repository(path: Path) -> bool:
     """Whether `path` is itself the root of a Git repository.
 
     Asked of Git rather than inferred from a `.git` entry, because that entry

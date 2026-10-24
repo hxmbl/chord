@@ -365,3 +365,41 @@ def test_a_description_that_is_not_text_is_simply_no_repository(tmp_path, descri
 
     assert found.source == FROM_ROOT
     assert found.path == start
+
+
+# --- What a person sees when it goes wrong -----------------------------------
+
+
+def test_the_project_title_matches_a_folder_in_any_case(tmp_path):
+    """Linear project `Chord`, checkout `chord`: the same thing on any OS."""
+    start = plain_at(tmp_path / "home")
+    checkout = repo_at(start / "chord")
+
+    found = resolve({"project": {"name": "Chord"}}, start)
+
+    assert found.path == checkout
+    assert found.source == FROM_PROJECT
+
+
+def test_an_exact_match_beats_another_case(tmp_path):
+    start = plain_at(tmp_path / "home")
+    repo_at(start / "chord")
+    exact = repo_at(start / "Chord")
+    if (start / "chord").samefile(exact):
+        pytest.skip("case-insensitive filesystem")
+
+    assert resolve({"project": {"name": "Chord"}}, start).path == exact
+
+
+def test_nowhere_to_run_names_the_project_and_says_what_to_do(tmp_path):
+    """One reason and one fix, each short enough not to be cut off."""
+    start = plain_at(tmp_path / "home")
+
+    with pytest.raises(ResolutionError) as caught:
+        resolve({"project": {"name": "Chord"}}, start)
+
+    reason = str(caught.value)
+    assert "no folder named 'Chord'" in reason
+    assert f"in {start}, which isn't a Git repository itself" in reason
+    assert "Chord_Working_Path" in caught.value.hint
+    assert "Start Chord in the repository" in caught.value.hint

@@ -333,8 +333,8 @@ def test_run_logs_then_polls(tmp_path, capsys):
 
     asyncio.run(once())
     out = capsys.readouterr().out
-    assert "Watching Linear for issues labelled 'chord'" in out
-    assert "Handing each one to spy" in out
+    assert "Watching Linear. Each label runs:" in out
+    assert "  chord: stub (default)" in out
 
 
 def test_poll_timeout_is_reported(tmp_path, capsys, monkeypatch):
@@ -466,3 +466,38 @@ def test_linear_survives_non_json():
             asyncio.run(linear.Linear("t")._query("q {}", {}))
     finally:
         httpx.AsyncClient = original
+
+
+def test_starting_outside_a_repository_is_said_up_front(tmp_path, capsys):
+    """Before any issue is skipped for it, not only when one is."""
+    home = tmp_path / "home"
+    home.mkdir()
+    w = build(tmp_path, LinearStub([]), RecordingHarness("spy"), start_dir=home)
+
+    async def once():
+        task = asyncio.create_task(w.run())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(once())
+    out = capsys.readouterr().out
+    assert f"{home} isn't a Git repository, so each issue needs a Linear project" in out
+
+
+def test_a_skipped_issue_says_how_to_fix_it_on_its_own_line(tmp_path, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    spy = RecordingHarness("spy")
+    found = issue(1)
+    found["project"] = {"name": "Chord"}
+    w = build(tmp_path, LinearStub([found]), spy, start_dir=home)
+
+    asyncio.run(w.poll())
+
+    out = capsys.readouterr().out
+    assert spy.prompts == []
+    assert "skipped: no folder named 'Chord'" in out
+    assert "…" not in out
+    assert "Start Chord in the repository or the folder holding it" in out

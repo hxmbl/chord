@@ -182,8 +182,10 @@ chord harness add big-pickle -- opencode run --model big-pickle
 It prints the `Chord -> <name>` label to create in Linear, because Chord never
 creates a label itself. Give a nested name with `/`:
 `chord harness add opencode/big-pickle -- opencode run --model big-pickle`
-prints `Chord -> opencode -> big-pickle`. A user config at
-`~/.chord/chord.toml` is also supported; the project config wins.
+prints `Chord -> opencode -> big-pickle`. A user-wide config at
+`~/.config/chord/chord.toml` or `~/.chord/chord.toml` is also read; a project's
+own config wins. The home directory is never treated as a project, so a config
+in `~/.config/chord` doesn't make `~` where issues run.
 
 ```toml
 # The label that triggers a run. Default: "Chord".
@@ -426,8 +428,9 @@ A harness is launched **in a repository**, not in whatever directory the daemon
 happened to be started from. Chord decides which one, in this order:
 
 1. **The Linear project name.** Matched against the directory Chord is rooted
-   at, and against a directory of that name directly inside it. Both, and
-   nothing else — a project called `home` will not match `$HOME`.
+   at, and against a directory of that name directly inside it, in any case
+   (project `Chord` finds `chord`). Both, and nothing else — a project called
+   `home` will not match `$HOME`.
 2. **A `[Chord_Working_Path:]` line in the issue description.** Write it on its own line,
    with the path in single or double quotes; relative paths are read from the
    directory Chord was started in. The name is matched in any case, so
@@ -437,6 +440,11 @@ happened to be started from. Chord decides which one, in this order:
    [Chord_Working_Path: "~/Projects/billing"]
    ```
 3. **The project root**, which is where you started Chord.
+
+So start Chord in the repository, or in the folder that holds your checkouts
+(`~/Projects`, with Linear projects named after the folders in it). `chord watch`
+says at startup where issues with no repository of their own will run, and warns
+straight away if that directory isn't a Git repository.
 
 The third one is the common case, not a failure, and every hand-over says which
 of the three it used:

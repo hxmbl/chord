@@ -15,6 +15,23 @@ import pytest
 from chord import performance
 
 
+@pytest.fixture(autouse=True)
+def debug_level(monkeypatch):
+    """PERF lines are DEBUG, so these tests turn DEBUG on."""
+    monkeypatch.setenv("CHORD_LOG_LEVEL", "DEBUG")
+
+
+def test_perf_lines_are_quiet_by_default(capsys, monkeypatch):
+    monkeypatch.delenv("CHORD_LOG_LEVEL")
+
+    @performance.instrumented
+    def work():
+        return "done"
+
+    work()
+    assert perf_lines(capsys) == []
+
+
 def perf_lines(capsys):
     return [line for line in capsys.readouterr().out.splitlines() if "PERF" in line]
 
@@ -31,7 +48,7 @@ def test_a_successful_call_is_measured_and_named(capsys):
     assert "success=true" in line
     assert "duration_ms=" in line
     # Routed through the shared logging surface, not printed raw.
-    assert "INFO" in line
+    assert "DEBUG" in line
 
 
 def test_a_raising_call_is_logged_as_a_failure(capsys):

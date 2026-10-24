@@ -289,11 +289,12 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 **`src/chord/paths.py`** - File path resolution
 - Finds config files by searching upward from CWD
 - Handles legacy `chord.toml` vs new `.config/chord/chord.toml`
-- Identifies project root for daemon state
+- Identifies project root for daemon state; never home or above, so
+  `~/.config/chord/chord.toml` is user-wide config, not a project in `~`
 
 **`src/chord/performance.py`** - Performance instrumentation
-- An `instrumented` decorator that logs one structured `PERF` line per call:
-  file, function, duration in ms, success/failure
+- An `instrumented` decorator that logs one structured `PERF` line per call at
+  DEBUG (`CHORD_LOG_LEVEL=debug`): file, function, duration in ms, success/failure
 - Measurements exist to inform a future rewrite decision, so only log lines —
   no histograms or dashboards
 - A bool return value is the outcome, because `poll` and the webhook handler
