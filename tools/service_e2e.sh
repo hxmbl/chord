@@ -26,6 +26,12 @@ mkdir -p "$PROJECT/.config/chord"
 printf 'harness = "print"\ninterval = 5\n' > "$PROJECT/.config/chord/chord.toml"
 cd "$PROJECT"
 
+# Every check captures a command's output first and searches the copy. Piping
+# straight into `grep -q` or an awk that exits early closes the pipe while chord
+# is still writing, chord dies of SIGPIPE, and under pipefail that kills the
+# script with no message — exactly how the first CI run of this went.
+has() { grep -q -- "$1" <<<"$2"; }
+
 step() { printf '\n::group::%s\n' "$*"; }
 end() { echo "::endgroup::"; }
 fail() { echo "::error::$*"; exit 1; }
@@ -52,8 +58,18 @@ PY
 }
 
 # Fields of `chord service status`, e.g. field name -> chord-x-1234.service
-field() { "$CHORD" service status | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ +/, ""); print; exit }'; }
-service_pid() { "$CHORD" service status | sed -n 's/^  running    yes (pid \([0-9]*\)).*/\1/p'; }
+status_text() { "$CHORD" service status; }
+field() {
+  local out
+  out="$(status_text)"
+  awk -v k="$1" '$1 == k && !done { $1 = ""; sub(/^ +/, ""); print; done = 1 }' <<<"$out"
+}
+service_pid() {
+  local out
+  out="$(status_text)"
+  sed -n 's/^  running    yes (pid \([0-9]*\)).*/\1/p' <<<"$out"
+}
+is_stopped() { has '^  running    no' "$(status_text)"; }
 
 wait_running() {
   local deadline=$((SECONDS + ${1:-20})) pid=""
@@ -69,7 +85,7 @@ wait_running() {
 wait_stopped() {
   local deadline=$((SECONDS + ${1:-20}))
   while ((SECONDS < deadline)); do
-    "$CHORD" service status | grep -q '^  running    no' && return 0
+    is_stopped && return 0
     sleep 1
   done
   "$CHORD" service status >&2 || true
@@ -79,10 +95,12 @@ wait_stopped() {
 # How many times the manager has (re)started it. systemd: NRestarts counts the
 # automatic restarts only. launchd: `runs` counts every spawn, manual or not.
 restarts() {
+  local out
   if [[ "$OS" == Linux ]]; then
     systemctl --user show -p NRestarts --value "$UNIT"
   else
-    launchctl print "gui/$(id -u)/$UNIT" | awk '$1 == "runs" { print $3; exit }'
+    out="$(launchctl print "gui/$(id -u)/$UNIT")"
+    awk '$1 == "runs" && !done { print $3; done = 1 }' <<<"$out"
   fi
 }
 
@@ -90,12 +108,16 @@ logs() { "$CHORD" service logs --no-follow -n "${1:-200}"; }
 
 # Watchers for this project, counted from ps: one `-m chord.cli _serve` per
 # project is the whole point of routing `chord start` through the service.
-watchers() { ps -axo command= | grep -c '[c]hord\.cli _serve' || true; }
+watchers() {
+  local out
+  out="$(ps -axo command=)"
+  grep -c '[c]hord\.cli _serve' <<<"$out" || true
+}
 
 wait_for_log() {
   local pattern="$1" deadline=$((SECONDS + ${2:-30}))
   while ((SECONDS < deadline)); do
-    logs | grep -q -- "$pattern" && return 0
+    has "$pattern" "$(logs)" && return 0
     sleep 1
   done
   return 1
@@ -129,8 +151,8 @@ trap dump EXIT
 
 step "before install"
 unseed
-"$CHORD" service status | tee /tmp/chord-status
-grep -q "isn't installed" /tmp/chord-status || fail "status should say not installed"
+OUT="$(status_text)"; echo "$OUT"
+has "isn't installed" "$OUT" || fail "status should say not installed"
 end
 
 step "install (signed in with a fake token)"
@@ -162,7 +184,8 @@ NOW="$(service_pid)"
 echo "pid $PID -> ${NOW:-none}; restarts $BEFORE -> $AFTER"
 [[ "$NOW" == "$PID" ]] || fail "signed-out service didn't stay up (pid $PID -> ${NOW:-none})"
 [[ "$AFTER" == "$BEFORE" ]] || fail "signed-out service restarted ($BEFORE -> $AFTER)"
-SAID="$(logs 200 | grep -c 'Not signed in to Linear' || true)"
+LOG="$(logs 200)"
+SAID="$(grep -c 'Not signed in to Linear' <<<"$LOG" || true)"
 echo "'Not signed in' lines in the log: $SAID"
 [[ "$SAID" == 1 ]] || fail "expected the signed-out reason once, got $SAID lines"
 logs 50
@@ -179,7 +202,7 @@ step "stop"
 "$CHORD" service stop
 wait_stopped 40 || fail "still running after stop"
 sleep 12  # past RESTART_DELAY: a stop must not be taken for a crash and restarted
-"$CHORD" service status | grep -q '^  running    no' || fail "came back by itself after stop"
+is_stopped || fail "came back by itself after stop"
 [[ "$(watchers)" == 0 ]] || fail "a watcher process outlived the stop"
 end
 
@@ -198,33 +221,33 @@ PID="$NEW"
 end
 
 step "chord info"
-"$CHORD" info | tee /tmp/chord-info
-grep -q "^  service    installed, .*$UNIT" /tmp/chord-info || fail "chord info has no installed-service line"
-grep -q "^  daemon     running (pid $PID" /tmp/chord-info || fail "chord info's daemon line doesn't name the service's pid"
+OUT="$("$CHORD" info)"; echo "$OUT"
+has "^  service    installed, .*$UNIT" "$OUT" || fail "chord info has no installed-service line"
+has "^  daemon     running (pid $PID" "$OUT" || fail "chord info's daemon line doesn't name the service's pid"
 end
 
 step "chord start goes through the service"
 "$CHORD" service stop
 wait_stopped 40 || fail "still running after stop"
-"$CHORD" start | tee /tmp/chord-start
-grep -q "Started the Chord service" /tmp/chord-start || fail "chord start didn't hand over to the service"
+OUT="$("$CHORD" start)"; echo "$OUT"
+has "Started the Chord service" "$OUT" || fail "chord start didn't hand over to the service"
 PID="$(wait_running 20)" || fail "service not running after chord start"
-"$CHORD" start | tee /tmp/chord-start
+"$CHORD" start
 sleep 3
 COUNT="$(watchers)"
 echo "watchers: $COUNT (service pid $PID)"
-ps -axo pid=,command= | grep '[c]hord\.cli _serve' || true
+OUT="$(ps -axo pid=,command=)"; grep '[c]hord\.cli _serve' <<<"$OUT" || true
 [[ "$COUNT" == 1 ]] || fail "expected exactly one watcher, found $COUNT"
-"$CHORD" info | grep -q "^  daemon     running (pid $PID" || fail "the pid file isn't the service's"
+has "^  daemon     running (pid $PID" "$("$CHORD" info)" || fail "the pid file isn't the service's"
 end
 
 step "uninstall"
 "$CHORD" service uninstall
 [[ ! -e "$FILE" ]] || fail "uninstall left $FILE"
-"$CHORD" service status | grep -q "isn't installed" || fail "status still says installed"
+has "isn't installed" "$(status_text)" || fail "status still says installed"
 sleep 2
 [[ "$(watchers)" == 0 ]] || fail "a watcher outlived uninstall"
-"$CHORD" info | grep -q "^  service    not installed" || fail "chord info still lists the service"
+has "^  service    not installed" "$("$CHORD" info)" || fail "chord info still lists the service"
 end
 
 unseed
