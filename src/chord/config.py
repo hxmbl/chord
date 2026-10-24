@@ -115,58 +115,187 @@ def spell(spec: HarnessSpec) -> str:
 # no secrets, so it is safe to commit — which is the point, since the curation
 # table is per-project and belongs with the code.
 STOCK = """\
-# Chord's settings. Every entry is optional — the comments say what each one
-# does and what the default is. Commit this file; it holds no secrets.
+# ============================================================================
+#  chord.toml: Chord's settings
+# ============================================================================
+#
+# How Chord works, in one paragraph:
+#   Chord watches Linear. When an issue gets the trigger label (`Chord` unless
+#   you change it below), Chord hands the issue to a "harness" (a coding agent
+#   such as opencode, Claude Code or Codex) and runs it in the issue's
+#   repository. The harness gets the issue's title, description and comments
+#   on stdin, and does the work.
+#
+# About this file:
+#   - Every setting is optional. Delete a line and Chord uses the default
+#     written next to it.
+#   - Lines starting with `#` are comments. Remove the `#` to turn a line on.
+#   - It holds no secrets (your Linear sign-in lives in the system keychain),
+#     so it's safe to commit alongside your code.
+#   - `chord config` opens this file and checks it before saving, so a typo
+#     can't break Chord. `chord info` shows what Chord made of it.
+#   - Chord reads this file when it starts. After changing it, restart:
+#     `chord stop` then `chord start`, or `chord service restart`.
+#
+# Where Chord looks for it (nearest wins):
+#   1. .config/chord/chord.toml in the directory you run Chord from, or any
+#      directory above it (a project's own settings)
+#   2. ~/.config/chord/chord.toml or ~/.chord/chord.toml (your own defaults)
 
-# The label that triggers a run. Default: "Chord".
+
+# ----------------------------------------------------------------------------
+#  The trigger label
+# ----------------------------------------------------------------------------
+#
+# Put this label on a Linear issue and Chord picks it up. Chord never creates
+# labels, so make this one in Linear yourself (Settings > Labels).
+#
+# Route labels build on it: `Chord -> codex` sends an issue to the harness
+# called `codex` (see "Extra harnesses" below).
+#
+# Default: "Chord"
 label = "Chord"
 
-# What does the work by default: "opencode" (runs `opencode run`, the issue on
-# stdin), a preset ("claude", "codex", "cursor"), "print", or a command.
-# Default: "opencode".
+
+# ----------------------------------------------------------------------------
+#  The default harness
+# ----------------------------------------------------------------------------
+#
+# What works on an issue labelled just `Chord`. One of:
+#
+#   "opencode"  runs `opencode run`, the issue on stdin
+#   "claude"    Claude Code: `claude -p --permission-mode acceptEdits`
+#   "codex"     Codex: `codex exec --sandbox workspace-write -`
+#   "cursor"    Cursor's CLI: `cursor-agent -p --force --trust`
+#   "t3"        T3 Code (configure it in the [t3] section at the bottom)
+#   "print"     prints the issue instead of running anything; handy to test
+#
+# Or any command of your own, as a list of words. It gets the issue on stdin:
+#   harness = ["opencode", "run", "--model", "big-pickle"]
+#
+# Default: "opencode"
 harness = "opencode"
 
-# Seconds between checks of Linear. Default: 60, floor 5.
+
+# ----------------------------------------------------------------------------
+#  How often to check Linear
+# ----------------------------------------------------------------------------
+#
+# Seconds between checks. Chord also hears about changes straight away when
+# it can (see the webhook below), so this is mostly a safety net.
+#
+# Default: 60. Lowest allowed: 5.
 interval = 60
 
-# Local webhook listener. Default: 23842; use 0 for an ephemeral test port.
+
+# ----------------------------------------------------------------------------
+#  Webhook (optional, for instant pickup)
+# ----------------------------------------------------------------------------
+#
+# Chord listens on this local port. Anything that POSTs to it (a Linear
+# webhook relayed to this machine, say) wakes Chord to check Linear right
+# away. It's only a nudge: Chord still reads Linear itself, and polling works
+# without it.
+#
+# Default: 23842. Use 0 to pick any free port (mainly for tests).
 webhook_port = 23842
 
-# Shared secret for the webhook, sent as the X-Chord-Secret header. Default:
-# "" — no authentication. See "Webhooks" in the README before setting one.
+# A password the sender has to include, in the X-Chord-Secret header.
+# Empty means anyone who can reach the port can send to it. Read "Webhooks"
+# in the README before setting one. No spaces at either end.
+#
+# Default: "" (no secret)
 webhook_secret = ""
 
-# Who may trigger a run. Default: everyone in the workspace — read "Who can
-# trigger a run" in the README before leaving it that way. `chord info`
-# prints your Linear user id.
+
+# ----------------------------------------------------------------------------
+#  Who can trigger a run
+# ----------------------------------------------------------------------------
+#
+# A label decides whether this machine runs a command, so think about who can
+# add one. Unset, ANYONE in your Linear workspace can trigger a run here, and
+# Chord warns you about that every time it starts.
+#
+# List the Linear user ids allowed to trigger runs. `chord info` prints yours.
+# Remove the `#` to turn it on:
+#
 # allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 
-# Tables come last — everything after a `[table]` header belongs to it, so the
-# settings above must be written before the first one of these.
 
-# Desktop banners. An issue that failed, was skipped or was refused always gets
-# one. `received` is the banner for an issue that reached its harness ("ENG-201
-# received"), posted once delivery is confirmed; false keeps that quiet, and
-# the log and `chord info` still record every delivery. Default: true.
+# ============================================================================
+#  Sections
+# ============================================================================
+#
+# TOML rule: everything under a `[section]` line belongs to that section until
+# the next one. So plain settings like the ones above must come BEFORE the
+# first `[section]`, never after it.
+
+
+# ----------------------------------------------------------------------------
+#  [notify]: desktop notifications
+# ----------------------------------------------------------------------------
+#
+# Chord always posts a notification when an issue fails, is skipped or is
+# refused, because then nothing is happening on it.
+#
+# received: also notify when an issue reaches its harness ("STRM-12
+# received"). false keeps those quiet; the log and `chord info` still record
+# every one.
+#
+# Default: true
 [notify]
 received = true
 
-# Extra named harnesses: a `Chord -> <name>` label routes to the one called
-# `<name>`. Linear allows neither `/` nor `:` in labels, so each `/` in a name
-# is another arrow in its label: the entry below is selected by the Linear
-# label `Chord -> opencode -> big-pickle`. Names here always use `/`, never the
-# arrow. `chord harness add` writes these for you.
+
+# ----------------------------------------------------------------------------
+#  [harnesses]: extra harnesses, picked by label
+# ----------------------------------------------------------------------------
+#
+# Name a harness here, then route an issue to it with a label. Linear won't
+# allow `/` or `:` in a label, so each `/` in a name becomes ` -> ` in the
+# label:
+#
+#   name in this file          label in Linear
+#   codex                      Chord -> codex
+#   opencode/big-pickle        Chord -> opencode -> big-pickle
+#
+# Names are matched exactly, capitals included. Create each label in Linear
+# yourself. `chord harness add NAME -- COMMAND...` writes the entry for you
+# and prints the label to make. Remove the `#`s to use these examples:
+#
+# [harnesses."codex"]
+# command = ["codex"]
 #
 # [harnesses."opencode/big-pickle"]
 # command = ["opencode", "run", "--model", "big-pickle"]
 
-# Optional T3 Code CLI settings, used when `harness = "t3"` or a route selects
-# the built-in `t3` harness. Provider and model must be set together.
+
+# ----------------------------------------------------------------------------
+#  [t3]: T3 Code settings
+# ----------------------------------------------------------------------------
+#
+# Only used when the harness is "t3". Set provider and model together, or
+# neither.
+#
 # [t3]
 # provider = "provider-instance-id"
 # model = "model-slug"
 # worktree = "main"
 # branch = "chord/issue-branch"
+
+
+# ----------------------------------------------------------------------------
+#  Where the work happens (no setting, just a reminder)
+# ----------------------------------------------------------------------------
+#
+# For each issue Chord picks a repository, in this order:
+#   1. A folder named after the issue's Linear project, either the folder you
+#      started Chord in or one directly inside it. Capitals don't matter.
+#   2. A line like this in the issue's description:
+#        [Chord_Working_Path: "~/Projects/my-repo"]
+#   3. The folder you started Chord in, if it's a Git repository.
+# If none of those is a Git repository, the issue is skipped and the log
+# says why.
 """
 
 
