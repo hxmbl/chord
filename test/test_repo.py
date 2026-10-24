@@ -403,3 +403,23 @@ def test_nowhere_to_run_names_the_project_and_says_what_to_do(tmp_path):
     assert f"in {start}, which isn't a Git repository itself" in reason
     assert "Chord_Working_Path" in caught.value.hint
     assert "Start Chord in the repository" in caught.value.hint
+
+
+def test_a_line_as_linear_stores_it_is_read_as_typed(tmp_path):
+    """Linear escapes Markdown: `[...]` comes back as `\\[...\\]`.
+
+    Exactly what the API returned for a line typed into Linear's editor
+    (STRM-364). Unescaped, it was not recognised at all, and the issue fell
+    through to the project root as if it named no repository.
+    """
+    start = plain_at(tmp_path / "home")
+    target = repo_at(tmp_path / "Projects" / "my_repo")
+    description = (
+        "This is a test of the chord cli tool, is it working?\n\n"
+        f'\\[Chord\\_Working\\_Path: "{str(target).replace("_", chr(92) + "_")}"\\]'
+    )
+
+    found = resolve({"project": {"name": "Chord"}, "description": description}, start)
+
+    assert found.path == target
+    assert found.source == FROM_DESCRIPTION

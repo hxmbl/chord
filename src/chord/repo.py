@@ -27,6 +27,7 @@ ancestor up to `/`, which meant a Linear project called `home` or `Users`
 resolved to `$HOME` or `/Users` and put the agent somewhere nobody asked for.
 """
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -64,6 +65,10 @@ class Resolution(NamedTuple):
     path: Path
     source: str
 
+
+# A Markdown backslash escape: a backslash before ASCII punctuation, which
+# stands for the punctuation alone.
+_MARKDOWN_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 
 # What a working-path line looks like, for messages that suggest writing one.
 _LINE_EXAMPLE = f'{EXPLICIT_PATH_PREFIX} "~/path/to/repo"]'
@@ -201,7 +206,11 @@ def _explicit_path(description: object) -> Path | None:
         return None
     prefix = EXPLICIT_PATH_PREFIX.lower()
     for line in description.splitlines():
-        line = line.strip()
+        # Linear stores descriptions as Markdown and escapes what its editor
+        # would otherwise read as syntax: the line typed as `[Chord_Working_Path:
+        # "..."]` comes back as `\[Chord_Working_Path: "..."\]`, and an
+        # underscore anywhere in it may come back as `\_`. Read it as typed.
+        line = _MARKDOWN_ESCAPE.sub(r"\1", line.strip())
         if not line.lower().startswith(prefix):
             continue
         rest = line[len(EXPLICIT_PATH_PREFIX) :].strip()
