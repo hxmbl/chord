@@ -4,8 +4,10 @@ Nothing here reaches a real systemctl or launchctl: `service._run` is a
 recorder, and conftest's autouse fixture fails any test that forgets that.
 """
 
+import asyncio
 import os
 import plistlib
+import signal
 import subprocess
 from pathlib import Path
 
@@ -651,3 +653,112 @@ def test_setup_does_not_offer_what_is_already_installed(unit, monkeypatch):
         cli.typer, "confirm", lambda *a, **k: pytest.fail("asked again")
     )
     assert cli._offer_service() is False
+
+
+# --- a service-run watcher that isn't signed in ---
+
+
+def _loads(*answers):
+    """Stands in for credentials.load, giving each answer in turn, then the last."""
+    queue = list(answers)
+
+    def load():
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return load
+
+
+@pytest.fixture
+def said(monkeypatch):
+    lines: list[str] = []
+    monkeypatch.setattr("chord.cli.watcher.log", lines.append)
+    return lines
+
+
+def test_signed_out_waits_and_says_so_once(monkeypatch, said):
+    """Not signed in under a service is a wait, not a crash loop."""
+    from chord import cli, credentials
+
+    signed_out = (1, "Not set up yet. Run `chord setup`.")
+    monkeypatch.setattr(
+        credentials,
+        "load",
+        _loads(signed_out, signed_out, signed_out, (0, {"access_token": "tok"})),
+    )
+    token = asyncio.run(cli._wait_for_sign_in(0.01))
+    assert token == "tok"
+    assert len([line for line in said if "Not signed in to Linear" in line]) == 1
+    assert "Run `chord setup`" in said[0]
+    assert said[-1] == "Signed in to Linear. Starting to watch."
+
+
+def test_signed_in_from_the_start_says_nothing(monkeypatch, said):
+    from chord import cli, credentials
+
+    monkeypatch.setattr(credentials, "load", _loads((0, {"access_token": "tok"})))
+    assert asyncio.run(cli._wait_for_sign_in(0.01)) == "tok"
+    assert said == []
+
+
+def test_a_new_reason_to_wait_is_said_again(monkeypatch, said):
+    from chord import cli, credentials
+
+    monkeypatch.setattr(
+        credentials,
+        "load",
+        _loads(
+            (1, "Not set up yet. Run `chord setup`."),
+            (1, "Token is 1500m old, past max age. Run `chord setup`."),
+            (1, "Token is 1500m old, past max age. Run `chord setup`."),
+            (0, {"access_token": "tok"}),
+        ),
+    )
+    asyncio.run(cli._wait_for_sign_in(0.01))
+    waits = [line for line in said if "Not signed in to Linear" in line]
+    assert len(waits) == 2
+    assert "past max age" in waits[1]
+
+
+def test_sigterm_while_signed_out_ends_the_wait_cleanly(monkeypatch, said):
+    """`chord service stop` has to be a clean exit, or launchd restarts it."""
+    from chord import cli, credentials
+
+    monkeypatch.setattr(credentials, "load", _loads((1, "Not set up yet.")))
+
+    async def run():
+        asyncio.get_running_loop().call_later(
+            0.05, os.kill, os.getpid(), signal.SIGTERM
+        )
+        return await cli._wait_for_sign_in(30)
+
+    # Reaching this line at all means the handler caught it: the default
+    # action would have ended the test process.
+    assert asyncio.run(run()) is None
+
+
+def test_serve_managed_signed_out_exits_zero_when_stopped(monkeypatch, no_env):
+    """The managed path never takes `_token()`'s exit-1 on a missing sign-in."""
+    from chord import cli
+
+    monkeypatch.setattr(daemon, "claim", lambda: None)
+    released = []
+    monkeypatch.setattr(daemon, "release", lambda: released.append(1))
+
+    async def stopped(every):
+        return None
+
+    monkeypatch.setattr(cli, "_wait_for_sign_in", stopped)
+    monkeypatch.setattr(
+        cli, "_token", lambda: pytest.fail("managed watcher took the exit-1 path")
+    )
+    result = runner.invoke(app, ["_serve", "--managed"])
+    assert result.exit_code == 0, result.output
+    assert "Stopping." in result.output
+    assert released == [1]
+
+
+def test_unmanaged_serve_still_fails_when_signed_out(keyring_backend, no_env):
+    """`chord start` checked before spawning; a missing token here is a failure."""
+    result = runner.invoke(app, ["_serve"])
+    assert result.exit_code == 1
+    assert "Not set up yet" in result.output

@@ -381,7 +381,7 @@ def serve(
                 "`chord service start`."
             )
             raise SystemExit(0) from None
-    asyncio.run(_watch())
+    asyncio.run(_watch(managed=managed))
 
 
 service_app = typer.Typer(
@@ -558,9 +558,21 @@ def _service_line() -> str:
     return "not installed (`chord service install` runs Chord at login)"
 
 
-async def _watch() -> None:
+async def _watch(managed: bool = False) -> None:
     config = _config()
-    token = _token()
+    if managed:
+        # Signed out is a state a service waits through, not a crash: see
+        # `_wait_for_sign_in`.
+        found = await _wait_for_sign_in(config.interval)
+        if found is None:
+            watcher.log("Stopping.")
+            daemon.release()
+            return
+        token = found
+    else:
+        # `chord start` checked the sign-in before spawning this, so a missing
+        # token here is a real failure, said to the log on the way out.
+        token = _token()
     router = _router(config)
     try:
         # `chord start` did this too, but config can have changed since, and a
@@ -620,6 +632,54 @@ async def _watch() -> None:
         watcher.log("Stopping.")
     finally:
         daemon.release()
+
+
+async def _wait_for_sign_in(every: float) -> str | None:
+    """The token, once there is a usable one. None if asked to stop first.
+
+    For a watcher a service manager runs. Exiting on "not signed in" is right
+    for `chord start`, which checks before spawning and has someone to tell;
+    under systemd or launchd it is a crash, so the manager restarts into the
+    same answer every few seconds — systemd gives up after five and leaves the
+    service failed, launchd never does. Being signed out is also a state a
+    service genuinely passes through: installed before `chord setup`, or a
+    token that went past its max age while the machine was off. So it waits,
+    says why once (and again only if the reason changes), and looks again every
+    `every` seconds, which is the poll interval: the same cadence it would ask
+    Linear at. `chord setup` or `chord refresh` storing a token is then all it
+    takes, with no restart.
+
+    SIGTERM while waiting ends it cleanly (None), the same as SIGTERM while
+    watching, so `chord service stop` is a successful exit launchd leaves be.
+    """
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    loop.add_signal_handler(signal.SIGTERM, stopping.set)
+    said: str | None = None
+    try:
+        while True:
+            code, content = credentials.load()
+            if not code and isinstance(content, dict):
+                token = content.get("access_token")
+                if isinstance(token, str) and token:
+                    if said is not None:
+                        watcher.log("Signed in to Linear. Starting to watch.")
+                    return token
+                content = "No access token in the keychain. Run `chord setup`."
+            reason = str(content)
+            if reason != said:
+                watcher.log(
+                    f"Not signed in to Linear: {reason} Waiting, and checking "
+                    f"again every {every:g}s; nothing to restart once it's done."
+                )
+                said = reason
+            try:
+                await asyncio.wait_for(stopping.wait(), timeout=every)
+            except TimeoutError:
+                continue
+            return None
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
 
 
 def _config() -> Config:

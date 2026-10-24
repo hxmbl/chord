@@ -1,0 +1,100 @@
+name: Service E2E
+
+# `chord service` against the real service managers: a systemd user unit on
+# Linux, a LaunchAgent in gui/<uid> on macOS. The unit tests check the files
+# byte for byte and the manager calls as recorded argv; this checks that those
+# files and calls actually make systemd and launchd run, stop, restart and
+# remove a watcher — and that a signed-out one idles instead of crash-looping.
+# The steps themselves are tools/service_e2e.sh, so they can be run by hand.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "src/chord/service.py"
+      - "src/chord/cli.py"
+      - "src/chord/daemon.py"
+      - "src/chord/credentials.py"
+      - "src/chord/paths.py"
+      - "pyproject.toml"
+      - "tools/service_e2e.sh"
+      - ".github/workflows/service-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: chord service on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # A real install, not editable: the service runs this venv's python, the
+      # way it would after `uv tool install` or `pipx`. In RUNNER_TEMP rather
+      # than /tmp, so `chord service install`'s temporary-cache warning (a
+      # service pointing into a cache that gets cleaned) doesn't apply.
+      # keyrings.alt only for the plaintext backend the script seeds.
+      - name: Install chord into a venv
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/chord-venv" --python 3.12
+          uv pip install --python "$RUNNER_TEMP/chord-venv/bin/python" . keyrings.alt
+          echo "CHORD=$RUNNER_TEMP/chord-venv/bin/chord" >> "$GITHUB_ENV"
+
+      # The ubuntu runners boot systemd, but the job's shell isn't a login
+      # session, so there is no user manager until lingering starts one.
+      # `degraded` is fine: some unrelated user unit failing doesn't matter.
+      - name: Start a systemd user manager
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(id -un)"
+          runtime="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus"
+          for _ in $(seq 1 60); do
+            state="$(systemctl --user is-system-running 2>/dev/null || true)"
+            case "$state" in
+              running|degraded) echo "user manager: $state"; exit 0 ;;
+            esac
+            sleep 1
+          done
+          echo "::error::no systemd user manager after 60s (last: ${state:-nothing})"
+          loginctl user-status "$(id -un)" || true
+          exit 1
+
+      - name: Run the service end to end
+        env:
+          PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+        run: tools/service_e2e.sh
+
+      # The script dumps its own diagnostics on failure; this is the safety
+      # net for a failure it didn't get to (a setup step, a timeout), and it
+      # tidies up a service the script didn't get to remove.
+      - name: Service diagnostics and cleanup
+        if: always()
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            ls -la "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/" 2>/dev/null || true
+            journalctl --user -u 'chord-*' --no-pager -n 100 || true
+          else
+            ls -la "$HOME/Library/LaunchAgents/" "$HOME/Library/Logs/chord/" 2>/dev/null || true
+          fi
+          for d in "$RUNNER_TEMP"/chord-e2e.*; do
+            [ -d "$d" ] && (cd "$d" && "$CHORD" service uninstall) || true
+          done

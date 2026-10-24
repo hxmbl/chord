@@ -153,6 +153,12 @@ that Chord's token lives in your keyring, and some desktop keyrings stay locked
 until you log in, so a service started from boot may log that it isn't signed
 in until you do.
 
+**Not signed in is a wait, not a crash.** A service that finds no usable token
+(installed by a script before `chord setup`, a keyring still locked, a token
+past its max age after a week off) stays up, logs the reason once, and looks
+again every `interval` seconds. Once `chord setup` or `chord refresh` stores a
+token it starts watching by itself; there is nothing to restart.
+
 Notifications and token renewal work as they do under `chord start`: a user
 unit has your session's D-Bus for banners, a LaunchAgent can reach the login
 keychain and Notification Centre.

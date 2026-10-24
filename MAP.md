@@ -160,6 +160,10 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Validates process is actually a Chord watcher before stopping
 - `claim()`: a service-run watcher (`_serve --managed`) writes its own pid file
   under the same lock
+- A managed watcher that isn't signed in waits (`cli._wait_for_sign_in`: logs
+  the reason once, re-reads the keyring every `interval`s, SIGTERM exits 0)
+  instead of exiting 1 into a systemd/launchd restart loop; an unmanaged
+  `_serve` still exits 1, since `chord start` checked before spawning it
 
 ### Harness Execution
 **`src/chord/harness.py`** - Running external tools
@@ -375,7 +379,10 @@ Tests are in `test/` directory:
   `[notify]` validation
 - `test_daemon.py` - Process management
 - `test_service.py` - `chord service`: unit/plist text, escaping, env capture,
-  systemctl/launchctl calls (recorded, never real), CLI hand-over
+  systemctl/launchctl calls (recorded, never real), CLI hand-over, the
+  signed-out managed watcher waiting instead of exiting
+- `tools/service_e2e.sh` + `.github/workflows/service-e2e.yml` - the same
+  commands against real systemd --user (ubuntu) and launchd (macOS) in CI
 - `test_delivery.py` - The path from a Linear issue to a harness, its one
   banner, and `notify_received=False` keeping a working hand-over quiet
 - `test_delivered.py` - Delivery confirmation: what counts as delivered, what
