@@ -85,6 +85,7 @@ Without a webhook Chord polls Linear every 60 seconds. For instant pick-up, see
 | ------------------------ | ------------------------------------------------------- |
 | `chord setup`            | Get Chord ready. Safe to run again.                     |
 | `chord init`             | Write the stock `chord.toml`, annotated.               |
+| `chord config`           | Edit `chord.toml` in your editor; checked before saving. |
 | `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
 | `chord start`            | Watch in the background. Sets up first if needed.       |
 | `chord refresh`          | Renew the token now. Chord also does it on its own.     |
@@ -170,7 +171,9 @@ Without systemd or launchd — Windows, a container, WSL without systemd —
 
 ## chord.toml
 
-Chord runs with no config file. `chord init` writes
+Chord runs with no config file. `chord config` opens the one it reads (or the
+stock one) in `$VISUAL`/`$EDITOR`, and won't save it until it loads; `chord
+config --path` prints which file that is. `chord init` writes
 `.config/chord/chord.toml` in your project — every setting at its default,
 each with a comment — and `chord harness add NAME -- CMD ...` curates a
 harness for you, creating the file if there isn't one:

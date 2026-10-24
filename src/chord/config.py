@@ -174,6 +174,20 @@ class AlreadyCurated(Exception):
     """The name already has a harness behind it."""
 
 
+def check_text(text: str, path: Path) -> None:
+    """Raise `ConfigError` if `text` isn't a config Chord would load.
+
+    The same reading `load` does, so `chord config` refuses exactly what
+    `chord start` would have refused, at the moment the person is still
+    looking at the file.
+    """
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"That isn't valid TOML: {exc}.") from None
+    _build(raw, path)
+
+
 def init_file() -> Path:
     """Write the stock chord.toml for this directory. Refuses to overwrite."""
     path, exists = config_path()

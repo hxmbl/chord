@@ -7,11 +7,16 @@ the operating system, so it starts at login and comes back after a crash.
 """
 
 import asyncio
+import os
+import shlex
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import NoReturn
 
 import typer
@@ -21,16 +26,18 @@ from chord import credentials, daemon, notify, service, subscribe, watcher
 from chord import setup as guided
 from chord.config import (
     SEPARATOR,
+    STOCK,
     AlreadyCurated,
     Config,
     ConfigError,
+    check_text,
     curate,
     init_file,
     load,
 )
 from chord.harness import HarnessError, command_line
 from chord.linear import Linear
-from chord.paths import project_root
+from chord.paths import config_path, project_root
 from chord.routing import Router, route_label
 from chord.watcher import StateError
 from chord.webhook import Webhook
@@ -94,6 +101,85 @@ def init():
         _fail(str(exc))
     typer.echo(f"Wrote {path}.")
     typer.echo("Every setting is there at its default, with a comment. Commit it.")
+
+
+@app.command("config")
+def config_command(
+    path_only: bool = typer.Option(
+        False, "--path", help="Print which chord.toml Chord reads, and stop."
+    ),
+):
+    """Edit chord.toml in your editor. It's checked before it's saved.
+
+    Opens the file Chord would read from here ($VISUAL, then $EDITOR, then
+    nano or vi), or the stock file if there isn't one yet. A mistake is shown
+    and you go back in to fix it; nothing reaches the file until it loads.
+    """
+    path, exists = config_path()
+    if path_only:
+        typer.echo(path)
+        return
+    if not guided.interactive():
+        _fail(f"`chord config` needs a terminal. The file is {path}.")
+    editor = _editor()
+    if editor is None:
+        _fail(f"No editor found. Set $EDITOR, or edit {path} directly.")
+    original = path.read_text() if exists else STOCK
+
+    # A copy, so a half-finished edit or a broken one never lands in the real
+    # file. `.toml` so the editor highlights it.
+    handle, name = tempfile.mkstemp(prefix="chord-", suffix=".toml")
+    scratch = Path(name)
+    try:
+        with os.fdopen(handle, "w") as out:
+            out.write(original)
+        while True:
+            try:
+                code = subprocess.run([*editor, str(scratch)]).returncode
+            except OSError as exc:
+                _fail(f"Couldn't open {editor[0]}: {exc.strerror}. Nothing saved.")
+            if code != 0:
+                _fail(f"{editor[0]} exited with code {code}. Nothing saved.")
+            text = scratch.read_text()
+            if text == original:
+                typer.echo("No changes.")
+                return
+            try:
+                check_text(text, path)
+            except ConfigError as exc:
+                typer.echo(str(exc), err=True)
+                if typer.confirm("Edit again?", default=True):
+                    continue
+                _fail("Nothing saved.")
+            break
+    finally:
+        scratch.unlink(missing_ok=True)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    typer.echo(f"Saved {path}.")
+    # Chord reads its config once, at start, so a running one keeps the old.
+    svc = service.current()
+    if svc is not None and service.installed(svc):
+        typer.echo("`chord service restart` to use it.")
+    elif daemon.running_pid() is not None:
+        typer.echo("Chord is running: `chord stop`, then `chord start`, to use it.")
+
+
+def _editor() -> list[str] | None:
+    """The editor to open, as argv: $VISUAL, $EDITOR, then nano or vi.
+
+    Split like a shell would, so `EDITOR="code --wait"` works.
+    """
+    for variable in ("VISUAL", "EDITOR"):
+        value = os.environ.get(variable, "").strip()
+        if value:
+            return shlex.split(value)
+    for fallback in ("nano", "vi"):
+        found = shutil.which(fallback)
+        if found:
+            return [found]
+    return None
 
 
 harness_app = typer.Typer(
