@@ -9,7 +9,7 @@ import keyring
 import pytest
 from keyring.backend import KeyringBackend
 
-from chord import notify
+from chord import notify, service
 from chord.routing import Router
 
 
@@ -76,6 +76,23 @@ def no_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CHORD_MAX_AGE", raising=False)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def no_service_manager(monkeypatch):
+    """Keep every test away from the machine's own systemd or launchd.
+
+    `chord start`, `stop`, `watch`, `info` and `setup` all ask whether this
+    project has a service. On a developer's Linux box the honest answer would
+    send them to a real `systemctl --user`, so by default there is no service
+    manager at all; the service tests supply one of their own.
+    """
+    monkeypatch.setattr(service, "current", lambda: None)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"a test reached a real service manager: {args}")
+
+    monkeypatch.setattr(service, "_run", refuse)
 
 
 @pytest.fixture(autouse=True)

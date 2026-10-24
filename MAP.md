@@ -6,7 +6,11 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 ## Entry Point
 **`src/chord/cli.py`** - The command-line interface
 - Commands: `setup`, `init`, `harness add`, `refresh`, `start`, `stop`, `watch`,
-  `info`, `help` (`help` forwards to the command you name; `_serve` is hidden)
+  `info`, `service install|uninstall|status|logs|start|stop|restart`, `help`
+  (`help` forwards to the command you name; `_serve` is hidden)
+- With a service installed, `start`/`stop`/`watch` go through it (one watcher
+  per project); `chord setup` ends by offering `chord service install`
+  (default no); `chord info` has a `service` line (file check only, offline)
 - `chord start` runs the guided setup first when Chord isn't signed in
 - Uses Typer for CLI parsing
 - Spawns a background daemon for the watcher process
@@ -129,6 +133,23 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Never writes to Linear (read-only)
 - Handles GraphQL errors and reports them cleanly
 
+### Login service
+**`src/chord/service.py`** - `chord service`
+- systemd user unit (`~/.config/systemd/user/chord-<daemon.PROJECT>.service`)
+  on Linux, LaunchAgent (`io.hxmbl.chord.<daemon.PROJECT>`, logs in
+  `~/Library/Logs/chord/`) on macOS; `kind()` picks, `current()` describes
+  this project's, `None`/`Unsupported` elsewhere (and when systemd has no user
+  session)
+- Runs `<sys.executable> -m chord.cli _serve --managed`; `--managed` makes the
+  watcher write its own pid file via `daemon.claim()`, and exit 0 if a
+  `chord start` watcher already holds the project
+- `systemd_unit()` / `launchd_plist()` are pure (quoting, `%`/`$` escaping,
+  plistlib for XML); `capture_environment()` copies `CAPTURED` (PATH, HOME,
+  locale, XDG, Chord's knobs; never API keys)
+- Every systemctl/launchctl/journalctl call goes through `service._run`;
+  conftest makes it fail by default and stubs `current()` to None
+- `loginctl enable-linger` is only read (`lingering()`) and suggested, never run
+
 ### Process Management
 **`src/chord/daemon.py`** - Background process handling
 - Manages the watcher's lifecycle as a detached process
@@ -137,6 +158,8 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 - Project identified by directory containing `chord.toml`
 - Uses file locking to prevent race conditions on start
 - Validates process is actually a Chord watcher before stopping
+- `claim()`: a service-run watcher (`_serve --managed`) writes its own pid file
+  under the same lock
 
 ### Harness Execution
 **`src/chord/harness.py`** - Running external tools
@@ -351,6 +374,8 @@ Tests are in `test/` directory:
 - `test_config.py` - Configuration loading, including the curation table and
   `[notify]` validation
 - `test_daemon.py` - Process management
+- `test_service.py` - `chord service`: unit/plist text, escaping, env capture,
+  systemctl/launchctl calls (recorded, never real), CLI hand-over
 - `test_delivery.py` - The path from a Linear issue to a harness, its one
   banner, and `notify_received=False` keeping a working hand-over quiet
 - `test_delivered.py` - Delivery confirmation: what counts as delivered, what

@@ -64,6 +64,10 @@ LOCK_FILE = PROJECT_HOME / "chord.lock"
 # because it is an implementation detail, not something to type.
 SERVE_COMMAND = "_serve"
 
+# Added by a service-run watcher (`chord service install`): write its own pid
+# file. Still `chord.cli _serve` as adjacent tokens, so `is_our_process` knows it.
+MANAGED_FLAG = "--managed"
+
 # The watcher's own argv. `start` runs `[python, "-m", "chord.cli", "_serve"]`,
 # and `chord stop` compares against that rather than looking for a substring.
 #
@@ -318,6 +322,24 @@ def start() -> int:
         # half-written file and decides the watcher isn't running.
         _write_private(PID_FILE, f"{process.pid}\n{time.time()}\n")
         return process.pid
+
+
+def claim() -> None:
+    """Record this process as the project's watcher. For a service-run watcher.
+
+    `start` writes the pid file for the child it spawns. A watcher started by
+    systemd or launchd has no parent to do that, so it writes its own — under
+    the same lock, with the same "is something already watching?" check —
+    and `chord info`, `chord stop` and a later `chord start` see it exactly as
+    they see one `chord start` made.
+    """
+    with _start_lock():
+        already = running_pid()
+        if already is not None and already != os.getpid():
+            if is_our_process(already):
+                raise AlreadyRunning(already)
+            PID_FILE.unlink(missing_ok=True)
+        _write_private(PID_FILE, f"{os.getpid()}\n{time.time()}\n")
 
 
 def stop() -> int | None:

@@ -2,20 +2,22 @@
 
 Five things a person does: set Chord up, look at what it's set up to do, start
 watching, follow the log, and stop watching. Everything else, renewing the
-token included, happens in the background.
+token included, happens in the background. `chord service` hands the watching to
+the operating system, so it starts at login and comes back after a crash.
 """
 
 import asyncio
 import signal
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import NoReturn
 
 import typer
 import typer.core
 
-from chord import credentials, daemon, notify, subscribe, watcher
+from chord import credentials, daemon, notify, service, subscribe, watcher
 from chord import setup as guided
 from chord.config import (
     SEPARATOR,
@@ -57,7 +59,30 @@ def setup():
         _fail(str(exc))
     except typer.Abort:
         _fail("\nSetup stopped. Run `chord setup` again to pick up where you left off.")
+    if _offer_service():
+        typer.echo("\nReady, and watching as a service.")
+        return
     typer.echo("\nReady. Run `chord start`.")
+
+
+def _offer_service() -> bool:
+    """At the end of setup, offer to run Chord at login. True if it now does.
+
+    A question, never a default: a service runs harnesses on this machine
+    whenever somebody labels an issue, which is a decision, not a setup step.
+    Not asked where there's no service manager, or when it's already installed.
+    """
+    svc = service.current()
+    if svc is None or service.installed(svc):
+        return False
+    if not typer.confirm(
+        "\nRun Chord in the background whenever you log in? "
+        "(`chord service install`; you can do it later)",
+        default=False,
+    ):
+        return False
+    _install_service(svc)
+    return True
 
 
 @app.command()
@@ -136,6 +161,18 @@ def start():
     except StateError as exc:
         _fail(str(exc))
 
+    svc = service.current()
+    if svc is not None and service.installed(svc):
+        # One watcher per project. With a service installed it is the
+        # service's to run, so a second, hand-started one can't race it.
+        try:
+            service.start(svc)
+        except service.ServiceError as exc:
+            _fail(str(exc))
+        typer.echo(f"Started the Chord service ({svc.manager} {svc.name}).")
+        typer.echo("`chord watch` follows the log. `chord info` shows the state.")
+        return
+
     try:
         pid = daemon.start()
     except daemon.AlreadyRunning as exc:
@@ -156,6 +193,15 @@ def start():
 @app.command()
 def stop():
     """Stop watching."""
+    svc = service.current()
+    if svc is not None and service.installed(svc):
+        try:
+            service.stop(svc)
+        except service.ServiceError as exc:
+            _fail(str(exc))
+        typer.echo("Stopped the Chord service. It starts again at your next login;")
+        typer.echo("`chord service uninstall` stops that too.")
+        return
     try:
         pid = daemon.stop()
     except daemon.NotOurs as exc:
@@ -172,6 +218,10 @@ def stop():
 @app.command()
 def watch():
     """Follow the watcher's log, as it happens."""
+    svc = service.current()
+    if svc is not None and service.installed(svc):
+        _follow(service.logs_command(svc, follow=True, lines=50))
+        return
     if not daemon.LOG_FILE.exists():
         if daemon.running_pid() is None:
             _fail("Chord hasn't been started yet. `chord start` first.")
@@ -204,6 +254,7 @@ def info():
 
     typer.echo("Chord")
     typer.echo(f"  daemon     {_daemon_line(pid)}")
+    typer.echo(f"  service    {_service_line()}")
     # The grammar, not the routing: this is every label the poll can match,
     # which is a wider set than the lines below, and the difference is the
     # point. `Router.filter()` asks Linear for the bare label and anything
@@ -313,9 +364,198 @@ def help_command(ctx: typer.Context, args: list[str] | None = None):
 
 
 @app.command(name=daemon.SERVE_COMMAND, hidden=True)
-def serve():
+def serve(
+    managed: bool = typer.Option(False, daemon.MANAGED_FLAG, hidden=True),
+):
     """Internal. The detached watcher's own entry point."""
+    if managed:
+        # Run by systemd or launchd: nobody else will write the pid file.
+        try:
+            daemon.claim()
+        except daemon.AlreadyRunning as exc:
+            # A clean exit, so the service manager doesn't restart into the
+            # same refusal every ten seconds.
+            watcher.log(
+                f"Already watching (pid {exc.pid}, from `chord start`), so the "
+                "service isn't starting a second watcher. `chord stop`, then "
+                "`chord service start`."
+            )
+            raise SystemExit(0) from None
     asyncio.run(_watch())
+
+
+service_app = typer.Typer(
+    help="Run Chord as a background service that starts at login.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(service_app, name="service")
+
+
+def _service() -> service.Service:
+    svc = service.current()
+    if svc is None:
+        _fail(service.unsupported_message())
+    return svc
+
+
+@service_app.command("install")
+def service_install():
+    """Run Chord at login, and restart it if it stops. Re-run to update it."""
+    svc = _service()
+    # The same checks `chord start` makes, for the same reason: a service that
+    # fails on its first start reports to a log nobody is reading yet.
+    _signed_in()
+    _check_routes(_router(_config()))
+    _install_service(svc)
+
+
+def _install_service(svc: service.Service) -> None:
+    was_installed = service.installed(svc)
+    if not was_installed:
+        # A watcher from `chord start` would stand the service down. Hand over.
+        try:
+            stopped = daemon.stop()
+        except (daemon.NotOurs, daemon.StopFailed) as exc:
+            _fail(str(exc))
+        if stopped is not None:
+            typer.echo(f"Stopped the watcher `chord start` began (pid {stopped}).")
+    try:
+        service.install(svc)
+    except service.ServiceError as exc:
+        _fail(str(exc))
+
+    verb = "Updated" if was_installed else "Installed"
+    typer.echo(f"{verb} the Chord service for {svc.root}.")
+    typer.echo(f"  {svc.manager}  {svc.name}")
+    typer.echo(f"  file          {svc.path}")
+    if svc.kind == service.SYSTEMD:
+        typer.echo(f"  logs          journalctl --user -u {svc.name}")
+    else:
+        typer.echo(f"  logs          {svc.log}")
+    typer.echo("It starts when you log in and restarts if it crashes.")
+    typer.echo("`chord service status` checks on it; `chord watch` follows it.")
+    if service.ephemeral(svc.argv[0]):
+        typer.echo(
+            f"Note: Chord is running from {svc.argv[0]}, which looks like a "
+            "temporary cache. Install it for good (`uv tool install`, `pipx`) "
+            "and run `chord service install` again, or the service will break."
+        )
+    if svc.kind == service.SYSTEMD and service.lingering() is not True:
+        typer.echo(
+            "It stops when you log out. To keep it running then, and from boot: "
+            "`loginctl enable-linger $USER`."
+        )
+    typer.echo(
+        "The service has the PATH this shell has. Install a new coding tool "
+        "somewhere else? Re-run `chord service install`."
+    )
+
+
+@service_app.command("uninstall")
+def service_uninstall():
+    """Stop the service and remove it. `chord start` still works as before."""
+    svc = _service()
+    try:
+        removed = service.uninstall(svc)
+    except service.ServiceError as exc:
+        _fail(str(exc))
+    if not removed:
+        typer.echo("The service wasn't installed.")
+        return
+    typer.echo(f"Removed {svc.path}. Chord no longer starts at login.")
+
+
+@service_app.command("status")
+def service_status():
+    """Whether the service is installed and running, and its newest log lines."""
+    svc = _service()
+    if not service.installed(svc):
+        typer.echo("The Chord service isn't installed for this project.")
+        typer.echo("`chord service install` runs Chord at login.")
+        return
+    try:
+        state = service.status(svc)
+    except service.ServiceError as exc:
+        _fail(str(exc))
+    running = f"yes (pid {state.pid})" if state.running else f"no ({state.state})"
+    typer.echo("Chord service")
+    typer.echo(f"  manager    {svc.manager}")
+    typer.echo(f"  name       {svc.name}")
+    typer.echo(f"  file       {svc.path}")
+    typer.echo(f"  project    {svc.root}")
+    typer.echo(f"  running    {running}")
+    lines = service.recent_log(svc)
+    if lines:
+        typer.echo("")
+        for line in lines:
+            typer.echo(f"  {line}")
+    if not state.running:
+        typer.echo("")
+        typer.echo(
+            "`chord service start` starts it; `chord service logs` says why it stopped."
+        )
+
+
+@service_app.command("logs")
+def service_logs(
+    follow: bool = typer.Option(
+        True, "--follow/--no-follow", help="Keep following new lines."
+    ),
+    lines: int = typer.Option(50, "--lines", "-n", min=1),
+):
+    """The service's log: journald on Linux, ~/Library/Logs/chord on macOS."""
+    svc = _service()
+    if not service.installed(svc):
+        _fail("The service isn't installed. `chord service install` sets it up.")
+    _follow(service.logs_command(svc, follow=follow, lines=lines))
+
+
+@service_app.command("start")
+def service_start():
+    """Start the installed service now."""
+    _service_action(service.start, "Started")
+
+
+@service_app.command("stop")
+def service_stop():
+    """Stop it until the next login (or `chord service start`)."""
+    _service_action(service.stop, "Stopped")
+
+
+@service_app.command("restart")
+def service_restart():
+    """Restart it, picking up a changed chord.toml."""
+    _service_action(service.restart, "Restarted")
+
+
+def _service_action(action: Callable[[service.Service], None], verb: str) -> None:
+    svc = _service()
+    try:
+        action(svc)
+    except service.ServiceError as exc:
+        _fail(str(exc))
+    typer.echo(f"{verb} the Chord service ({svc.name}).")
+
+
+def _follow(command: list[str]) -> None:
+    """Run a log viewer in the foreground until Ctrl+C."""
+    try:
+        subprocess.run(command, check=False)
+    except KeyboardInterrupt:
+        pass
+    except FileNotFoundError:
+        _fail(f"Couldn't run `{command[0]}`, which shows the service's log.")
+
+
+def _service_line() -> str:
+    """Whether this project has a service. Offline: only the file is checked."""
+    svc = service.current()
+    if svc is None:
+        return "not available here (`chord start` runs it)"
+    if service.installed(svc):
+        return f"installed, {svc.manager} {svc.name} (`chord service status`)"
+    return "not installed (`chord service install` runs Chord at login)"
 
 
 async def _watch() -> None:

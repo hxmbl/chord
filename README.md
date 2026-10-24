@@ -91,10 +91,74 @@ Without a webhook Chord polls Linear every 60 seconds. For instant pick-up, see
 | `chord stop`       | Stop watching.                                          |
 | `chord watch`      | Follow the log, live.                                   |
 | `chord info`       | Show the settings, the labels Chord acts on, and the state. |
+| `chord service ...` | Run Chord at login as a systemd/launchd service. See below. |
 | `chord help`       | The same as `chord --help`.                             |
 
 `chord help <command>` is `chord <command> --help`, and `chord info` is the one
 to reach for when something isn't happening.
+
+## Running as a service
+
+`chord start` keeps watching until you stop it or the machine restarts. To have it start by itself at login and come back if it
+crashes, hand it to your operating system's service manager:
+
+```sh
+chord service install    # write the service and start it now
+chord service status     # installed? running? its newest log lines
+chord service logs       # follow its log (--no-follow, -n 200)
+chord service restart    # after editing chord.toml
+chord service stop       # until the next login; `start` brings it back
+chord service uninstall  # stop it and remove it
+```
+
+Run them from inside the project, like every other command: each project gets
+its own service, named from the same per-project id as its state directory, so
+two checkouts never share one. `chord setup` offers to install it at the end
+(the answer defaults to no). With a service installed, `chord start`,
+`chord stop` and `chord watch` go through it, so there is only ever one watcher
+per project; `chord info` has a `service` line saying which it is.
+
+| | Linux | macOS |
+| --- | --- | --- |
+| What | systemd **user** unit, no root | LaunchAgent in your login session |
+| File | `~/.config/systemd/user/chord-<project>.service` | `~/Library/LaunchAgents/io.hxmbl.chord.<project>.plist` |
+| Restarts | on failure, 10s apart; gives up after 5 in 5 minutes | after a crash (not a clean stop), 10s apart |
+| Log | the journal: `journalctl --user -u chord-<project>` | `~/Library/Logs/chord/<project>.log` |
+
+The service runs the same watcher `chord start` does, with the Python that ran
+`chord service install` and in the project's directory. Install Chord somewhere
+permanent first (`uv tool install`, `pipx`); a service pointing into `uvx`'s
+cache breaks when the cache is cleaned, and the install warns if it looks like
+that.
+
+**Your PATH is copied in at install time.** A service doesn't start from your
+shell, so it wouldn't otherwise find `opencode`, `claude` or `codex` in
+`~/.local/bin`, Homebrew or nvm. `PATH`, `HOME`, the locale, the `XDG_*`
+directories and Chord's own variables (`CHORD_LOG_LEVEL`, `CHORD_MAX_AGE`,
+`HARNESS_TIMEOUT`, `PYTHON_KEYRING_BACKEND`) are written into the unit or
+plist. Nothing else is, API keys included: they would end up in a file on disk.
+Harnesses that sign in on their own (`claude`, `codex`, `opencode auth`) don't
+need them. Installed a tool somewhere new? Run `chord service install` again; it
+replaces the service in place.
+
+**Linux: logged out.** A user service runs while you are logged in. To keep it
+running after you log out, and from boot, enable lingering for your account:
+
+```sh
+loginctl enable-linger $USER
+```
+
+Chord never runs that for you; it is a setting for your whole account. Note
+that Chord's token lives in your keyring, and some desktop keyrings stay locked
+until you log in, so a service started from boot may log that it isn't signed
+in until you do.
+
+Notifications and token renewal work as they do under `chord start`: a user
+unit has your session's D-Bus for banners, a LaunchAgent can reach the login
+keychain and Notification Centre.
+
+Without systemd or launchd — Windows, a container, WSL without systemd —
+`chord service` says so and `chord start` is the way to run it.
 
 ---
 
@@ -828,6 +892,10 @@ Linear project:
 | `chord.log`     | What `chord watch` follows          |
 | `state.json`    | Which issues have been handed over, and whether each reached its harness |
 | `chord.lock`    | Held while `chord start` is running |
+
+A watcher run by `chord service` writes the same pid and state files, but its
+log goes to the journal (Linux) or `~/Library/Logs/chord/` (macOS) instead of
+`chord.log`; `chord watch` follows whichever is in use.
 
 The project is the nearest directory containing a `chord.toml`, so `chord stop`
 and `chord info` find the right watcher from anywhere inside it.
