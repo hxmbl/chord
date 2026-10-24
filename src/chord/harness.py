@@ -346,6 +346,16 @@ async def _feed(pipe: asyncio.StreamWriter, data: bytes) -> bool:
     input never got the issue. An empty write (the prompt went on the command
     line) can't be refused, so only a real one is checked.
     """
+    if data and pipe.is_closing():
+        # It hung up before the first byte was written. asyncio notices that
+        # on its own and closes the transport *without* an error (nothing was
+        # buffered yet), after which `write` drops the data silently and, on
+        # some versions (3.12.3, Ubuntu's), `drain` and `wait_closed` return
+        # as though it all went through. Checked here, with no await between
+        # this and the write, so the answer can't change underneath it.
+        with contextlib.suppress(Exception):
+            pipe.close()
+        return False
     try:
         if data:
             pipe.write(data)

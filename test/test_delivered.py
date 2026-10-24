@@ -119,6 +119,29 @@ def test_a_harness_that_hangs_up_on_its_input_never_got_it():
     assert time.monotonic() - started < 4, "the harness was left running"
 
 
+def test_a_harness_that_hung_up_before_the_first_write_never_got_it():
+    """The race behind the one above: the input closed before anything was
+    written. asyncio closes the pipe without an error then, and on some
+    versions the write is dropped and reported as delivered."""
+
+    async def scenario():
+        process = await asyncio.create_subprocess_exec(
+            "sh", "-c", "exec 0<&-; sleep 5", stdin=asyncio.subprocess.PIPE
+        )
+        try:
+            assert process.stdin is not None
+            for _ in range(100):  # until asyncio has noticed the hang-up
+                if process.stdin.is_closing():
+                    break
+                await asyncio.sleep(0.02)
+            return await harnesses._feed(process.stdin, b"x" * 1_000_000)
+        finally:
+            process.kill()
+            await process.wait()
+
+    assert asyncio.run(scenario()) is False
+
+
 def test_a_prompt_on_the_command_line_is_delivered_once_it_is_running(tmp_path):
     """Cursor's mode: nothing on stdin, so delivery is "started and stayed up"."""
     told = []
