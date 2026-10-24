@@ -86,13 +86,13 @@ def test_each_end_says_what_happened_and_why(monkeypatch):
 
     run(notify.received("ENG-201", "opencode"))
     run(notify.failed("ENG-201", "`opencode` exited 1."))
-    run(notify.skipped("ENG-201", "'Chord/typo' names a harness chord.toml lacks."))
+    run(notify.skipped("ENG-201", "'Chord -> typo' names a harness chord.toml lacks."))
     run(notify.refused("ENG-201", "sam added 'Chord', and that isn't allowed."))
 
     assert rec.banners == [
         ("ENG-201 received", "Delivered to opencode."),
         ("ENG-201 failed", "`opencode` exited 1."),
-        ("ENG-201 skipped", "'Chord/typo' names a harness chord.toml lacks."),
+        ("ENG-201 skipped", "'Chord -> typo' names a harness chord.toml lacks."),
         ("ENG-201 refused", "sam added 'Chord', and that isn't allowed."),
     ]
 
@@ -142,7 +142,7 @@ def test_a_refusal_does_not_read_as_a_mistake(monkeypatch):
     rec = recorder(monkeypatch)
 
     run(notify.refused("ENG-201", "sam is not in allowed_actors."))
-    run(notify.skipped("ENG-201", "Chord/typo names no harness."))
+    run(notify.skipped("ENG-201", "Chord -> typo names no harness."))
 
     assert rec.banners[0][0] != rec.banners[1][0]
 
@@ -208,7 +208,7 @@ def test_outcomes_for_one_issue_share_a_group(monkeypatch):
     monkeypatch.setattr(notify, "_osascript", lambda: None)
     rec = recorder(monkeypatch)
 
-    run(notify.skipped("ENG-201", "Chord/typo names no harness."))
+    run(notify.skipped("ENG-201", "Chord -> typo names no harness."))
     run(notify.failed("ENG-201", "`opencode` exited 1."))
 
     groups = {command[command.index("-group") + 1] for command in rec.commands}

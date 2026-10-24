@@ -499,7 +499,7 @@ def test_received_off_leaves_failures_loud(tmp_path, banners):
         # A label naming a harness chord.toml never curated.
         {
             "name": "unknown_route",
-            "labels": ["Chord/nobody-defined"],
+            "labels": ["Chord -> nobody-defined"],
             "final": "skipped",
         },
         # Curated and valid, but the command it names is not installed, so it

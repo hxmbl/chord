@@ -189,10 +189,10 @@ def test_problems_lists_every_route_that_cannot_start(monkeypatch):
         {"fast": ["claude"], "mine": ["my-agent"], "cur": "cursor"},
     )
     found = {route.label: reason for route, reason in router.problems()}
-    assert set(found) == {"Chord", "Chord/mine", "Chord/cur"}
+    assert set(found) == {"Chord", "Chord -> mine", "Chord -> cur"}
     assert "opencode" in found["Chord"]
-    assert "my-agent" in found["Chord/mine"]
-    assert "cursor-agent" in found["Chord/cur"]
+    assert "my-agent" in found["Chord -> mine"]
+    assert "cursor-agent" in found["Chord -> cur"]
 
 
 def test_start_refuses_a_route_whose_tool_is_missing(
@@ -212,7 +212,7 @@ def test_start_refuses_a_route_whose_tool_is_missing(
 
     assert result.exit_code == 1
     assert not spawned, "started a watcher that would fail every review issue"
-    assert "Chord/review can't be run" in result.output
+    assert "Chord -> review can't be run" in result.output
     assert "Codex" in result.output
 
 
@@ -228,7 +228,7 @@ def test_info_marks_a_route_that_cannot_start(no_env, monkeypatch, tmp_path):
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.output
-    assert "Chord/review  codex" in result.output
+    assert "Chord -> review  codex" in result.output
     assert "! can't run: `codex` isn't on your PATH" in result.output
 
 

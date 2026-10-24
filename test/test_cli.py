@@ -330,7 +330,7 @@ def test_start_rejects_a_curated_harness_that_cannot_run(
 
     assert result.exit_code == 1
     assert not spawned
-    assert "Chord/oops" in result.output, "the failing route label must be named"
+    assert "Chord -> oops" in result.output, "the failing route label must be named"
 
 
 def test_start_accepts_curated_harnesses_that_can_run(
@@ -364,13 +364,13 @@ def label_column(out: str) -> list[str]:
 
     Read off the aligned column rather than by taking the first word of every
     line: the block is a label column followed by prose, and the prose is
-    full sentences. A label is the only line whose first token is followed by the
-    column's padding.
+    full sentences. A label is the only line whose leading words (single-spaced,
+    as in `Chord -> claude`) are followed by the column's padding.
     """
     labels = []
     for line in out.splitlines():
         rest = _strip_lead(line)
-        match = re.match(r"^(\S+)\s{2,}\S", rest)
+        match = re.match(r"^(\S+(?: \S+)*)\s{2,}\S", rest)
         if match:
             labels.append(match.group(1))
     return labels
@@ -401,8 +401,8 @@ def test_info_lists_every_route(keyring_backend, no_env, monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     out = result.stdout
     assert "Chord" in out and "opencode" in out
-    assert "Chord/claude" in out and "claude -p" in out
-    assert "Chord/opencode/space-bunny-free" in out
+    assert "Chord -> claude" in out and "claude -p" in out
+    assert "Chord -> opencode -> space-bunny-free" in out
     assert "--model space-bunny-free" in out
 
 
@@ -442,7 +442,7 @@ def test_info_showcases_the_labels_it_accepts(
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.output
-    assert label_column(result.stdout) == ["Chord", "Chord/claude"]
+    assert label_column(result.stdout) == ["Chord", "Chord -> claude"]
 
 
 def test_info_says_that_adding_a_label_is_the_trigger(
@@ -475,7 +475,7 @@ def test_info_names_the_prefix_the_watch_actually_uses(
     """The watched set is wider than the routable set, and says so.
 
     `Router.filter()` asks Linear for the bare label *and anything starting with
-    the prefix*, curated or not. Printing `<label>/<harness>` there implied the
+    the prefix*, curated or not. Printing `<label> -> <harness>` there implied the
     two sets were the same, which is exactly the assumption that would let a
     label nobody curated look harmless.
     """
@@ -487,7 +487,7 @@ def test_info_names_the_prefix_the_watch_actually_uses(
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.output
-    assert "issues labelled 'Pick' or anything starting Pick/" in result.stdout
+    assert "issues labelled 'Pick' or anything starting 'Pick ->'" in result.stdout
     assert "<harness>" not in result.stdout
 
 
@@ -708,7 +708,7 @@ def test_harness_add_writes_a_route(no_env, tmp_path):
     assert config.harnesses == {
         "big-pickle": ["opencode", "run", "--model", "big-pickle"]
     }
-    assert "Chord/big-pickle" in result.output, "must say which label to create"
+    assert "Chord -> big-pickle" in result.output, "must say which label to create"
 
 
 def test_harness_add_appends_to_an_existing_config(no_env, tmp_path):
@@ -720,6 +720,52 @@ def test_harness_add_appends_to_an_existing_config(no_env, tmp_path):
     config = load()
     assert config.label == "Ready", "the rest of the file must survive"
     assert config.harnesses == {"review": ["cat"]}
+
+
+def test_harness_add_takes_a_slash_name_and_prints_an_arrow_label(no_env):
+    """The name goes in with `/`, is written to chord.toml with `/`, and the
+    Linear label comes out with an arrow for each `/`."""
+    result = runner.invoke(
+        app,
+        [
+            "harness",
+            "add",
+            "opencode/big-pickle",
+            "--",
+            "opencode",
+            "run",
+            "--model",
+            "big-pickle",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert load().harnesses == {
+        "opencode/big-pickle": ["opencode", "run", "--model", "big-pickle"]
+    }
+    assert (
+        "Create the label 'Chord -> opencode -> big-pickle' in Linear"
+        in result.output
+    )
+
+
+def test_harness_add_prints_a_colon_model_name_as_it_is(no_env):
+    result = runner.invoke(
+        app, ["harness", "add", "opencode/Qwen3.4:8B", "--", "opencode", "run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert load().harnesses == {"opencode/Qwen3.4:8B": ["opencode", "run"]}
+    assert "'Chord -> opencode -> Qwen3.4:8B'" in result.output
+
+
+@pytest.mark.parametrize("name", ["opencode->tiny", "opencode -> tiny"])
+def test_harness_add_refuses_an_arrow_in_the_name(no_env, name):
+    """The label's spelling typed as a name: say to use `/` instead."""
+    result = runner.invoke(app, ["harness", "add", name, "--", "cat"])
+
+    assert result.exit_code == 1
+    assert "can't contain '->'" in result.output
 
 
 def test_harness_add_refuses_a_duplicate(no_env):
@@ -753,5 +799,5 @@ def test_harness_add_writes_a_config_that_chord_reads(no_env, monkeypatch, tmp_p
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.output
-    assert "Chord/big-pickle" in result.output
+    assert "Chord -> big-pickle" in result.output
     assert "cat" in result.output

@@ -25,7 +25,7 @@ from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthor
 from chord.paths import project_root
 from chord.performance import instrumented
 from chord.repo import ResolutionError, resolve
-from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label
+from chord.routing import DEFAULT_ROUTE, Router, UnknownRoute, route_label, route_of
 from chord.subscribe import Subscription
 from chord.text import one_line
 from chord.webhook import Webhook
@@ -594,8 +594,9 @@ class Watcher:
             # flattens to one line and cuts at 200 characters, which is exactly
             # where the useful half of this would otherwise land.
             _spacer()
+            asked = self._router.label_on(issue, exc.name)
             self._problem(
-                f"{identifier} skipped: {route_label(self._router.label, exc.name)!r} "
+                f"{identifier} skipped: '{asked}' "
                 f"names a harness chord.toml doesn't define."
             )
             self._problem(
@@ -604,8 +605,7 @@ class Watcher:
             )
             await notify.skipped(
                 identifier,
-                f"{route_label(self._router.label, exc.name)!r} names a harness "
-                f"chord.toml doesn't define.",
+                f"'{asked}' names a harness chord.toml doesn't define.",
             )
             self._remember(issue_id)
             return
@@ -880,14 +880,16 @@ class Watcher:
                 )
             return Routed(candidates[0], None, UNREADABLE)
 
-        names = {route_label(self._router.label, route): route for route in candidates}
+        # Read through the grammar rather than matched against printed labels,
+        # so a legacy `Chord/t3` in the history still names the `t3` route.
+        wanted = set(candidates)
         for change in changes:
             for name in change.labels:
-                route = names.get(name)
-                if route is not None:
+                route = route_of(self._router.label, name)
+                if route is not None and route in wanted:
                     if ambiguous and change.who is None:
                         self._problem(
-                            f"couldn't tell who added {name!r} to {identifier}; "
+                            f"couldn't tell who added '{name}' to {identifier}; "
                             "using the most specific route label it carries"
                         )
                     return Routed(route, change.who, FROM_HISTORY)

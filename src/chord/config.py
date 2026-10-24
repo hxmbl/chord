@@ -26,13 +26,33 @@ DEFAULT_WEBHOOK_PORT = 23842
 # turning into a denial of service against Linear.
 MIN_INTERVAL = 5
 
-# How a route label spells the harness it wants: `<label>/<harness name>`. The
-# whole suffix is the name, so a curated harness called `opencode/tiny` is
-# simply selected by `Chord/opencode/tiny`.
+# How a route label spells the harness it wants: `<label> -> <harness name>`,
+# with each `/` in the name written as another arrow. Linear allows neither `/`
+# nor `:` in a label name, so the arrow stands for the `/` and reads as the
+# parent -> child relationship it is: the harness curated as
+# `opencode/big-pickle` is selected by `Chord -> opencode -> big-pickle`. A `:`
+# is an ordinary character in both, because model names have them
+# (`qwen3.4:4b`), and so are `.` and uppercase.
+#
+# `SEPARATOR` is how Chord prints the arrow. `ARROW` is what it reads, with any
+# whitespace either side, so `Chord->opencode` routes too.
 #
 # This lives here rather than in routing.py so that config can check `label`
-# without importing the module that goes on to interpret it.
-SEPARATOR = "/"
+# and harness names without importing the module that goes on to interpret
+# them.
+SEPARATOR = " -> "
+ARROW = "->"
+
+# What separates the parts of a harness name: `opencode/big-pickle`. chord.toml
+# keys always use it, and each one becomes an arrow in the label.
+NAME_SEPARATOR = "/"
+
+# The separator route labels used before the arrow, still read so a
+# `Chord/<name>` label already in somebody's workspace keeps routing: the whole
+# suffix is the name, so `Chord/opencode/tiny` is `opencode/tiny`. Never
+# printed: everything Chord tells a person spells routes with `SEPARATOR`.
+LEGACY_SEPARATOR = "/"
+
 
 # A harness is either the name of one Chord knows, or the command to run. The
 # command form is the reason Chord stays small: anything that reads a prompt
@@ -131,8 +151,11 @@ webhook_secret = ""
 [notify]
 received = true
 
-# Extra named harnesses: a `Chord/<name>` label routes to the one called
-# `<name>`. `chord harness add` writes these for you.
+# Extra named harnesses: a `Chord -> <name>` label routes to the one called
+# `<name>`. Linear allows neither `/` nor `:` in labels, so each `/` in a name
+# is another arrow in its label: the entry below is selected by the Linear
+# label `Chord -> opencode -> big-pickle`. Names here always use `/`, never the
+# arrow. `chord harness add` writes these for you.
 #
 # [harnesses."opencode/big-pickle"]
 # command = ["opencode", "run", "--model", "big-pickle"]
@@ -203,11 +226,7 @@ def curate(name: str, argv: list[str]) -> tuple[Path, bool]:
     at the end of the file cannot disturb what is already there.
     """
     if not usable_harness_name(name):
-        raise ConfigError(
-            f"{name!r} isn't a usable harness name: a non-empty string with "
-            f'no leading, trailing or doubled {SEPARATOR!r}, like "big-pickle" '
-            f'or "opencode/tiny".'
-        )
+        raise ConfigError(f"{name!r} isn't a usable harness name: {name_problem(name)}.")
     if not argv or not any(part.strip() for part in argv):
         raise ConfigError("The harness command is empty.")
 
@@ -318,12 +337,16 @@ def _build(raw: dict, path: Path) -> Config:
     if not isinstance(label, str) or not label.strip():
         raise ConfigError(f"`label` in {path} has to be a non-empty string.")
     label = label.strip()
-    if label.endswith(SEPARATOR):
-        # `Chord/` as the trigger would make every route `Chord//<name>`.
-        raise ConfigError(
-            f"`label` in {path} ends with {SEPARATOR!r}, which would double the "
-            f"separator in every route label. Write it as {label.rstrip(SEPARATOR)!r}."
-        )
+    for separator in (ARROW, LEGACY_SEPARATOR):
+        if label.endswith(separator):
+            # `Chord ->` as the trigger would make every route
+            # `Chord -> -> <name>`, and `Chord/` would do the same to the
+            # legacy `Chord//<name>`.
+            bare = label.removesuffix(separator).rstrip()
+            raise ConfigError(
+                f"`label` in {path} ends with '{separator}', which would double "
+                f"the separator in every route label. Write it as '{bare}'."
+            )
 
     interval = raw.get("interval", base.interval)
     if not isinstance(interval, int) or isinstance(interval, bool):
@@ -478,9 +501,8 @@ def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:
         where = f"`harnesses.{name}`"
         if not _usable_name(name):
             raise ConfigError(
-                f"{where} in {path} has to be a usable harness name: a non-empty "
-                f"string with no leading, trailing or doubled {SEPARATOR!r}, "
-                f'like "opencode" or "opencode/tiny".'
+                f"{where} in {path} isn't a usable harness name: "
+                f"{name_problem(name)}."
             )
         if not isinstance(table, dict):
             raise ConfigError(f"{where} in {path} has to be a table with a `command`.")
@@ -496,11 +518,36 @@ def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:
     return result
 
 
+def name_problem(name: object) -> str:
+    """Why `name` isn't a usable harness name, in words, for the error.
+
+    The arrow gets its own sentence because it is the mistake somebody makes
+    after reading a label: `opencode->tiny` looks like the label's spelling, and
+    the fix is to write the `/` the label stands for.
+    """
+    if isinstance(name, str) and ARROW in name:
+        return (
+            f"harness names can't contain '{ARROW}', which a route label reads "
+            f"as '{NAME_SEPARATOR}'. Write the parts with '{NAME_SEPARATOR}', "
+            f'like "opencode/big-pickle"'
+        )
+    return (
+        f"a non-empty string with no '{ARROW}', no leading or trailing space, "
+        f"and no empty or space-padded part between '{NAME_SEPARATOR}'s, like "
+        f'"big-pickle" or "opencode/tiny"'
+    )
+
+
 def usable_harness_name(name: object) -> bool:
     """Whether `name` can be spelled as the suffix of a route label.
 
-    `Chord//x` and `Chord/x/` are typos rather than routes. Rejecting them in
-    config means curation and the label grammar agree about which names exist.
+    Every `/` in a name is an arrow in its label, and a label's arrows are read
+    with any whitespace around them and the parts trimmed. So a name is usable
+    when it survives that round trip unchanged: no `->` of its own (it would
+    read as another `/`), and no part that is empty (`/x`, `x/`, `x//y` are
+    `Chord -> -> x` and friends, typos rather than routes) or padded with spaces
+    (`x / y` would come back as `x/y`). Anything else goes, `:`, `.` and
+    uppercase included, because model names contain them.
 
     Public, and used by `routing` as well, because both sides of "is this a
     route?" have to be the same question. When they were not — the filter matched
@@ -510,11 +557,9 @@ def usable_harness_name(name: object) -> bool:
     got another, silently, which is the one outcome the routing exists to
     prevent.
     """
-    if not isinstance(name, str) or not name or name != name.strip():
+    if not isinstance(name, str) or not name or ARROW in name:
         return False
-    return not (
-        name.startswith(SEPARATOR) or name.endswith(SEPARATOR) or SEPARATOR * 2 in name
-    )
+    return all(part and part == part.strip() for part in name.split(NAME_SEPARATOR))
 
 
 # Kept as a private alias so the existing call site reads naturally.

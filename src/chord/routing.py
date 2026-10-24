@@ -1,39 +1,64 @@
 """Which harness an issue is routed to, and the Linear label that says so.
 
 An issue is picked up by a label. A bare `Chord` means the default harness from
-chord.toml, and `Chord/<name>` means a curated one from `[harnesses.<name>]`.
-The whole suffix is the name, so one harness can be called `opencode/tiny` and
-reached with `Chord/opencode/tiny` without the grammar having to know anything
-about what a harness is.
+chord.toml, and `Chord -> <name>` means a curated one from `[harnesses.<name>]`.
+Linear allows neither `/` nor `:` in a label, so each arrow after the first
+stands for a `/` in the harness name, a parent -> child relationship:
+`Chord -> opencode -> big-pickle` is the harness curated as
+`opencode/big-pickle`. Arrows are read with any whitespace around them and the
+parts between them trimmed, so `Chord->opencode->big-pickle` is the same route.
+Any other character is the name's own, `:` included, so
+`Chord -> opencode -> Qwen3.4:8B` is `opencode/Qwen3.4:8B`. Matching is exact
+and case-sensitive against curated names, so the grammar never has to know
+anything about what a harness is.
+
+The older spelling, `Chord/<name>`, is still read, so route labels created
+before the arrow keep working: `Chord/t3` and `Chord -> t3` are both `t3`, and
+the whole legacy suffix is the name (`Chord/opencode/tiny` is `opencode/tiny`).
+Only the arrow is ever printed, as ` -> `.
 
 Keeping the grammar here rather than in config.py is what makes an unknown
-route survivable. Chord has to ask Linear for every `Chord/...` label, including
-ones nobody curated, because a label nobody has heard of is either a typo or a
-route added in Linear before chord.toml caught up — and in both cases the useful
-thing to do is say so in the log, not sit silently on the issue. So this module
-knows how to *read* a label; whether the harness behind it exists is a separate
-question, and `harness_for` is the only place that answers it.
+route survivable. Chord has to ask Linear for every `Chord -> ...` label,
+including ones nobody curated, because a label nobody has heard of is either a
+typo or a route added in Linear before chord.toml caught up — and in both cases
+the useful thing to do is say so in the log, not sit silently on the issue. So
+this module knows how to *read* a label; whether the harness behind it exists is
+a separate question, and `harness_for` is the only place that answers it.
 """
 
+import re
 from collections.abc import Callable, Mapping
 from typing import NamedTuple
 
-from chord.config import SEPARATOR, HarnessSpec, T3Options, spell
+from chord.config import (
+    ARROW,
+    LEGACY_SEPARATOR,
+    NAME_SEPARATOR,
+    SEPARATOR,
+    HarnessSpec,
+    T3Options,
+    spell,
+)
 from chord.harness import Harness, HarnessError, build, missing
 from chord.performance import instrumented
 
 # The name that asks for the default harness. Curated names are separate
-# namespaces from the `harness` setting: `Chord/foo` always means "the curated
+# namespaces from the `harness` setting: `Chord -> foo` always means "the curated
 # `foo`", and a bare `Chord` always means "whatever `harness` says", even when
 # the two happen to spell the same command.
 DEFAULT_ROUTE = ""
 
-# What `<label>/` with nothing after it names. Not `""`, because that is
-# `DEFAULT_ROUTE` — so returning the empty suffix would make a label that named
-# no harness indistinguishable from the bare trigger label, and it would run the
-# work on the default harness. Deliberately not a curatable name either, so it
-# lands in the same skip-and-report path as any other unknown route.
-EMPTY_NAME = SEPARATOR
+# What `<label> ->` (or the legacy `<label>/`) with nothing after it names. Not
+# `""`, because that is `DEFAULT_ROUTE` — so returning the empty suffix would
+# make a label that named no harness indistinguishable from the bare trigger
+# label, and it would run the work on the default harness. The arrow itself,
+# because no name read from a label keeps one (each becomes `/`) and no curated
+# name may contain one, so it lands in the same skip-and-report path as any
+# other unknown route.
+EMPTY_NAME = ARROW
+
+# An arrow and the whitespace around it, for splitting a label into parts.
+_ARROW = re.compile(r"\s*" + re.escape(ARROW) + r"\s*")
 
 
 class UnknownRoute(HarnessError):
@@ -50,8 +75,14 @@ class UnknownRoute(HarnessError):
 
 
 def route_label(label: str, name: str) -> str:
-    """The Linear label that selects `name`."""
-    return f"{label}{SEPARATOR}{name}" if name else label
+    """The Linear label that selects `name`, in the current spelling.
+
+    Every `/` in the name is written as ` -> `, because Linear refuses `/` in a
+    label: `opencode/big-pickle` is `Chord -> opencode -> big-pickle`.
+    """
+    if not name:
+        return label
+    return SEPARATOR.join([label, *name.split(NAME_SEPARATOR)])
 
 
 class Route(NamedTuple):
@@ -73,11 +104,15 @@ def route_of(label: str, candidate: str) -> str | None:
     `""` for the bare trigger label, which asks for the default harness.
 
     Total over what `filter()` matches. The filter accepts any label starting
-    with `<label>/`, so this must return a name for every one of those: a label
-    that matched the query and then produced no route here fell through to the
-    default harness and was worked on by an agent nobody asked for. `Chord//x`
-    and `Chord/x/` are spelling mistakes, but they are *somebody's* spelling
+    with `<label>->`, `<label> ->` or the legacy `<label>/`, so this must
+    return a name for every one of those: a label that matched the query and
+    then produced no route here fell through to the default harness and was
+    worked on by an agent nobody asked for. `Chord -> -> x`, `Chord -> x ->`
+    and `Chord//x` are spelling mistakes, but they are *somebody's* spelling
     mistake and the answer is to tell them, not to run their work elsewhere.
+
+    The name comes back with each arrow read as `/` and each part trimmed,
+    which is how `Router` keys the curated harnesses.
 
     Whether the name is one `harness_for` can build is a separate question, and
     the one that answers it is `config.usable_harness_name` — the same predicate
@@ -85,19 +120,33 @@ def route_of(label: str, candidate: str) -> str | None:
     """
     if candidate == label:
         return DEFAULT_ROUTE
-    head = label + SEPARATOR
-    if not candidate.startswith(head):
-        return None
-    # The suffix, verbatim: `Chord//x` gives "/x", `Chord/x/` gives "x/", and
-    # neither can be curated, so both name a harness that does not exist.
-    #
-    # The empty suffix needs care, because "" *is* `DEFAULT_ROUTE` — the bare
-    # `Chord` label. So `Chord/` and `Chord` would resolve to the same route, and
-    # a label that named nothing would run work on the default harness. That is
-    # the whole bug, one character narrower. An empty suffix gets a name that is
-    # empty enough to be unusable and visible enough to log.
-    name = candidate[len(head) :]
-    return name if name else EMPTY_NAME
+    if candidate.startswith(label):
+        rest = candidate[len(label) :]
+        arrow = _ARROW.match(rest)
+        if arrow:
+            # The parts between arrows, trimmed and joined with `/`:
+            # `Chord -> -> x` gives "/x" and `Chord -> x ->` gives "x/", and
+            # neither can be curated, so each names a harness that does not
+            # exist.
+            #
+            # The empty suffix needs care, because "" *is* `DEFAULT_ROUTE` —
+            # the bare `Chord` label. So `Chord ->` and `Chord` would resolve
+            # to the same route, and a label that named nothing would run work
+            # on the default harness. That is the whole bug, one character
+            # narrower. An empty suffix gets a name that is empty enough to be
+            # unusable and visible enough to log.
+            suffix = rest[arrow.end() :].strip()
+            if not suffix:
+                return EMPTY_NAME
+            return NAME_SEPARATOR.join(_ARROW.split(suffix))
+    head = label + LEGACY_SEPARATOR
+    if candidate.startswith(head):
+        # The legacy suffix, verbatim: `Chord/t3` gives "t3", the same name as
+        # `Chord -> t3`, so an old label keeps its old meaning, and `Chord//x`
+        # gives "/x", which can't be curated.
+        name = candidate[len(head) :]
+        return name if name else EMPTY_NAME
+    return None
 
 
 class Router:
@@ -159,14 +208,23 @@ class Router:
     def filter(self) -> dict:
         """The Linear issue filter that finds every route in one query.
 
-        Both halves matter. The exact match catches a bare `Chord`, and the
-        prefix catches `Chord/<anything>` — curated or not, so an unknown route
-        reaches the log instead of never arriving at all.
+        Every part matters. The exact match catches a bare `Chord`, and the
+        arrow prefixes catch `Chord -> <anything>` and `Chord-><anything>` —
+        curated or not, so an unknown route reaches the log instead of never
+        arriving at all. Whitespace after the arrow needs no prefix of its own,
+        because the prefix ends at the arrow. The legacy prefix, `Chord/`, keeps
+        route labels made before the arrow arriving.
+
+        Exact prefixes rather than "starts with `Chord`": a label like
+        `Chordless` is somebody else's, and an issue fetched for it would carry
+        no route and be skipped as malformed.
         """
         return {
             "or": [
                 {"labels": {"name": {"eq": self.label}}},
-                {"labels": {"name": {"startsWith": self.label + SEPARATOR}}},
+                {"labels": {"name": {"startsWith": f"{self.label} {ARROW}"}}},
+                {"labels": {"name": {"startsWith": self.label + ARROW}}},
+                {"labels": {"name": {"startsWith": self.label + LEGACY_SEPARATOR}}},
             ]
         }
 
@@ -174,7 +232,7 @@ class Router:
         """Every route this issue carries, most specific first.
 
         More than one is normal: an issue picked up by `Chord` and then
-        narrowed with `Chord/opencode/tiny` carries both, and the watcher asks
+        narrowed with `Chord -> opencode -> tiny` carries both, and the watcher asks
         Linear which was added last. The order here is only the fallback for
         when that question can't be answered.
         """
@@ -192,6 +250,24 @@ class Router:
             if route is not None and route not in found:
                 found.append(route)
         return sorted(found, key=lambda route: (-len(route), route))
+
+    def label_on(self, issue: Mapping[str, object], name: str) -> str:
+        """The label on `issue` that asked for `name`, spelled as it is there.
+
+        For telling somebody about a route that can't run: `Chord//claude` has
+        to be reported as the label they can find on the issue, not as the
+        `Chord ->  -> claude` it would be in the current spelling. Falls back to
+        the current spelling when no label on the issue names the route.
+        """
+        labels = issue.get("labels")
+        nodes = (labels.get("nodes") or []) if isinstance(labels, dict) else []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            candidate = str(node.get("name") or "")
+            if route_of(self.label, candidate) == name:
+                return candidate
+        return route_label(self.label, name)
 
     @instrumented
     def harness_for(self, name: str) -> Harness:

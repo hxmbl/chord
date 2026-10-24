@@ -5,6 +5,7 @@ issue that carries more than one of them.
 """
 
 import asyncio
+import re
 import uuid
 
 import pytest
@@ -29,12 +30,26 @@ from chord.routing import (
     "candidate,expected",
     [
         ("Chord", DEFAULT_ROUTE),
-        ("Chord/opencode", "opencode"),
-        # The whole suffix is the name, so nesting is just a character in it.
-        ("Chord/opencode/space-bunny-free", "opencode/space-bunny-free"),
-        ("Chord/a/b/c/d", "a/b/c/d"),
-        ("Chord/two words", "two words"),
-        ("Chord/dots.and-dashes_1", "dots.and-dashes_1"),
+        ("Chord -> opencode", "opencode"),
+        ("Chord -> codex", "codex"),
+        # Everything after the first arrow is the name, and each further arrow
+        # is a `/` in it: parent -> child.
+        ("Chord -> opencode -> space-bunny-free", "opencode/space-bunny-free"),
+        ("Chord -> opencode -> big-pickle", "opencode/big-pickle"),
+        ("Chord -> a -> b -> c -> d", "a/b/c/d"),
+        ("Chord -> two words", "two words"),
+        ("Chord -> dots.and-dashes_1", "dots.and-dashes_1"),
+        # `:`, `.` and uppercase are ordinary characters: model names have them.
+        ("Chord -> opencode -> Qwen3.4:8B", "opencode/Qwen3.4:8B"),
+        ("Chord -> qwen3.4:4b", "qwen3.4:4b"),
+        ("Chord -> t3", "t3"),
+        # The arrow is read with any whitespace around it, and parts trimmed.
+        ("Chord->opencode", "opencode"),
+        ("Chord->opencode->big-pickle", "opencode/big-pickle"),
+        ("Chord  ->  opencode  ->\tbig-pickle ", "opencode/big-pickle"),
+        ("Chord ->opencode-> Qwen3.4:8B", "opencode/Qwen3.4:8B"),
+        # A hyphen or `>` on its own is part of a name, not an arrow.
+        ("Chord -> gpt-5 -> a>b", "gpt-5/a>b"),
     ],
 )
 def test_a_route_label_names_a_harness(candidate, expected):
@@ -45,10 +60,18 @@ def test_a_route_label_names_a_harness(candidate, expected):
     "candidate",
     [
         "Chordle",  # a longer word that merely starts the same
+        "Chordle -> route",
+        "Chordle->route",
         "Chordle/route",
         "chord",  # Linear label names are case sensitive
-        "Something/Chord",
+        "chord -> opencode",
+        "Something -> Chord",
         "ChordX",
+        "Chord:x",  # `:` is not a separator
+        "Chord\\opencode",  # backslash routing is gone
+        "Chord - > x",  # not an arrow
+        "Chord > x",
+        "Chord-x",
         "Chord ",  # trailing space is a different label
         "",
     ],
@@ -63,49 +86,185 @@ def test_something_that_is_not_a_route_label_is_not_one(candidate):
         # These match `filter()` and therefore have to name a harness, even
         # though the name is a typo. Rejecting them here used to make them fall
         # through to the default: the issue asked for one agent, got another.
+        ("Chord ->", EMPTY_NAME),
+        ("Chord->", EMPTY_NAME),
+        ("Chord ->   ", EMPTY_NAME),
+        ("Chord -> -> x", "/x"),
+        ("Chord -> x ->", "x/"),
+        ("Chord -> x -> -> y", "x//y"),
+        ("Chord -> ->", "/"),
+        ("Chord -> -> ->", "//"),
+        ("Chord -> a->->b", "a//b"),
         ("Chord/", EMPTY_NAME),
         ("Chord//x", "/x"),
         ("Chord/x/", "x/"),
-        ("Chord//", "/"),
-        ("Chord///", "//"),
     ],
 )
 def test_a_malformed_route_still_names_a_harness(candidate, expected):
     """`route_of` is total over what `filter()` matches.
 
     A label that reached the poll and produced no route is the silent-wrong-
-    harness case, so every `Chord/...` label resolves to *some* name. Whether
+    harness case, so every `Chord -> ...` label resolves to *some* name. Whether
     that name is usable is asked later, by `harness_for`.
     """
     assert route_of("Chord", candidate) == expected
 
 
-@pytest.mark.parametrize("name", ["", "/x", "x/", "/", "//"])
+@pytest.mark.parametrize(
+    "name", ["", "/x", "x/", "/", "//", "x//y", "a->b", "->", EMPTY_NAME]
+)
 def test_a_name_from_a_typo_can_never_be_curated(name):
     """Which is why it can never match a harness and is skipped instead."""
+    assert not config.usable_harness_name(name)
+
+
+@pytest.mark.parametrize("name", [" x", "x ", "x /y", "x/ y", "opencode ->tiny"])
+def test_a_name_that_would_not_survive_its_label_can_not_be_curated(name):
+    """Parts are trimmed when a label is read, so `x /y` would come back as
+    `x/y`: a name with no label of its own."""
     assert not config.usable_harness_name(name)
 
 
 def test_a_custom_trigger_label_keeps_its_own_routes():
     """`label` is the base, so the grammar follows whatever it is set to."""
     assert route_of("bot", "bot") == DEFAULT_ROUTE
+    assert route_of("bot", "bot -> typo") == "typo"
+    assert route_of("bot", "bot->typo") == "typo"
     assert route_of("bot", "bot/typo") == "typo"
-    assert route_of("bot", "Chord/typo") is None
+    assert route_of("bot", "Chord -> typo") is None
 
 
-def test_route_label_spellings_round_trip():
-    for name in ("", "opencode", "opencode/space-bunny-free"):
-        assert route_of("Chord", route_label("Chord", name)) == name
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "opencode",
+        "opencode/space-bunny-free",
+        "opencode/Qwen3.4:8B",
+        "gpt-5/a>b",
+        "two words/x",
+    ],
+)
+def test_route_label_spellings_round_trip(name):
+    assert config.usable_harness_name(name) or name == ""
+    assert route_of("Chord", route_label("Chord", name)) == name
+
+
+def test_route_labels_are_printed_with_arrows():
+    """Linear allows neither `/` nor `:` in a label, so `/` prints as ` -> `."""
+    assert route_label("Chord", "t3") == "Chord -> t3"
+    assert route_label("Chord", "codex") == "Chord -> codex"
+    assert route_label("Chord", "opencode") == "Chord -> opencode"
+    assert route_label("Chord", "opencode/big-pickle") == (
+        "Chord -> opencode -> big-pickle"
+    )
+    assert route_label("Chord", "opencode/Qwen3.4:8B") == (
+        "Chord -> opencode -> Qwen3.4:8B"
+    )
+    assert route_label("Chord", DEFAULT_ROUTE) == "Chord"
+
+
+@pytest.mark.parametrize(
+    "legacy,current",
+    [
+        ("Chord/t3", "Chord -> t3"),
+        ("Chord/claude", "Chord -> claude"),
+        ("Chord/opencode/big-pickle", "Chord -> opencode -> big-pickle"),
+    ],
+)
+def test_a_legacy_slash_label_names_the_same_harness(legacy, current):
+    """Labels made before the arrow keep routing exactly where they did."""
+    assert route_of("Chord", legacy) == route_of("Chord", current)
+
+
+def test_both_spellings_on_one_issue_are_one_route():
+    router = Router("Chord", "print", {"t3": "t3"})
+    issue = {"labels": {"nodes": [{"name": "Chord/t3"}, {"name": "Chord -> t3"}]}}
+    assert router.candidates(issue) == ["t3"]
+
+
+@pytest.mark.parametrize("name", ["qwen3.4:4b", "opencode/Qwen3.4:8B", "a:b", "x:"])
+def test_a_harness_name_may_contain_a_colon(name):
+    """Model names have colons, and Chord gives `:` no meaning."""
+    assert config.usable_harness_name(name)
+
+
+def test_a_colon_model_name_in_chord_toml_routes(tmp_path):
+    """`[harnesses."opencode/Qwen3.4:8B"]` answers
+    `Chord -> opencode -> Qwen3.4:8B`, and the no-space arrow too."""
+    path = tmp_path / "chord.toml"
+    path.write_text(
+        '[harnesses."opencode/Qwen3.4:8B"]\n'
+        'command = ["opencode", "run", "--model", "Qwen3.4:8B"]\n'
+    )
+    cfg = config.load(path)
+    router = Router(cfg.label, cfg.harness, cfg.harnesses, factory=lambda spec: spec)
+    for label in ("Chord -> opencode -> Qwen3.4:8B", "Chord->opencode->Qwen3.4:8B"):
+        issue = {"labels": {"nodes": [{"name": label}]}}
+        assert router.candidates(issue) == ["opencode/Qwen3.4:8B"]
+    assert router.harness_for("opencode/Qwen3.4:8B") == [
+        "opencode",
+        "run",
+        "--model",
+        "Qwen3.4:8B",
+    ]
+    # Exact and case sensitive: a different case is a different, unknown name.
+    lower = {"labels": {"nodes": [{"name": "Chord -> opencode -> qwen3.4:8b"}]}}
+    assert router.candidates(lower) == ["opencode/qwen3.4:8b"]
+    with pytest.raises(UnknownRoute):
+        router.harness_for("opencode/qwen3.4:8b")
+
+
+def test_a_slash_key_in_chord_toml_answers_the_arrow_label(tmp_path):
+    path = tmp_path / "chord.toml"
+    path.write_text('[harnesses."opencode/big-pickle"]\ncommand = "cat"\n')
+    cfg = config.load(path)
+    assert cfg.harnesses == {"opencode/big-pickle": "cat"}
+    router = Router(cfg.label, cfg.harness, cfg.harnesses)
+    assert route_label(cfg.label, router.names[0]) == "Chord -> opencode -> big-pickle"
+    assert route_of(cfg.label, "Chord -> opencode -> big-pickle") == router.names[0]
+
+
+def test_a_backslash_in_a_key_is_an_ordinary_character(tmp_path):
+    """Backslash routing never shipped: `opencode\\big-pickle` is its own name,
+    not another spelling of `opencode/big-pickle`."""
+    path = tmp_path / "chord.toml"
+    path.write_text(
+        '[harnesses."opencode/big-pickle"]\ncommand = "cat"\n'
+        "[harnesses.'opencode\\big-pickle']\ncommand = \"tac\"\n"
+    )
+    cfg = config.load(path)
+    assert cfg.harnesses == {"opencode/big-pickle": "cat", "opencode\\big-pickle": "tac"}
+    assert route_label("Chord", "opencode\\big-pickle") == "Chord -> opencode\\big-pickle"
+
+
+@pytest.mark.parametrize("key", ['"opencode->tiny"', '"opencode -> tiny"', '"->"'])
+def test_an_arrow_in_a_key_is_a_config_error_that_says_so(tmp_path, key):
+    path = tmp_path / "chord.toml"
+    path.write_text(f'[harnesses.{key}]\ncommand = "cat"\n')
+    with pytest.raises(config.ConfigError, match="can't contain '->'"):
+        config.load(path)
+
+
+@pytest.mark.parametrize("key", ['"opencode / tiny"', '"/tiny"', '"a//b"'])
+def test_a_key_with_an_unroutable_part_is_a_config_error(tmp_path, key):
+    path = tmp_path / "chord.toml"
+    path.write_text(f'[harnesses.{key}]\ncommand = "cat"\n')
+    with pytest.raises(config.ConfigError, match="isn't a usable harness name"):
+        config.load(path)
 
 
 # --- the poll filter ---
 
 
 def test_the_filter_catches_the_bare_label_and_any_route():
-    """Both halves matter: a curated route is `<label>/<name>`."""
+    """Every part matters: a route is `<label> -> <name>` or `<label>-><name>`,
+    and a route label made before the arrow is `<label>/<name>`."""
     assert Router("Chord", "print").filter() == {
         "or": [
             {"labels": {"name": {"eq": "Chord"}}},
+            {"labels": {"name": {"startsWith": "Chord ->"}}},
+            {"labels": {"name": {"startsWith": "Chord->"}}},
             {"labels": {"name": {"startsWith": "Chord/"}}},
         ]
     }
@@ -113,8 +272,20 @@ def test_the_filter_catches_the_bare_label_and_any_route():
 
 def test_the_filter_prefix_cannot_run_into_unrelated_labels():
     """`startsWith: "Chord"` would match `Chordle` and `Chord-V2`."""
-    halves = Router("Chord", "print").filter()["or"]
-    assert halves[1] == {"labels": {"name": {"startsWith": "Chord/"}}}
+    parts = Router("Chord", "print").filter()["or"]
+    for part in parts[1:]:
+        prefix = part["labels"]["name"]["startsWith"]
+        for unrelated in ("Chordle", "Chord-V2", "Chordle -> x", "Chord - x"):
+            assert not unrelated.startswith(prefix)
+
+
+def test_every_label_the_filter_matches_names_a_route():
+    """The filter and the parser agree: anything fetched has a route."""
+    parts = Router("Chord", "print").filter()["or"]
+    prefixes = [part["labels"]["name"]["startsWith"] for part in parts[1:]]
+    for prefix in prefixes:
+        for tail in ("", " ", "x", " x", "x -> y", "->", "/"):
+            assert route_of("Chord", prefix + tail) is not None
 
 
 def test_the_filter_does_not_depend_on_how_many_harnesses_are_curated():
@@ -133,14 +304,14 @@ def labels(*names):
 
 def test_candidates_find_every_route_on_an_issue():
     router = Router("Chord", "print")
-    issue = labels("Chord", "Chord/opencode", "Chord/opencode/tiny")
+    issue = labels("Chord", "Chord -> opencode", "Chord -> opencode -> tiny")
     assert router.candidates(issue) == ["opencode/tiny", "opencode", DEFAULT_ROUTE]
 
 
 def test_candidates_are_most_specific_first():
     """The fallback order when Linear's audit trail can't be read."""
     router = Router("Chord", "print")
-    assert router.candidates(labels("Chord", "Chord/a")) == ["a", DEFAULT_ROUTE]
+    assert router.candidates(labels("Chord", "Chord -> a")) == ["a", DEFAULT_ROUTE]
 
 
 def test_candidates_ignore_labels_that_arent_routes():
@@ -150,13 +321,13 @@ def test_candidates_ignore_labels_that_arent_routes():
 
 def test_a_duplicate_route_label_is_only_one_candidate():
     router = Router("Chord", "print")
-    assert router.candidates(labels("Chord/opencode", "Chord/opencode")) == ["opencode"]
+    assert router.candidates(labels("Chord -> opencode", "Chord -> opencode")) == ["opencode"]
 
 
 def test_candidates_survive_a_label_node_that_is_not_a_dict():
     """Linear is the other end of this, and it is allowed to surprise us."""
     router = Router("Chord", "print")
-    issue = {"labels": {"nodes": [None, "opencode", {"name": "Chord/opencode"}]}}
+    issue = {"labels": {"nodes": [None, "opencode", {"name": "Chord -> opencode"}]}}
     assert router.candidates(issue) == ["opencode"]
 
 
@@ -202,7 +373,7 @@ def test_an_uncured_route_is_refused_by_name():
 
 
 def test_a_curated_name_does_not_shadow_the_default():
-    """Two namespaces: `Chord/foo` is the curated `foo`, `Chord` is `harness`."""
+    """Two namespaces: `Chord -> foo` is the curated `foo`, `Chord` is `harness`."""
     seen = []
     router = Router(
         "Chord",
@@ -232,7 +403,7 @@ def test_a_route_is_built_once():
 def test_a_broken_curated_command_is_reported_with_its_label():
     """`chord start` needs to say which label led to the bad command."""
     router = Router("Chord", "print", {"nope": "definitely-not-installed-xyz"})
-    with pytest.raises(HarnessError, match="Chord/nope"):
+    with pytest.raises(HarnessError, match=re.escape("Chord -> nope")):
         router.validate()
 
 
@@ -244,8 +415,8 @@ def test_routes_lists_the_default_first_then_the_curated_ones_by_name():
     router = Router("Chord", "opencode", {"zebra": "cat", "alpha": ["claude", "-p"]})
     assert [(r.label, r.name, r.spelling) for r in router.routes()] == [
         ("Chord", "", "opencode"),
-        ("Chord/alpha", "alpha", "claude -p"),
-        ("Chord/zebra", "zebra", "cat"),
+        ("Chord -> alpha", "alpha", "claude -p"),
+        ("Chord -> zebra", "zebra", "cat"),
     ]
 
 
@@ -303,16 +474,18 @@ def test_a_curated_harness_without_arguments_is_a_bare_name(tmp_path):
     assert config.load(path).harnesses == {"claude": "claude"}
 
 
-def test_a_trigger_label_must_not_end_in_the_separator(tmp_path):
-    """`label = "Chord/"` would make every route `Chord//<name>`."""
+@pytest.mark.parametrize("label", ["Chord ->", "Chord->", "Chord/"])
+def test_a_trigger_label_must_not_end_in_the_separator(tmp_path, label):
+    """`label = "Chord ->"` would make every route `Chord -> -> <name>`, and
+    `label = "Chord/"` would do the same to the legacy `Chord//<name>`."""
     path = tmp_path / "chord.toml"
-    path.write_text('label = "Chord/"\n')
+    path.write_text(f"label = '{label}'\n")
     with pytest.raises(config.ConfigError, match="double the separator"):
         config.load(path)
 
 
 def test_a_trigger_label_may_contain_the_separator(tmp_path):
-    """`label = "team/Chord"` routes under `team/Chord/<name>`, which is fine."""
+    """`label = "team/Chord"` routes under `team/Chord -> <name>`, which is fine."""
     path = tmp_path / "chord.toml"
     path.write_text('label = "team/Chord"\n')
     cfg = config.load(path)
@@ -389,13 +562,13 @@ CURATED = {
 
 
 def test_the_newest_route_label_is_the_one_that_runs(tmp_path, capsys):
-    """The example from the issue: `Chord/opencode/space-bunny-free`."""
+    """The example from the issue: `Chord -> opencode -> space-bunny-free`."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode", "Chord/opencode/space-bunny-free")],
+        [issue(1, "Chord", "Chord -> opencode", "Chord -> opencode -> space-bunny-free")],
         history=[
-            change("2026-03-01", "Chord/opencode/space-bunny-free", who=BY_BOB),
-            change("2026-02-01", "Chord/opencode", who=BY_ALICE),
+            change("2026-03-01", "Chord -> opencode -> space-bunny-free", who=BY_BOB),
+            change("2026-02-01", "Chord -> opencode", who=BY_ALICE),
             change("2026-01-01", "Chord", who=BY_ALICE),
         ],
     )
@@ -403,7 +576,7 @@ def test_the_newest_route_label_is_the_one_that_runs(tmp_path, capsys):
 
     assert len(spy.prompts) == 1
     out = capsys.readouterr().out
-    assert "Chord/opencode/space-bunny-free" in out
+    assert "Chord -> opencode -> space-bunny-free" in out
     # The default's label is in the history but must not be what ran.
     assert spy.prompts[0].count("do 1") == 1
 
@@ -412,16 +585,16 @@ def test_history_decides_which_of_several_labels_is_newest(tmp_path, capsys):
     """Not "most specific": the newest label added, whatever it happens to be."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")],
+        [issue(1, "Chord", "Chord -> opencode")],
         history=[
-            change("2026-03-01", "Chord/opencode", who=BY_BOB),
+            change("2026-03-01", "Chord -> opencode", who=BY_BOB),
             change("2026-01-01", "Chord", who=BY_ALICE),
         ],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
     out = capsys.readouterr().out
-    assert "route Chord/opencode" in out
+    assert "route Chord -> opencode" in out
     assert "route Chord\n" not in out, "the bare trigger label won a narrowed issue"
 
 
@@ -429,24 +602,24 @@ def test_a_bare_trigger_label_loses_to_a_narrower_older_one(tmp_path, capsys):
     """Narrowing is the normal direction of travel, so it must be respected."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")],
-        # `Chord` added after `Chord/opencode`: the issue was handed back.
+        [issue(1, "Chord", "Chord -> opencode")],
+        # `Chord` added after `Chord -> opencode`: the issue was handed back.
         history=[
             change("2026-03-01", "Chord", who=BY_ALICE),
-            change("2026-01-01", "Chord/opencode", who=BY_BOB),
+            change("2026-01-01", "Chord -> opencode", who=BY_BOB),
         ],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
     out = capsys.readouterr().out
-    assert "route      Chord/opencode" not in out
+    assert "route      Chord -> opencode" not in out
     assert len(spy.prompts) == 1, "the issue should still have been worked on"
 
 
 def test_history_is_only_read_when_there_is_a_choice(tmp_path):
     """A round trip per issue is a real cost for a decision nobody is making."""
     spy = RecordingHarness()
-    stub = StubLinear([issue(1, "Chord"), issue(2, "Chord/opencode")])
+    stub = StubLinear([issue(1, "Chord"), issue(2, "Chord -> opencode")])
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
     assert stub.history_asked == [], "asked Linear about an unambiguous issue"
@@ -458,13 +631,13 @@ def test_an_unreadable_history_falls_back_to_the_most_specific(tmp_path, capsys)
 
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")], history_error=LinearError("gone")
+        [issue(1, "Chord", "Chord -> opencode")], history_error=LinearError("gone")
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
     out = capsys.readouterr().out
     assert "label history" in out, "the fallback was silent"
-    assert "Chord/opencode" in out
+    assert "Chord -> opencode" in out
     assert len(spy.prompts) == 1, "an unreadable history stopped the work"
 
 
@@ -472,38 +645,38 @@ def test_history_that_mentions_no_route_falls_back_too(tmp_path, capsys):
     """A route applied long enough ago to be off the history page."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/opencode")],
+        [issue(1, "Chord", "Chord -> opencode")],
         history=[change("2026-03-01", "Bug"), change("2026-01-01", "Research")],
     )
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
 
     assert len(spy.prompts) == 1
-    assert "route Chord/opencode" in capsys.readouterr().out
+    assert "route Chord -> opencode" in capsys.readouterr().out
 
 
 def test_an_uncured_route_is_skipped_and_says_which_label(tmp_path, capsys):
     """Not run on the default: doing the work wrong is worse than not."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord/typo-here")],
-        history=[change("2026-03-01", "Chord/typo-here", who=BY_ALICE)],
+        [issue(1, "Chord", "Chord -> typo-here")],
+        history=[change("2026-03-01", "Chord -> typo-here", who=BY_ALICE)],
     )
     w = build(tmp_path, stub, spy, CURATED)
     asyncio.run(w.poll())
 
     out = capsys.readouterr().out
     assert spy.prompts == [], "ran the issue on a harness nobody asked for"
-    assert "Chord/typo-here" in out
+    assert "Chord -> typo-here" in out
     assert "typo-here" in out
     assert w.handed_over == 1, "the issue behind it will never be reached"
 
 
 def test_an_uncured_route_says_how_to_retry_it(tmp_path, capsys):
     spy = RecordingHarness()
-    stub = StubLinear([issue(1, "Chord/nope")])
+    stub = StubLinear([issue(1, "Chord -> nope")])
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
     out = capsys.readouterr().out
-    assert "Chord/nope" in out
+    assert "Chord -> nope" in out
     # The issue is recorded, so removing the label won't bring it back. Saying
     # so is the difference between a message someone can act on and one that
     # sends them round in circles.
@@ -514,7 +687,7 @@ def test_an_uncured_route_says_how_to_retry_it(tmp_path, capsys):
 def test_an_uncured_route_line_is_not_truncated(tmp_path, capsys):
     """`one_line` cuts at 200 characters, which is where the fix would land."""
     spy = RecordingHarness()
-    stub = StubLinear([issue(1, "Chord/some-reasonably-long-route-name")])
+    stub = StubLinear([issue(1, "Chord -> some-reasonably-long-route-name")])
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
     out = capsys.readouterr().out
     assert "state.json" in out
@@ -523,7 +696,7 @@ def test_an_uncured_route_line_is_not_truncated(tmp_path, capsys):
 
 def test_a_bad_route_does_not_wedge_the_queue_behind_it(tmp_path):
     spy = RecordingHarness()
-    stub = StubLinear([issue(1, "Chord/nope"), issue(2, "Chord")])
+    stub = StubLinear([issue(1, "Chord -> nope"), issue(2, "Chord")])
     asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
     assert len(spy.prompts) == 1
     assert "do 2" in spy.prompts[0]
@@ -548,7 +721,7 @@ def test_a_curated_route_that_stops_being_runnable_is_recorded(tmp_path, capsys)
             return RecordingHarness()
         raise HarnessError("`opencode` isn't on your PATH.")
 
-    stub = StubLinear([issue(1, "Chord/opencode")])
+    stub = StubLinear([issue(1, "Chord -> opencode")])
     runner = w.Watcher(
         stub,
         Router("Chord", "print", CURATED, factory=factory),
@@ -560,7 +733,7 @@ def test_a_curated_route_that_stops_being_runnable_is_recorded(tmp_path, capsys)
     out = capsys.readouterr().out
     assert built == [], "the default should not have been asked to do the work"
     assert "didn't finish" in out, "reported as something other than a failure"
-    assert "Chord/opencode" in out, "the route label was not named"
+    assert "Chord -> opencode" in out, "the route label was not named"
     assert runner.handed_over == 1, "an unrecorded route is retried on every poll"
 
 
@@ -575,7 +748,7 @@ def test_a_curated_route_that_cannot_run_does_not_wedge_the_queue(tmp_path):
             return spy
         raise HarnessError("`opencode` isn't on your PATH.")
 
-    stub = StubLinear([issue(1, "Chord/opencode"), issue(2, "Chord")])
+    stub = StubLinear([issue(1, "Chord -> opencode"), issue(2, "Chord")])
     runner = w.Watcher(
         stub,
         Router("Chord", "print", CURATED, factory=factory),
@@ -658,8 +831,8 @@ def test_startup_says_which_routes_are_available(tmp_path, capsys):
     asyncio.run(once())
     out = capsys.readouterr().out
     assert "issues labelled 'Chord'" in out
-    assert "Chord/opencode -> opencode" in out
-    assert "Chord/opencode/space-bunny-free -> opencode run --model" in out
+    assert "Chord -> opencode -> opencode" in out
+    assert "Chord -> opencode -> space-bunny-free -> opencode run --model" in out
 
 
 def test_startup_admits_when_nothing_is_curated(tmp_path, capsys):
@@ -813,3 +986,67 @@ def test_the_history_query_asks_for_what_it_needs():
 
 def test_the_print_harness_is_still_reachable_by_name():
     assert isinstance(harness.build("print"), harness.PrintHarness)
+
+
+T3_CURATED = {
+    "t3": ["t3"],
+    "opencode": ["opencode"],
+    "opencode/big-pickle": ["opencode", "run", "--model", "big-pickle"],
+    "opencode/Qwen3.4:8B": ["opencode", "run", "--model", "Qwen3.4:8B"],
+}
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Chord -> t3",
+        "Chord -> opencode",
+        "Chord -> opencode -> big-pickle",
+        "Chord -> opencode -> Qwen3.4:8B",
+        "Chord->opencode->Qwen3.4:8B",
+        "Chord/t3",
+        "Chord/opencode/big-pickle",
+    ],
+)
+def test_a_route_label_runs_its_curated_harness(tmp_path, capsys, label):
+    """`Chord -> t3`, nested names (colons, dots and uppercase included), the
+    no-space arrow, and the legacy `Chord/t3` all run the curated harness they name, never the default."""
+    ran: list[object] = []
+
+    class Spy:
+        def __init__(self, spec):
+            self.name = "spy"
+            self.spec = spec
+
+        async def send(self, prompt, cwd=None):
+            ran.append(self.spec)
+
+    from chord import watcher
+
+    w = watcher.Watcher(
+        StubLinear([issue(1, label)]),
+        Router("Chord", "print", T3_CURATED, factory=Spy),
+        1,
+        tmp_path / "state.json",
+    )
+    asyncio.run(w.poll())
+    expected = T3_CURATED[route_of("Chord", label) or ""]
+    assert ran == [expected]
+    assert "skipped" not in capsys.readouterr().out
+
+
+def test_a_legacy_label_in_the_history_still_decides(tmp_path, capsys):
+    """An issue carrying `Chord` and a legacy `Chord/opencode`: the history
+    names the legacy spelling, and it still picks the route."""
+    spy = RecordingHarness()
+    stub = StubLinear(
+        [issue(1, "Chord", "Chord/opencode")],
+        history=[
+            change("2026-03-01", "Chord/opencode", who=BY_BOB),
+            change("2026-01-01", "Chord", who=BY_ALICE),
+        ],
+    )
+    asyncio.run(build(tmp_path, stub, spy, CURATED).poll())
+    out = capsys.readouterr().out
+    assert "route Chord -> opencode" in out
+    assert "route Chord\n" not in out, "the legacy label lost to the bare one"

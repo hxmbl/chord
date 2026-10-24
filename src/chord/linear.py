@@ -95,7 +95,7 @@ query IssuesByRoute($filter: IssueFilter!, $first: Int!, $after: String) {
 # Which of an issue's labels was added last, read from Linear's own audit trail.
 # This is what makes "use the newest matching label" a fact rather than a guess:
 # `labels { nodes { name } }` comes back as an unordered set with no timestamps,
-# so an issue carrying both `Chord` and `Chord/opencode/tiny` cannot be resolved
+# so an issue carrying both `Chord` and `Chord -> opencode -> tiny` cannot be resolved
 # from the issue alone. `addedLabels` says who put which label on and when.
 #
 # `actor` is who did it, which is what `allowed_actors` is checked against. It is

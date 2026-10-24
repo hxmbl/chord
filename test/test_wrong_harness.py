@@ -81,12 +81,12 @@ def run_once(tmp_path, label_names):
 @pytest.mark.parametrize(
     "label",
     [
-        "Chord//claude",
-        "Chord/claude/",
-        "Chord/",
-        "Chord//",
-        "Chord///",
-        "Chord//claude//",
+        "Chord -> -> claude",
+        "Chord -> claude ->",
+        "Chord ->",
+        "Chord -> ->",
+        "Chord -> -> ->",
+        "Chord -> -> claude -> ->",
     ],
 )
 def test_a_malformed_route_never_reaches_the_default_harness(tmp_path, label):
@@ -94,7 +94,8 @@ def test_a_malformed_route_never_reaches_the_default_harness(tmp_path, label):
 
     Before, each of these ran on the default and was recorded as handed over.
     Now each is skipped, and `claude` — which *is* curated — is still refused,
-    because the label asked for `/claude` and nothing is curated under that name.
+    because the label asked for `/claude` (or `claude/`) and nothing is curated
+    under that name.
     """
     ran, _watcher, _out = run_once(tmp_path, [label])
     assert "DEFAULT" not in ran, (
@@ -103,7 +104,19 @@ def test_a_malformed_route_never_reaches_the_default_harness(tmp_path, label):
     )
 
 
-@pytest.mark.parametrize("label", ["Chord//claude", "Chord/claude/", "Chord/"])
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Chord -> -> claude",
+        "Chord -> claude ->",
+        "Chord ->",
+        "Chord -> -> claude -> ->",
+        # The legacy spelling's typos are reported as written, too.
+        "Chord//claude",
+        "Chord/claude/",
+        "Chord/",
+    ],
+)
 def test_a_malformed_route_is_skipped_and_says_so(tmp_path, label):
     """Not silently dropped either: the person who labelled it can fix it."""
     ran, w, out = run_once(tmp_path, [label])
@@ -115,13 +128,13 @@ def test_a_malformed_route_is_skipped_and_says_so(tmp_path, label):
 
 
 def test_a_malformed_route_beside_a_good_one_does_not_take_over(tmp_path):
-    """`Chord/claude` plus a typo: the good label decides, the typo is ignored.
+    """`Chord -> claude` plus a typo: the good label decides, the typo is ignored.
 
     Specificity ordering puts the longer name first, so the typo would win the
     fallback if the audit trail could not be read. Curation cannot produce
     `/claude`, so the issue is skipped rather than run by the wrong thing.
     """
-    ran, _watcher, out = run_once(tmp_path, ["Chord/claude", "Chord//claude"])
+    ran, _watcher, out = run_once(tmp_path, ["Chord -> claude", "Chord -> -> claude"])
     assert "DEFAULT" not in ran
     assert "spec-claude" not in ran or "skipped" in out
 
@@ -136,9 +149,8 @@ def test_route_of_never_returns_none_for_something_the_filter_matched():
     None is what sent the issue to the default.
     """
     router = Router("Chord", "print")
-    prefix = "Chord/"
-    for suffix in ["", "/", "//", "x", "/x", "x/", "//x//", " ", "claude"]:
-        label = prefix + suffix
+    suffixes = ["", "/", "//", ":", "x", "/x", "x/", ":x", "x:", "//x//", " ", "claude"]
+    for label in [prefix + suffix for prefix in ("Chord ->", "Chord->", "Chord/") for suffix in suffixes]:
         assert route_of("Chord", label) is not None, (
             f"{label!r} matches the poll filter but names no harness"
         )
@@ -150,16 +162,16 @@ def test_route_of_never_returns_none_for_something_the_filter_matched():
 @pytest.mark.parametrize(
     "name,expected",
     [
-        ("Chord/claude", "claude"),
-        ("Chord/opencode/tiny", "opencode/tiny"),
-        ("Chord/two words", "two words"),
-        ("Chord/dots.and-dashes_1", "dots.and-dashes_1"),
+        ("Chord -> claude", "claude"),
+        ("Chord -> opencode -> tiny", "opencode/tiny"),
+        ("Chord -> two words", "two words"),
+        ("Chord -> dots.and-dashes_1", "dots.and-dashes_1"),
         # The malformed ones, verbatim. They name something; nothing is curated
-        # under the name, which is what makes them skippable. `Chord/` names
+        # under the name, which is what makes them skippable. `Chord ->` names
         # nothing at all, and gets EMPTY_NAME — see below.
-        ("Chord//claude", "/claude"),
-        ("Chord/claude/", "claude/"),
-        ("Chord//", "/"),
+        ("Chord -> -> claude", "/claude"),
+        ("Chord -> claude ->", "claude/"),
+        ("Chord -> ->", "/"),
     ],
 )
 def test_route_of_is_verbatim_above_the_separator(name, expected):
@@ -171,7 +183,7 @@ def test_the_bare_label_still_asks_for_the_default():
 
 
 def test_an_empty_suffix_names_nothing_rather_than_the_default():
-    """`Chord/` with nothing after it, which Linear will happily let you create.
+    """`Chord ->` with nothing after it, which Linear will happily let you create.
 
     It cannot return `""`, because that *is* `DEFAULT_ROUTE` — the bare `Chord`
     label — and the two would be indistinguishable, so a label naming no harness
@@ -179,14 +191,24 @@ def test_an_empty_suffix_names_nothing_rather_than_the_default():
     narrower than the others. So it gets its own name, which is not curatable
     and therefore skips.
     """
-    assert route_of("Chord", "Chord/") == routing.EMPTY_NAME
+    assert route_of("Chord", "Chord ->") == routing.EMPTY_NAME
     assert routing.EMPTY_NAME != DEFAULT_ROUTE
     assert not config.usable_harness_name(routing.EMPTY_NAME)
 
 
 @pytest.mark.parametrize(
     "name",
-    ["Chordle", "Chordle/route", "chord", "Something/Chord", "ChordX", "Chord ", ""],
+    [
+        "Chordle",
+        "Chordle/route",
+        "Chordle -> route",
+        "chord",
+        "Something/Chord",
+        "ChordX",
+        "Chord ",
+        "Chord\\claude",
+        "",
+    ],
 )
 def test_something_that_is_not_a_route_label_is_still_not_one(name):
     """Unchanged: a label that is not a route at all is not a route."""
@@ -214,8 +236,8 @@ def test_config_and_routing_agree_about_the_grammar():
     the parser rejected the malformed ones, and the gap between the two is
     exactly where work reached the wrong harness.
     """
-    for name in ["x", "/x", "x/", "//", "a//b", "claude", "a/b"]:
-        route = route_of("Chord", f"Chord/{name}")
+    for name in ["x", "/x", "x/", "//", "a//b", "claude", "a/b", "Qwen3.4:8B"]:
+        route = route_of("Chord", routing.route_label("Chord", name))
         if route is not None and route != DEFAULT_ROUTE:
             # Verbatim above the separator, so a typo names a harness that does
             # not exist rather than erasing itself and falling through to the
@@ -224,7 +246,7 @@ def test_config_and_routing_agree_about_the_grammar():
 
 
 def test_cannot_curate_a_name_the_grammar_produces_from_a_typo(tmp_path):
-    """So `Chord//claude` has nothing it could match, by construction."""
+    """So `Chord -> -> claude` has nothing it could match, by construction."""
     path = tmp_path / "chord.toml"
     path.write_text('[harnesses."/claude"]\ncommand = "cat"\n')
     with pytest.raises(config.ConfigError):
@@ -236,16 +258,16 @@ def test_cannot_curate_a_name_the_grammar_produces_from_a_typo(tmp_path):
 
 def test_a_well_formed_uncured_route_is_still_skipped(tmp_path):
     """The case the design already handled, and still does."""
-    ran, _watcher, out = run_once(tmp_path, ["Chord/nope"])
+    ran, _watcher, out = run_once(tmp_path, ["Chord -> nope"])
     assert ran == []
     assert "skipped" in out
-    assert "Chord/nope" in out
+    assert "Chord -> nope" in out
     assert '[harnesses."nope"]' in out, "the fix must be spelled out"
 
 
 def test_a_well_formed_curated_route_still_runs(tmp_path):
     """And the happy path is untouched by any of this."""
-    ran, w, out = run_once(tmp_path, ["Chord/claude"])
+    ran, w, out = run_once(tmp_path, ["Chord -> claude"])
     assert ran == ["spec-claude"]
     assert w.handed_over == 1
     assert "skipped" not in out
@@ -270,12 +292,12 @@ def test_candidates_ordering_is_unaffected(tmp_path):
     """Most specific first, which is the fallback when history is unreadable."""
     router = Router("Chord", "print", CURATED)
     assert router.candidates(
-        labelled("Chord", "Chord/opencode", "Chord/opencode/tiny")
+        labelled("Chord", "Chord -> opencode", "Chord -> opencode -> tiny")
     ) == ["opencode/tiny", "opencode", DEFAULT_ROUTE]
 
 
 def test_a_label_matching_the_filter_prefix_always_appears(tmp_path):
     """Including one that is only a prefix of a real route."""
     router = Router("Chord", "print", CURATED)
-    found = router.candidates(labelled("Chord/opencode/tiny/"))
-    assert found == ["opencode/tiny/"], "a trailing slash must not erase the route"
+    found = router.candidates(labelled("Chord -> opencode -> tiny ->"))
+    assert found == ["opencode/tiny/"], "a trailing arrow must not erase the route"

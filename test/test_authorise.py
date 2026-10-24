@@ -489,7 +489,7 @@ def test_viewer_id_is_none_before_setup_and_never_raises():
 
 
 def test_a_narrowed_route_is_authorised_by_who_added_it(tmp_path):
-    """`Chord` was added first, `Chord/claude` second, by someone not allowed.
+    """`Chord` was added first, `Chord -> claude` second, by someone not allowed.
 
     The newest label is the one that routes, so it is also the one that
     authorises. Checking the bare `Chord` instead would let anyone who could
@@ -497,9 +497,9 @@ def test_a_narrowed_route_is_authorised_by_who_added_it(tmp_path):
     """
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(labels=("Chord", "Chord/claude"))],
+        [issue(labels=("Chord", "Chord -> claude"))],
         history(
-            ("2026-03-01", ("Chord/claude",), BOB),
+            ("2026-03-01", ("Chord -> claude",), BOB),
             ("2026-01-01", ("Chord",), ALICE),
         ),
     )

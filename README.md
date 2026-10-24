@@ -15,9 +15,9 @@ Claude Code, Codex, Cursor, or a custom script — is handed the issue and gets
 to work on it.
 
 Want a different harness for a particular issue? Give it a different label.
-`Chord/opencode/big-pickle` sends that issue to the `big-pickle`
-harness instead of the default one, while everything else keeps going to the
-default. See [Routing](#routing).
+`Chord -> opencode -> big-pickle` sends that issue to the curated
+`opencode/big-pickle` harness instead of the default one, while everything
+else keeps going to the default. See [Routing](#routing).
 
 It never writes back to Linear. Linear stays the source of truth; Chord is only
 a trigger that reads and forwards.
@@ -69,7 +69,7 @@ issue and, within a minute, it appears in the log:
 chord watch
 ```
 
-To send a particular issue somewhere else, label it `Chord/<name>`. See
+To send a particular issue somewhere else, label it `Chord -> <name>`. See
 [Routing](#routing).
 
 ### Webhooks (optional)
@@ -179,9 +179,11 @@ harness for you, creating the file if there isn't one:
 chord harness add big-pickle -- opencode run --model big-pickle
 ```
 
-It prints the `Chord/<name>` label to create in Linear, because Chord never
-creates a label itself. A user config at `~/.chord/chord.toml` is also
-supported; the project config wins.
+It prints the `Chord -> <name>` label to create in Linear, because Chord never
+creates a label itself. Give a nested name with `/`:
+`chord harness add opencode/big-pickle -- opencode run --model big-pickle`
+prints `Chord -> opencode -> big-pickle`. A user config at
+`~/.chord/chord.toml` is also supported; the project config wins.
 
 ```toml
 # The label that triggers a run. Default: "Chord".
@@ -217,7 +219,7 @@ allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 [notify]
 received = true
 
-# Extra named harnesses. A `Chord/<name>` label routes an issue to the one
+# Extra named harnesses. A `Chord -> <name>` label routes an issue to the one
 # called `<name>` instead of the default. See "Routing" below.
 [harnesses."opencode/big-pickle"]
 command = ["opencode", "run", "--model", "big-pickle"]
@@ -269,7 +271,7 @@ different project. Select it with `harness = "t3"` or a curated `t3` route:
 ```toml
 harness = "t3"
 
-# Alternatively, use a Linear route label named `Chord/t3`:
+# Alternatively, use a Linear route label named `Chord -> t3`:
 # [harnesses.t3]
 # command = ["t3"]
 ```
@@ -324,7 +326,7 @@ churns when someone's address changes, and a churn here fails *closed* — the
 issue is skipped, and it reads as Chord being broken. The id never changes.
 
 Chord checks the person who added the **routing label**, because that is the act
-which caused the run. An issue narrowed from `Chord` to `Chord/claude` is
+which caused the run. An issue narrowed from `Chord` to `Chord -> claude` is
 authorised by whoever narrowed it, not by whoever filed it.
 
 Two cases fall back rather than checking, and both say so in the log:
@@ -344,18 +346,39 @@ to allow them.
 
 Which harness runs an issue is decided by its labels.
 
-| Label                       | Harness                     |
-| --------------------------- | --------------------------- |
-| `Chord`                     | whatever `harness` says     |
-| `Chord/claude`              | the curated `claude`        |
-| `Chord/opencode/tiny`       | the curated `opencode/tiny` |
+| Label                               | Harness                           |
+| ----------------------------------- | --------------------------------- |
+| `Chord`                             | whatever `harness` says           |
+| `Chord -> codex`                    | the curated `codex`               |
+| `Chord -> opencode`                 | the curated `opencode`            |
+| `Chord -> opencode -> big-pickle`   | the curated `opencode/big-pickle` |
+| `Chord -> opencode -> Qwen3.4:8B`   | the curated `opencode/Qwen3.4:8B` |
 
-The whole part after `Chord/` is the harness name. Nothing in Chord knows what
-a harness is or how many segments its name has, so `opencode/tiny` is a name
-you chose, not a hierarchy Chord has to interpret.
+Route labels read as a parent -> child relationship: `Chord -> opencode` under
+`Chord`, and `Chord -> opencode -> big-pickle` under that. Everything after the
+first arrow is the harness name, with each further arrow standing for a `/` in
+the name. **Linear allows neither `/` nor `:` in label names**, which is why
+route labels use an arrow. Chord prints the arrow as ` -> `, and reads it with
+any spacing, so `Chord->opencode->big-pickle` routes to the same harness; the
+parts between arrows are trimmed. Everything else in a name is its own, colons,
+dots and uppercase included, so a model name like `Qwen3.4:8B` goes in as it is.
+Nothing in Chord knows what a harness is or how many parts its name has, so
+`opencode/big-pickle` is a name you chose, not a hierarchy Chord has to
+interpret. Matching is exact and case sensitive, and only curated names route.
+
+In chord.toml, keys always use `/` — `[harnesses."opencode/big-pickle"]` — and
+the arrows go only in the Linear label. A harness name can't contain `->`, and
+no part of it can be empty or start or end with a space, so every name has
+exactly one label; config validation says so when one does. `chord harness add`
+takes the name with `/` as well, and prints the label to create.
+
+**Older `Chord/<name>` labels still work.** Route labels used `/` before Linear
+stopped allowing it, and Chord still reads that spelling: `Chord/t3` routes
+exactly where `Chord -> t3` does, so labels already in your workspace keep
+working. Chord only ever prints the arrow spelling.
 
 **An issue can carry more than one.** Label it `Chord`, then narrow it to
-`Chord/opencode/big-pickle` when you know where you want it to go, and
+`Chord -> opencode -> big-pickle` when you know where you want it to go, and
 both labels sit on the issue. Chord routes on **the one added most recently**,
 which it reads from Linear's own audit trail — not from a guess about which
 label is more specific. Narrowing an issue therefore changes where it goes,
@@ -364,7 +387,7 @@ and handing it back to the default is just adding `Chord` again.
 If Linear can't be asked, Chord falls back to the most specific label on the
 issue and says so in the log.
 
-**A route with no harness behind it stops the issue.** `Chord/typo-here` isn't
+**A route with no harness behind it stops the issue.** `Chord -> typo-here` isn't
 a typo Chord can shrug off: running the work on the default harness instead
 would hand it to an agent nobody asked for, on arguments nobody chose. So the
 issue is skipped, the log names the label and how to fix it, and the issues
@@ -378,7 +401,7 @@ so `chord info` is the only place the second can be read before it matters:
 
 ```
   labels     Chord                            opencode  (opencode run)
-             Chord/claude                     claude
+             Chord -> claude                  claude
              Add these in Linear by hand — Chord never creates a
              label. Adding one is what makes this machine run a
              harness, so this list is the whole trigger surface.
@@ -444,7 +467,7 @@ delivery unless you turn it off.** Four outcomes, four verbs:
 | ----------------------------- | ------------------ | --------------------------------------------- |
 | The harness has the issue (`[notify] received`, on by default) | `ENG-201 received` | `Delivered to opencode.` |
 | The harness didn't finish, or never got it | `ENG-201 failed`   | `` `opencode` exited 1. ``       |
-| Stopped before it started     | `ENG-201 skipped`  | `'Chord/typo' names a harness chord.toml doesn't define.` |
+| Stopped before it started     | `ENG-201 skipped`  | `'Chord -> typo' names a harness chord.toml doesn't define.` |
 | Asked by someone not allowed  | `ENG-201 refused`  | `sam added 'Chord', and that is not in allowed_actors.` |
 
 Each is a title saying what happened over a line saying why, because a banner is
@@ -667,7 +690,7 @@ only, and that the URL in Linear has the `/webhook` path on the end.
 
 `harness` is either a name Chord knows or a command to run. Under
 `[harnesses.<name>]`, `command` means the same thing, and the entry's name is
-what a `Chord/<name>` label routes to.
+what a `Chord -> <name>` label routes to.
 
 **`opencode`** is the default built-in harness. It runs `opencode run`,
 OpenCode's non-interactive form, with the issue on stdin: with no message
@@ -754,7 +777,7 @@ harness is, so pointing it at a tool Chord has never heard of is a config
 change, not a release.
 
 A curated name and the default are separate things. `harness` is what a bare
-`Chord` runs; `Chord/foo` always means the entry named `foo`, even when the two
+`Chord` runs; `Chord -> foo` always means the entry named `foo`, even when the two
 happen to spell the same command.
 
 Two things follow from the issue arriving on stdin:
@@ -828,7 +851,7 @@ A built-in is reachable from `[harnesses.<name>]` like any other command, since
 ## How it works
 
 Once a minute, Chord asks Linear for issues carrying a route label — the bare
-`Chord` label or any `Chord/...` one, in a single request however many harnesses
+`Chord` label or any `Chord -> ...` one, in a single request however many harnesses
 you have curated. For each issue it hasn't seen, it picks a route, fetches the
 discussion, renders the two together, and hands that to the chosen harness.
 

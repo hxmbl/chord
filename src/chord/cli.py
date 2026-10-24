@@ -31,7 +31,7 @@ from chord.config import (
 from chord.harness import HarnessError, command_line
 from chord.linear import Linear
 from chord.paths import project_root
-from chord.routing import Router
+from chord.routing import Router, route_label
 from chord.watcher import StateError
 from chord.webhook import Webhook
 
@@ -106,7 +106,13 @@ app.add_typer(harness_app, name="harness")
 
 @harness_app.command("add")
 def harness_add(
-    name: str = typer.Argument(..., help="What a `Chord/<name>` label routes to."),
+    name: str = typer.Argument(
+        ...,
+        help=(
+            "The harness name, with `/` between parts (opencode/big-pickle). "
+            "Its Linear label writes each `/` as an arrow."
+        ),
+    ),
     command: list[str] = typer.Argument(
         ..., help="The command to run, with the issue on stdin. Use `--` first."
     ),
@@ -114,8 +120,11 @@ def harness_add(
     """Add `[harnesses."<name>"]` to chord.toml.
 
     Creates the stock chord.toml if there isn't one. The name is what a
-    `Chord/<name>` Linear label selects — you still create that label by
-    hand, because Chord never creates one.
+    `Chord -> <name>` Linear label selects, each `/` in the name written as
+    another ` -> ` in the label (Linear allows neither `/` nor `:` in labels) —
+    you still create that label by hand, because Chord never creates one. Type
+    the name with `/`, the way chord.toml keys it; `opencode/big-pickle` prints
+    the label `Chord -> opencode -> big-pickle`.
     """
     try:
         path, created = curate(name, command)
@@ -124,10 +133,12 @@ def harness_add(
     except ConfigError as exc:
         _fail(str(exc))
     verb = "Wrote" if created else "Added to"
-    label = SEPARATOR.join([load(path).label, name])
+    label = route_label(load(path).label, name)
     typer.echo(f"{verb} {path}.")
     typer.echo(
-        f"Create the label {label!r} in Linear by hand — Chord never creates one."
+        # Quoted by hand, not with !r, so it is always the exact text to type
+        # into Linear, whatever quotes the label or name contain.
+        f"Create the label '{label}' in Linear by hand — Chord never creates one."
     )
     typer.echo("`chord info` lists every label Chord acts on.")
 
@@ -258,11 +269,11 @@ def info():
     # The grammar, not the routing: this is every label the poll can match,
     # which is a wider set than the lines below, and the difference is the
     # point. `Router.filter()` asks Linear for the bare label and anything
-    # starting with the prefix, so a `Chord/...` label nobody curated still
+    # starting with the prefix, so a `Chord -> ...` label nobody curated still
     # arrives — to be reported and skipped, never run on the default harness.
     typer.echo(
-        f"  watching   issues labelled {config.label!r} "
-        f"or anything starting {config.label}{SEPARATOR}"
+        f"  watching   issues labelled '{config.label}' "
+        f"or anything starting '{config.label}{SEPARATOR.rstrip()}'"
     )
     for line in _labels(config):
         typer.echo(line)

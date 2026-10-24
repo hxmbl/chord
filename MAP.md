@@ -62,8 +62,19 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
 
 ### Routing
 **`src/chord/routing.py`** - Which harness an issue goes to
-- Label grammar: bare `<label>` is the default, `<label>/<name>` is a curated harness
-- The whole suffix is the name, so `opencode/tiny` is one name, not a hierarchy
+- Label grammar: bare `<label>` is the default, `<label> -> <name>` is a
+  curated harness; each further arrow is a `/` in the name, a parent -> child
+  relationship (Linear allows neither `/` nor `:` in labels):
+  `Chord -> opencode -> big-pickle` is `[harnesses."opencode/big-pickle"]`
+- Arrows are read with any whitespace around them (`Chord->opencode` works) and
+  the parts trimmed; `:`, `.` and uppercase are ordinary characters (model
+  names); matching is exact and case-sensitive, curated names only
+- `route_label()` prints each `/` as ` -> `; the legacy `<label>/<name>`
+  spelling is still read (same name, same route) and in the filter, but never
+  printed
+- `config.usable_harness_name()` refuses names containing `->` and empty or
+  space-padded parts, so every curated name round-trips through its label
+- `label_on()` reports an unknown route as the label actually on the issue
 - `filter()` builds one Linear query covering every route, curated or not
 - `candidates()` reads an issue's route labels, most specific first
 - `harness_for()` resolves a name to a built harness, memoized
