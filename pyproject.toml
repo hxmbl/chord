@@ -17,6 +17,10 @@ dependencies = [
     "keyring>=25.7.0",
     "python-dotenv>=1.2.3",
     "desktop-notifier>=6.1.0",
+    # Not imported directly: httpx verifies TLS against certifi's CA bundle.
+    # The floor keeps installs off bundles that still trust the compromised
+    # emSign roots (GHSA-6q48-6c7w-9gw2), even into an existing environment.
+    "certifi>=2026.10.19",
 ]
 
 [project.optional-dependencies]
