@@ -365,6 +365,9 @@ Harness output (logged to chord.log)
 - `rich` - Terminal output
 - `authlib` - OAuth
 - `httpx` - HTTP client
+- `certifi` - CA bundle httpx verifies TLS against. Never imported; declared
+  only for its floor (2026.10.19), which keeps out bundles that still trust
+  the compromised emSign roots (GHSA-6q48-6c7w-9gw2)
 - `keyring` - Secure credential storage
 - `python-dotenv` - Environment variables
 - `desktop-notifier` - Desktop notifications on Linux and Windows only; on
