@@ -39,6 +39,7 @@ from chord.harness import HarnessError, command_line
 from chord.linear import Linear
 from chord.paths import config_path, project_root
 from chord.routing import Router, route_label
+from chord.version import build as build_number
 from chord.watcher import StateError
 from chord.webhook import Webhook
 
@@ -47,6 +48,25 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"chord {build_number()}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Show the build number (vN, or dev for an unnumbered build) and exit.",
+    ),
+) -> None:
+    """Hand Linear issues to a coding harness."""
 
 
 @app.command()

@@ -184,10 +184,11 @@ jobs:
           # entry point — visync shipped a wheel missing its config file that
           # way. `init` is the cheap command that is actually work: no
           # network, no credentials, and it exercises the full import graph,
-          # config discovery and file writing. There is no `--version` to run:
-          # the typer app does not define one and exits 2 on the flag.
+          # config discovery and file writing. `--version` checks that the
+          # build number stamped by hatch_build.py survived sdist -> wheel.
           cd /tmp
           /tmp/chord-smoke/bin/chord --help > /dev/null
+          /tmp/chord-smoke/bin/chord --version | grep -E '^chord (v[0-9]+|dev \([0-9a-f]+\))$'
           /tmp/chord-smoke/bin/chord setup --help > /dev/null
           d="$(mktemp -d)"
           cd "$d"
@@ -299,3 +300,41 @@ jobs:
         # An incomplete or failing scan must still publish what it found;
         # the SARIF is self-describing about which case it is.
         continue-on-error: true
+
+  # Continuous green-build versioning: every push to master whose CI fully
+  # succeeds gets the next integer tag (v1, v2, ...). A red push gets no number.
+  version:
+    name: Mint build number
+    needs: [lint, typecheck, test, package, security]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # One mint at a time across the repo, so two green pushes can't take the
+    # same number. Never cancel a mint in flight.
+    concurrency:
+      group: version-mint
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Tag this commit with the next vN
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+          if git tag --points-at HEAD | grep -qE '^v[0-9]+$'; then
+            echo "already numbered: $(git tag --points-at HEAD | grep -E '^v[0-9]+$')"
+            exit 0
+          fi
+          last="$(git tag --list 'v*' | grep -E '^v[0-9]+$' | sed 's/^v//' | sort -n | tail -n1 || true)"
+          last="${last:-0}"
+          # A slow run for an older commit must not number it after a newer one.
+          if [ "$last" -gt 0 ] && git merge-base --is-ancestor HEAD "v$last"; then
+            echo "v$last is already on a newer commit; not numbering this one"
+            exit 0
+          fi
+          next="v$((last + 1))"
+          git tag "$next" HEAD
+          git push origin "refs/tags/$next"
+          echo "::notice::minted $next on ${GITHUB_SHA::7}"

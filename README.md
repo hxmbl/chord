@@ -980,6 +980,21 @@ agent sessions later — and they stay mutually exclusive.
 
 Start small. Build outward.
 
+## Versions
+
+There are no release numbers like 1.0.3. Every push to `master` whose CI goes
+fully green is tagged with the next build number (`v2`, `v3`, ...); a red push
+gets none. Check yours with:
+
+```sh
+chord --version   # chord v12, or chord dev (abc1234) for an unnumbered commit
+```
+
+A checkout asks git; an install (`uv tool install git+https://github.com/hxmbl/chord`)
+keeps the number it was built from. Install a specific build with
+`uv tool install git+https://github.com/hxmbl/chord@v12`. `CHORD_BUILD`
+overrides it. The package version in `pyproject.toml` is a placeholder.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

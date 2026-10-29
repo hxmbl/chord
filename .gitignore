@@ -24,3 +24,6 @@ htmlcov/
 
 # minesweep baseline, if one is ever created.
 .minesweep-baseline.json
+
+# Build number stamped at build time by hatch_build.py.
+src/chord/_build.py

@@ -43,6 +43,9 @@ chord = "chord.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/chord"]
 
+# hatch_build.py: stamps the vN build number into chord/_build.py.
+[tool.hatch.build.hooks.custom]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"
