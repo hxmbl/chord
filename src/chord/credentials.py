@@ -12,7 +12,6 @@ import secrets
 import time
 import warnings
 from pathlib import Path
-from typing import TypeAlias
 
 import typer
 from authlib.deprecate import AuthlibDeprecationWarning
@@ -63,7 +62,7 @@ RENEW_RETRY = 5 * 60
 
 # Every step answers with (exit code, content): on failure the content is the
 # error message, on success it is whatever that step produced.
-Outcome: TypeAlias = tuple[int, str | dict]
+type Outcome = tuple[int, str | dict]
 
 warnings.filterwarnings(
     "ignore",

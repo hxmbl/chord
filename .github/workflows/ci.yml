@@ -71,8 +71,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the floor from requires-python; 3.15 is current.
-        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        # 3.12 is the floor from requires-python; 3.15 is current.
+        python-version: ["3.12", "3.13", "3.14", "3.15"]
     env:
       # The interpreter for every uv invocation in the job, including the
       # `uv run` below. Without this, `uv run` follows .python-version

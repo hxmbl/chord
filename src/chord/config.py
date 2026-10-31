@@ -12,7 +12,6 @@ import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeAlias
 
 from chord.paths import config_path
 
@@ -57,7 +56,7 @@ LEGACY_SEPARATOR = "/"
 # A harness is either the name of one Chord knows, or the command to run. The
 # command form is the reason Chord stays small: anything that reads a prompt
 # from stdin is a harness, so supporting a new tool needs no change in here.
-HarnessSpec: TypeAlias = str | list[str]
+type HarnessSpec = str | list[str]
 
 _SETTINGS = frozenset(
     {
