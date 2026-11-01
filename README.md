@@ -27,7 +27,7 @@ a trigger that reads and forwards.
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/)
-- Python 3.11 or newer
+- Python 3.12 or newer
 - A Linear account (`chord setup` walks you through making the OAuth app)
 
 Chord asks Linear for the `read` scope only. It never writes to Linear.
