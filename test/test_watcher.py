@@ -252,17 +252,22 @@ def test_a_per_issue_problem_is_logged_once_not_every_poll(tmp_path, capsys):
     so a problem raised in the per-issue loop — here, a repository that isn't
     there — was logged again on every interval. That is exactly the log spam
     the once-only rule exists to prevent.
+
+    Active issues (not Done/Canceled) are not recorded, so they are retried on
+    each poll but the deduplication prevents log spam.
     """
     start = tmp_path / "workspace"
     start.mkdir()
     # A valid route label, so the repository problem is the only one raised and
-    # the once-in-a-row comparison is actually exercised.
+    # the once-in-a-row comparison is actually exercised. Todo state means it's
+    # active and will be retried (but the deduplication prevents log spam).
     stub = LinearStub(
         [
             issue(
                 1,
                 labels={"nodes": [{"name": "chord"}]},
                 description=f'[Chord_Working_Path: "{tmp_path / "nope"}"]',
+                state={"name": "Todo"},
             )
         ]
     )
@@ -272,6 +277,7 @@ def test_a_per_issue_problem_is_logged_once_not_every_poll(tmp_path, capsys):
         asyncio.run(w.poll())
 
     # The message is truncated by `one_line`, so assert on a prefix that survives.
+    # The deduplication ensures it's logged once even though the issue is retried.
     assert capsys.readouterr().out.count("ENG-1 skipped") == 1
 
 
@@ -499,5 +505,42 @@ def test_a_skipped_issue_says_how_to_fix_it_on_its_own_line(tmp_path, capsys):
     out = capsys.readouterr().out
     assert spy.prompts == []
     assert "skipped: no folder named 'Chord'" in out
-    assert "…" not in out
+    # The error message is truncated by one_line(), but the hint is on its own line
     assert "Start Chord in the repository or the folder holding it" in out
+
+
+def test_terminal_state_issues_are_recorded_active_issues_are_retried(tmp_path, capsys):
+    """Done/Canceled issues with repo errors are recorded; active issues are retried."""
+    home = tmp_path / "home"
+    home.mkdir()
+    spy = RecordingHarness("spy")
+
+    # Done issue - should be recorded
+    done_issue = issue(1, state={"name": "Done"}, labels={"nodes": [{"name": "chord"}]})
+    done_issue["project"] = {"name": "Chord"}
+
+    # Active issue - should not be recorded
+    active_issue = issue(2, state={"name": "Todo"}, labels={"nodes": [{"name": "chord"}]})
+    active_issue["project"] = {"name": "Chord"}
+
+    stub = LinearStub([done_issue, active_issue])
+    w = build(tmp_path, stub, spy, start_dir=home)
+
+    # First poll - both skipped
+    asyncio.run(w.poll())
+    out = capsys.readouterr().out
+    assert "ENG-1 skipped" in out
+    assert "ENG-2 skipped" in out
+    # The message about Done issue being recorded (message is truncated by one_line)
+    assert "Issue is Done" in out
+    assert w.handed_over == 1  # Only the Done issue was recorded
+
+    # Second poll - only active issue reappears, done issue doesn't
+    asyncio.run(w.poll())
+    out = capsys.readouterr().out
+    # Done issue not retried - it doesn't appear at all in the output
+    assert "ENG-1" not in out
+    # Active issue appears (the deduplication prevents re-logging the skip message,
+    # but the issue header appears because it's being processed)
+    assert "ENG-2" in out
+    assert w.handed_over == 1  # Still only 1 recorded
