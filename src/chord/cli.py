@@ -500,6 +500,12 @@ def serve(
             raise SystemExit(0) from None
     asyncio.run(_watch(managed=managed))
 
+@app.command()
+def version():
+    """Print the version of Chord."""
+    typer.echo(f"chord {build_number()}")
+
+
 
 service_app = typer.Typer(
     help="Run Chord as a background service that starts at login.",
