@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from chord import daemon, logging, notify, subscribe
-from chord.context import Issue, render, _at, _text
+from chord.context import Issue, _at, _text, render
 from chord.harness import (
     CommandHarness,
     HarnessError,
