@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from chord import daemon, logging, notify, subscribe
-from chord.context import Issue, render
+from chord.context import Issue, render, _at, _text
 from chord.harness import (
     CommandHarness,
     HarnessError,
@@ -646,18 +646,20 @@ class Watcher:
         try:
             where = resolve(issue, self._start_dir)
         except ResolutionError as exc:
-            # Not recorded, unlike every other skip here. Those are about the
-            # issue — a bad label, a missing harness — and recording them stops
-            # a retry loop. This one is about the machine: a directory is
-            # missing or isn't a repository, and that gets fixed, so recording
-            # the issue as handed over would throw away work nobody had done.
-            # `_problem` only logs the first time in a row, so polling on it is
-            # quiet and picks the issue up as soon as the directory is there.
+            # Recorded only for terminal states (Done, Canceled), which won't be
+            # retried. Active issues (Backlog, Todo, In Progress) are not recorded
+            # so they can be retried once the repository is fixed.
             _spacer()
-            if self._problem(f"{identifier} skipped: {one_line(str(exc))}") and (
-                exc.hint
-            ):
+            self._problem(f"{identifier} skipped: {one_line(str(exc))}")
+            if exc.hint:
                 log(f"  {exc.hint}")
+            state_name = _text(_at(issue, "state", "name"))
+            if state_name in ("Done", "Canceled"):
+                self._problem(
+                    f"  Issue is {state_name}, so it won't be retried. To retry it "
+                    f"manually: drop {_key(issue_id)} from {self._path.name}."
+                )
+                self._remember(issue_id)
             await notify.skipped(identifier, str(exc))
             return
 
