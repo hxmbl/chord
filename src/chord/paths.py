@@ -66,6 +66,39 @@ def config_path(start: Path | None = None) -> tuple[Path, bool]:
     return here / PROJECT_CONFIG, False
 
 
+def user_config_path() -> Path | None:
+    """The user-wide chord.toml, if there is one.
+
+    `~/.config/chord/chord.toml` first, then the older `~/.chord/chord.toml`.
+    """
+    for user in (Path.home() / PROJECT_CONFIG, Path.home() / ".chord" / CONFIG_NAME):
+        if user.is_file():
+            return user
+    return None
+
+
+def project_config_path(start: Path | None = None) -> Path | None:
+    """The chord.toml for the folder Chord starts in, if there is one.
+
+    The nearest `.config/chord/chord.toml` at or above `start`, else the
+    nearest legacy `chord.toml`, never at home or above it: those are the
+    user's own file, not a project's.
+    """
+    here = (start or Path.cwd()).resolve()
+    below = _below_home(here)
+    for name in (PROJECT_CONFIG, Path(CONFIG_NAME)):
+        for directory in below:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def repo_config_path(repo: Path) -> Path:
+    """Where a target repository keeps its own chord.toml."""
+    return repo / PROJECT_CONFIG
+
+
 def project_root(start: Path | None = None) -> Path:
     """The directory a project is rooted at.
 

@@ -28,18 +28,23 @@ a separate question, and `harness_for` is the only place that answers it.
 
 import re
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import NamedTuple
 
 from chord.config import (
     ARROW,
     LEGACY_SEPARATOR,
     NAME_SEPARATOR,
+    REPO,
     SEPARATOR,
+    Config,
     HarnessSpec,
     T3Options,
+    load_repo,
     spell,
 )
 from chord.harness import Harness, HarnessError, build, missing
+from chord.paths import repo_config_path
 from chord.performance import instrumented
 
 # The name that asks for the default harness. Curated names are separate
@@ -332,3 +337,71 @@ class Router:
             if reason:
                 found.append((route, reason))
         return found
+
+
+def router_for(config: Config) -> Router:
+    """The router a config describes."""
+    return Router(
+        config.label,
+        config.harness,
+        config.harnesses,
+        allowed_actors=config.allowed_actors,
+        t3_options=config.t3,
+    )
+
+
+class RepoRouters:
+    """The router for each target repository, with its own chord.toml applied.
+
+    The watcher asks once per issue, after it knows which repository the issue
+    runs in. The repository's file is looked at every time, so an edit counts
+    on the next issue with no restart; the router is only rebuilt when the
+    file changed, so a route still costs one PATH lookup rather than one per
+    issue. A repository with no file of its own gets `base` unchanged.
+
+    `ConfigError` from a broken file propagates: it is that issue's problem,
+    and the watcher reports it there.
+    """
+
+    def __init__(
+        self,
+        base: Config,
+        base_router: Router,
+        make: Callable[[Config], Router] = router_for,
+        warn: Callable[[str], None] | None = None,
+    ) -> None:
+        self._base = base
+        self._base_router = base_router
+        self._make = make
+        self._warn = warn or (lambda message: None)
+        self._cache: dict[Path, tuple[tuple[int, int], Config, Router]] = {}
+
+    def config_for(self, repo: Path) -> Config:
+        """The effective config for `repo`. Raises `ConfigError`."""
+        return self._lookup(repo)[0]
+
+    def __call__(self, repo: Path) -> Router:
+        return self._lookup(repo)[1]
+
+    def _lookup(self, repo: Path) -> tuple[Config, Router]:
+        file = repo_config_path(repo)
+        try:
+            stat = file.stat()
+        except OSError:
+            self._cache.pop(repo, None)
+            return self._base, self._base_router
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = self._cache.get(repo)
+        if cached is not None and cached[0] == stamp:
+            return cached[1], cached[2]
+        config = load_repo(self._base, repo)
+        if not any(layer.source == REPO for layer in config.layers):
+            # The repository is the start folder: its file is already in base.
+            router = self._base_router
+        else:
+            router = self._make(config)
+            for warning in config.warnings:
+                if warning not in self._base.warnings:
+                    self._warn(warning)
+        self._cache[repo] = (stamp, config, router)
+        return config, router

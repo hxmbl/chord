@@ -10,10 +10,15 @@ import json
 import shlex
 import tomllib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from chord.paths import config_path
+from chord.paths import (
+    config_path,
+    project_config_path,
+    repo_config_path,
+    user_config_path,
+)
 
 DEFAULT_LABEL = "Chord"
 DEFAULT_HARNESS = "opencode"
@@ -58,8 +63,34 @@ LEGACY_SEPARATOR = "/"
 # from stdin is a harness, so supporting a new tool needs no change in here.
 type HarnessSpec = str | list[str]
 
+# The newest config format this Chord reads. A file may say `version = N`;
+# missing means 1. A newer file is refused rather than half-read, because the
+# keys a newer Chord added would otherwise be "unknown settings" at best and
+# misread at worst.
+CONFIG_VERSION = 1
+
+# Settings that belong to the machine, not to a project: how often to poll,
+# the local webhook, banners, where checkouts live. They live in the user file.
+# Found in a project's or a repository's file they are warned about and
+# ignored, which also keeps a webhook secret out of a committed file.
+MACHINE_KEYS = frozenset(
+    {"interval", "webhook_port", "webhook_secret", "notify", "search_dirs"}
+)
+
+# Settings that belong to the watcher as a whole. One poll asks Linear for
+# every issue under one trigger label, so a target repository can't change it
+# per issue; it is ignored (with a warning) in a repository's file.
+WATCHER_KEYS = frozenset({"label"})
+
+# Where a value came from, lowest precedence first.
+DEFAULT = "default"
+USER = "user"
+PROJECT = "project"
+REPO = "repo"
+
 _SETTINGS = frozenset(
     {
+        "version",
         "label",
         "harness",
         "harnesses",
@@ -103,6 +134,21 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class Layer:
+    """One chord.toml as it took part in the effective config.
+
+    `machine` says whether its machine settings count: true for the user file,
+    and for a start-folder file when there is no user file (so a setup that has
+    only ever had one file keeps working exactly as it did).
+    """
+
+    source: str
+    path: Path
+    raw: dict
+    machine: bool = False
+
+
+@dataclass(frozen=True)
 class T3Options:
     provider: str | None = None
     model: str | None = None
@@ -135,6 +181,9 @@ STOCK = """\
 #  chord.toml: Chord's settings
 # ============================================================================
 #
+# The config format this file is written in. Optional; missing means 1.
+version = 1
+#
 # How Chord works, in one paragraph:
 #   Chord watches Linear. When an issue gets the trigger label (`Chord` unless
 #   you change it below), Chord hands the issue to a "harness" (a coding agent
@@ -153,10 +202,13 @@ STOCK = """\
 #   - Chord reads this file when it starts. After changing it, restart:
 #     `chord stop` then `chord start`, or `chord service restart`.
 #
-# Where Chord looks for it (nearest wins):
-#   1. .config/chord/chord.toml in the directory you run Chord from, or any
-#      directory above it (a project's own settings)
-#   2. ~/.config/chord/chord.toml or ~/.chord/chord.toml (your own defaults)
+# Where Chord looks for it (merged per key, nearest wins):
+#   1. ~/.config/chord/chord.toml or ~/.chord/chord.toml (your own defaults)
+#   2. .config/chord/chord.toml in the directory you run Chord from, or any
+#      directory above it
+#   3. per issue, .config/chord/chord.toml in the repository the issue runs in
+# Machine settings (interval, webhook_*, [notify], search_dirs) count only in
+# your own file, or in the start folder's when you have no file of your own.
 
 
 # ----------------------------------------------------------------------------
@@ -442,6 +494,19 @@ class Config:
     )
     path: Path = field(default_factory=lambda: config_path()[0])
     from_file: bool = False
+    version: int = CONFIG_VERSION
+    # The files that made this config, lowest precedence first.
+    layers: tuple[Layer, ...] = ()
+    # Setting -> (source, file) for every value a file set. A curated harness
+    # is keyed `harnesses.<name>`. Anything absent is a built-in default.
+    sources: dict[str, tuple[str, Path]] = field(default_factory=dict)
+    # Things worth saying that don't stop Chord: ignored settings, mostly.
+    warnings: tuple[str, ...] = ()
+
+    def source_of(self, key: str) -> tuple[str, Path | None]:
+        """Where `key` came from: a layer's source and file, or the default."""
+        found = self.sources.get(key)
+        return found if found else (DEFAULT, None)
 
     @property
     def harness_name(self) -> str:
@@ -477,31 +542,172 @@ def defaults(path: Path | None = None) -> Config:
     )
 
 
-def load(path: Path | None = None) -> Config:
-    """Read project config, then user config, or fall back to defaults.
+def load(path: Path | None = None, start: Path | None = None) -> Config:
+    """The effective config: defaults, then the user file, then the project's.
 
-    The file is looked for in the working directory and then upward, so running
-    Chord from a subdirectory finds the project's config rather than silently
-    reverting to defaults.
+    With `path`, that one file and nothing else, as `chord config --path`
+    reports it and as tests and `chord harness add` read it.
+
+    Without, the layers are merged per key, nearest winning, with curated
+    harnesses merged by name:
+
+      1. built-in defaults
+      2. the user file, `~/.config/chord/chord.toml` (or `~/.chord/chord.toml`)
+      3. the start folder's `.config/chord/chord.toml`, looked for upward from
+         the working directory (never at home, which is the user file's)
+
+    A target repository's own file is a fourth layer added per issue, by
+    `load_repo`, once Chord knows which repository the issue runs in.
     """
-    if path is None:
-        path, exists = config_path()
-    else:
-        exists = path.is_file()
+    if path is not None:
+        return _load_one(path)
+
+    nearest, _ = config_path(start)
+    user = user_config_path()
+    project = project_config_path(start)
+    layers: list[Layer] = []
+    if user is not None:
+        layers.append(Layer(USER, user, _read(user), machine=True))
+    if project is not None and not _same(project, user):
+        # With no user file, the start folder's file is the only one there is,
+        # and it has always been where machine settings went. Honouring them
+        # keeps every single-file setup working; once a user file exists, the
+        # machine settings live there and a project file's are ignored.
+        layers.append(Layer(PROJECT, project, _read(project), machine=user is None))
+    if not layers:
+        # Nothing in either place. A legacy `chord.toml` higher up (above
+        # home, say) is still read the way it always was: as the only file.
+        legacy, exists = config_path(start)
+        if exists:
+            layers.append(Layer(USER, legacy, _read(legacy), machine=True))
+            nearest = legacy
+    return _compose(tuple(layers), nearest)
+
+
+def load_repo(base: Config, repo: Path) -> Config:
+    """`base` with the target repository's own chord.toml on top, if it has one.
+
+    Read on every call, so editing a repository's file takes effect on the
+    next issue with no restart. Raises `ConfigError` for a broken file, which
+    the watcher turns into that one issue failing.
+    """
+    candidate = repo_config_path(repo)
+    if not candidate.is_file():
+        return base
+    if any(_same(candidate, layer.path) for layer in base.layers):
+        # The repository is the start folder (or the user file's home):
+        # already a layer, and reading it twice would only repeat warnings.
+        return base
+    layers = (*base.layers, Layer(REPO, candidate, _read(candidate)))
+    return _compose(layers, base.path)
+
+
+def _same(one: Path | None, other: Path | None) -> bool:
+    if one is None or other is None:
+        return False
+    try:
+        return one.resolve() == other.resolve()
+    except OSError:
+        return one == other
+
+
+def _read(path: Path) -> dict:
     try:
         text = path.read_text()
-    except FileNotFoundError:
-        return defaults(path)
     except OSError as exc:
         raise ConfigError(f"Couldn't read {path}: {exc.strerror}.") from exc
-
     try:
-        raw = tomllib.loads(text)
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path} isn't valid TOML: {exc}.") from exc
 
+
+def _load_one(path: Path) -> Config:
+    exists = path.is_file()
+    try:
+        raw = _read(path)
+    except ConfigError:
+        if not exists:
+            return defaults(path)
+        raise
     result = _build(raw, path)
-    return result if exists else defaults(path)
+    if not exists:  # pragma: no cover - a race with the file disappearing
+        return defaults(path)
+    layer = Layer(USER, path, raw, machine=True)
+    return replace(result, layers=(layer,), sources=_sources((layer,)))
+
+
+def _kept(layer: Layer) -> tuple[dict, list[str]]:
+    """The part of a layer that counts, and a warning for each part that doesn't."""
+    ignored: set[str] = set()
+    if not layer.machine:
+        ignored |= MACHINE_KEYS
+    if layer.source == REPO:
+        ignored |= WATCHER_KEYS
+    dropped = sorted(set(layer.raw) & ignored)
+    warnings = []
+    for key in dropped:
+        if key in MACHINE_KEYS:
+            why = "is a machine setting; it belongs in ~/.config/chord/chord.toml"
+        else:
+            why = "applies to the whole watcher, so only the start folder's file can set it"
+        warnings.append(f"`{key}` in {layer.path} is ignored: it {why}.")
+    return {k: v for k, v in layer.raw.items() if k not in ignored}, warnings
+
+
+# Tables merged entry by entry across layers, so a project can add a route
+# without restating the user's. Every other table is replaced whole by the
+# nearer file: `[t3]`'s provider and model only make sense together.
+_MERGED_TABLES = frozenset({"harnesses"})
+
+
+def _merge(layers: tuple[Layer, ...]) -> dict:
+    merged: dict = {}
+    for layer in layers:
+        kept, _ = _kept(layer)
+        for key, value in kept.items():
+            if (
+                key in _MERGED_TABLES
+                and isinstance(value, dict)
+                and isinstance(merged.get(key), dict)
+            ):
+                merged[key] = {**merged[key], **value}
+            else:
+                merged[key] = value
+    return merged
+
+
+def _sources(layers: tuple[Layer, ...]) -> dict[str, tuple[str, Path]]:
+    found: dict[str, tuple[str, Path]] = {}
+    for layer in layers:
+        kept, _ = _kept(layer)
+        for key, value in kept.items():
+            if key in _MERGED_TABLES and isinstance(value, dict):
+                for name in value:
+                    found[f"{key}.{name}"] = (layer.source, layer.path)
+            else:
+                found[key] = (layer.source, layer.path)
+    return found
+
+
+def _compose(layers: tuple[Layer, ...], path: Path) -> Config:
+    if not layers:
+        return defaults(path)
+    warnings: list[str] = []
+    for layer in layers:
+        kept, dropped = _kept(layer)
+        warnings.extend(dropped)
+        # Each file on its own first, so a mistake is reported against the
+        # file that holds it rather than against the merge.
+        _build(kept, layer.path)
+    result = _build(_merge(layers), layers[-1].path)
+    return replace(
+        result,
+        path=path,
+        layers=layers,
+        sources=_sources(layers),
+        warnings=tuple(warnings),
+    )
 
 
 def _build(raw: dict, path: Path) -> Config:
@@ -509,6 +715,10 @@ def _build(raw: dict, path: Path) -> Config:
 
     # A misspelled setting would otherwise be ignored, and the symptom is
     # Chord doing something other than what the file says. Better to say so.
+    # The version first: a newer file's settings are "unknown" only because
+    # this Chord is older, and saying that is the useful message.
+    version = _version(raw.get("version", CONFIG_VERSION), path)
+
     unknown = set(raw) - _SETTINGS
     if unknown:
         names = ", ".join(f"`{name}`" for name in sorted(unknown))
@@ -575,7 +785,22 @@ def _build(raw: dict, path: Path) -> Config:
         search_dirs=_search_dirs(raw.get("search_dirs"), base.search_dirs, path),
         path=path,
         from_file=True,
+        version=version,
     )
+
+
+def _version(value: object, path: Path) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ConfigError(
+            f"`version` in {path} has to be a whole number from 1, like `version = 1`."
+        )
+    if value > CONFIG_VERSION:
+        raise ConfigError(
+            f"{path} is written for config version {value}, and this Chord reads "
+            f"up to version {CONFIG_VERSION}. Update Chord to a release that "
+            f"supports config version {value}, or set `version = {CONFIG_VERSION}`."
+        )
+    return value
 
 
 def _t3_options(value: object, path: Path) -> T3Options:

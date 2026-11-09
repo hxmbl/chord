@@ -185,10 +185,41 @@ chord harness add big-pickle -- opencode run --model big-pickle
 It prints the `Chord -> <name>` label to create in Linear, because Chord never
 creates a label itself. Give a nested name with `/`:
 `chord harness add opencode/big-pickle -- opencode run --model big-pickle`
-prints `Chord -> opencode -> big-pickle`. A user-wide config at
-`~/.config/chord/chord.toml` or `~/.chord/chord.toml` is also read; a project's
-own config wins. The home directory is never treated as a project, so a config
-in `~/.config/chord` doesn't make `~` where issues run.
+prints `Chord -> opencode -> big-pickle`. The home directory is never treated
+as a project, so a config in `~/.config/chord` doesn't make `~` where issues
+run.
+
+### Layers
+
+Chord reads up to three files and merges them per key, nearest winning:
+
+1. built-in defaults
+2. your user file, `~/.config/chord/chord.toml` (or `~/.chord/chord.toml`)
+3. the start folder's `.config/chord/chord.toml` (looked for upward from where
+   you run Chord)
+4. per issue, the target repository's own `.config/chord/chord.toml`, once
+   Chord knows which repository the issue runs in
+
+`[harnesses]` merge by name, so a project can add a route without repeating
+yours. Other tables (`[t3]`, `[notify]`) are replaced whole by the nearer file.
+
+The repository's file is read when its issue is dispatched, so editing it needs
+no restart. A broken one fails only that issue, with a log line naming the file;
+the issue is picked up again once the file is fixed. `allowed_actors` and the
+harness are checked against that repository's effective config, so one
+repository can be locked to you while another is open.
+
+Machine settings (`interval`, `webhook_port`, `webhook_secret`, `[notify]`,
+`search_dirs`) belong in your user file. In a project's or a repository's file
+they are warned about and ignored, which also keeps a webhook secret out of a
+committed file. The one exception keeps single-file setups working: if there is
+no user file, the start folder's file is the only one there is, and its machine
+settings count as they always did. `label` applies to the whole watcher, so a
+target repository's file can't change it either.
+
+A file may start with `version = 1`. Missing means 1. A file written for a newer
+config version than this Chord reads is refused with an error, rather than
+half-read.
 
 ```toml
 # The label that triggers a run. Default: "Chord".
@@ -243,8 +274,8 @@ command = ["claude"]   # the Claude Code preset; see "Harnesses" below
 Commit this file. It holds no secrets. Legacy root-level `chord.toml` files are
 still read for compatibility.
 
-Chord looks for `chord.toml` in the directory you run it from and then upward,
-so `chord start` works the same from a subdirectory. The nearest one wins. That
+Chord looks for the start folder's `chord.toml` in the directory you run it
+from and then upward, so `chord start` works the same from a subdirectory. That
 directory is also what identifies the project to the rest of Chord — see
 [State on disk](#state-on-disk).
 

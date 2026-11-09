@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from chord import daemon, logging, notify, subscribe
+from chord.config import ConfigError
 from chord.context import Issue, _at, _text, render
 from chord.harness import (
     CommandHarness,
@@ -22,7 +23,7 @@ from chord.harness import (
     T3CodeHarness,
 )
 from chord.linear import MAX_HISTORY, Actor, LinearClient, LinearError, Unauthorised
-from chord.paths import project_root
+from chord.paths import project_root, repo_config_path
 from chord.performance import instrumented
 from chord.repo import (
     EXPLICIT_PATH_PREFIX,
@@ -194,8 +195,13 @@ class Watcher:
         freshen: Callable[[bool], Awaitable[str | None]] | None = None,
         notify_received: bool = True,
         search_dirs: Sequence[Path] = (),
+        repo_router: Callable[[Path], Router] | None = None,
     ) -> None:
         self._linear = linear
+        # The router for a target repository, with that repository's own
+        # chord.toml applied (`routing.RepoRouters`). None: every issue uses
+        # `router`, as before per-repository config.
+        self._repo_router = repo_router
         # Folders checkouts usually live in (`search_dirs` in chord.toml), for
         # an issue whose Linear project isn't a folder where Chord started.
         self._search_dirs = tuple(search_dirs)
@@ -559,7 +565,39 @@ class Watcher:
             self._remember(issue_id)
             return
 
-        chosen = await self._resolve(issue, identifier, issue_id)
+        # Where the work happens comes first, because the repository's own
+        # chord.toml decides who may trigger it and which harnesses its routes
+        # name. Only looked at here: an issue that fails to resolve is reported
+        # below, after its route, exactly as before, against the start config.
+        router = self._router
+        where = None
+        unresolved: ResolutionError | None = None
+        try:
+            where = resolve(issue, self._start_dir, self._search_dirs)
+        except ResolutionError as exc:
+            unresolved = exc
+        if where is not None and self._repo_router is not None:
+            try:
+                router = self._repo_router(where.path)
+            except ConfigError as exc:
+                # Only this issue: the repository's file is that repository's
+                # problem, and every other issue still runs. Not recorded, so it
+                # is retried once the file is fixed (it is re-read every time).
+                _spacer()
+                self._problem(
+                    f"{identifier} skipped: the chord.toml in {where.path} "
+                    f"is broken: {one_line(str(exc))}"
+                )
+                log(
+                    "  fix that file and the issue is picked up again on the next "
+                    "poll; nothing else is affected."
+                )
+                await notify.skipped(
+                    identifier, f"the chord.toml in {where.path} is broken"
+                )
+                return
+
+        chosen = await self._resolve(issue, identifier, issue_id, router)
         if chosen is None:
             # The filter matched this issue on a route label, so a payload that
             # carries labels but names no route is one Chord cannot read.
@@ -572,7 +610,7 @@ class Watcher:
             _spacer()
             self._problem(
                 f"{identifier} skipped: it carries labels but no "
-                f"{self._router.default_name!r} route Chord can read."
+                f"{router.default_name!r} route Chord can read."
             )
             self._problem(
                 f"  to retry it: add a route label, then drop {_key(issue_id)} "
@@ -582,11 +620,11 @@ class Watcher:
             self._remember(issue_id)
             return
 
-        if not await self._authorise(issue, identifier, issue_id, chosen):
+        if not await self._authorise(issue, identifier, issue_id, chosen, router):
             return
 
         try:
-            harness = self._router.harness_for(chosen.route)
+            harness = router.harness_for(chosen.route)
         except UnknownRoute as exc:
             # Not run on the default instead. Doing the work with a harness
             # nobody asked for — on the wrong arguments, in the wrong place —
@@ -601,7 +639,7 @@ class Watcher:
             # flattens to one line and cuts at 200 characters, which is exactly
             # where the useful half of this would otherwise land.
             _spacer()
-            asked = self._router.label_on(issue, exc.name)
+            asked = router.label_on(issue, exc.name)
             self._problem(
                 f"{identifier} skipped: '{asked}' "
                 f"names a harness chord.toml doesn't define."
@@ -644,12 +682,11 @@ class Watcher:
             self._remember(issue_id)
             return
 
-        # Where the work happens. After authorisation and after the route is
-        # known, because neither of those can act without it and an issue
-        # refused on either ground shouldn't have its repository touched.
-        try:
-            where = resolve(issue, self._start_dir, self._search_dirs)
-        except ResolutionError as exc:
+        # Where the work happens, as resolved above. Reported after the route
+        # and authorisation, so an issue refused on either ground is refused
+        # for that reason rather than for its repository.
+        if where is None:
+            exc = unresolved or ResolutionError("no repository")
             # Recorded only for terminal states (Done, Canceled), which won't be
             # retried. Active issues (Backlog, Todo, In Progress) are not recorded
             # so they can be retried once the repository is fixed.
@@ -673,6 +710,8 @@ class Watcher:
             log(f"  route      {route_label(self._router.label, chosen.route)}")
 
         log(f"  repository {where.path} ({where.source})")
+        if router is not self._router:
+            log(f"  config     {repo_config_path(where.path)} (this repository's own)")
 
         comments: list[dict[str, Any]] = []
         try:
@@ -824,7 +863,11 @@ class Watcher:
         await settle()
 
     async def _resolve(
-        self, issue: Issue, identifier: str, issue_id: Any
+        self,
+        issue: Issue,
+        identifier: str,
+        issue_id: Any,
+        router: Router | None = None,
     ) -> Routed | None:
         """Which harness this issue is routed to, and who routed it.
 
@@ -846,14 +889,15 @@ class Watcher:
         no label information is the historical shape that falls back to the
         default, and is reported here.
         """
-        candidates = self._router.candidates(issue)
+        router = router or self._router
+        candidates = router.candidates(issue)
         if not candidates:
             if issue.get("labels") is None:
                 # Nothing on the issue even claims to be a label, so there is
                 # no route to have been misread. Reported rather than guessed
                 # at quietly, but the default still runs, as it always has.
                 self._problem(
-                    f"{identifier} has no {self._router.default_name!r} label on "
+                    f"{identifier} has no {router.default_name!r} label on "
                     "it, so Chord can't tell what it was routed to. Using the "
                     "default."
                 )
@@ -868,7 +912,7 @@ class Watcher:
         # unconditionally when there is an allowlist, because then the actor is
         # needed even for an issue whose route is not in doubt.
         ambiguous = len(candidates) > 1
-        if not ambiguous and not self._router.authorises:
+        if not ambiguous and not router.authorises:
             return Routed(candidates[0], None, UNAMBIGUOUS)
 
         try:
@@ -897,7 +941,7 @@ class Watcher:
         wanted = set(candidates)
         for change in changes:
             for name in change.labels:
-                route = route_of(self._router.label, name)
+                route = route_of(router.label, name)
                 if route is not None and route in wanted:
                     if ambiguous and change.who is None:
                         self._problem(
@@ -916,7 +960,12 @@ class Watcher:
         return Routed(candidates[0], None, OFF_THE_PAGE)
 
     async def _authorise(
-        self, issue: Issue, identifier: str, issue_id: Any, routed: Routed
+        self,
+        issue: Issue,
+        identifier: str,
+        issue_id: Any,
+        routed: Routed,
+        router: Router | None = None,
     ) -> bool:
         """Whether the person who routed this issue may have it run.
 
@@ -933,22 +982,19 @@ class Watcher:
         won't bring the issue back, and a message that doesn't say so sends
         someone looking for a fix that isn't one.
         """
-        if not self._router.authorises:
+        router = router or self._router
+        if not router.authorises:
             return True
 
         actor_id = routed.who.id if routed.who else None
-        asked = (
-            f"added {self._router.default_name!r}"
-            if routed.who
-            else "created the issue"
-        )
+        asked = f"added {router.default_name!r}" if routed.who else "created the issue"
         if routed.who is None:
             creator = issue.get("creator")
             actor_id = str(creator.get("id")) if isinstance(creator, dict) else None
             actor_id = actor_id or None
             asked = "created the issue"
 
-        if actor_id and self._router.authorises_actor(actor_id):
+        if actor_id and router.authorises_actor(actor_id):
             # Named, because which of the two attributions was used is the
             # difference between a check and an approximation.
             who = routed.who.name if routed.who else _name(issue.get("creator"))
