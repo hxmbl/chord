@@ -11,6 +11,7 @@ from chord.repo import (
     FROM_DESCRIPTION,
     FROM_PROJECT,
     FROM_ROOT,
+    FROM_SEARCH,
     ResolutionError,
     resolve,
 )
@@ -423,3 +424,98 @@ def test_a_line_as_linear_stores_it_is_read_as_typed(tmp_path):
 
     assert found.path == target
     assert found.source == FROM_DESCRIPTION
+
+
+# --- Search folders ----------------------------------------------------------
+
+
+def issue_in(project):
+    return {"project": {"name": project}, "description": None}
+
+
+def test_a_project_is_found_in_a_search_folder(tmp_path):
+    """`~/Projects/chord` is found when Chord was started somewhere else."""
+    start = repo_at(tmp_path / "elsewhere")
+    found = repo_at(tmp_path / "Projects" / "chord")
+
+    where = resolve(issue_in("Chord"), start, [tmp_path / "Projects"])
+
+    assert where.path == found.resolve()
+    assert where.source == FROM_SEARCH
+
+
+def test_the_start_folder_beats_a_search_folder(tmp_path):
+    start = plain_at(tmp_path / "work")
+    near = repo_at(start / "chord")
+    repo_at(tmp_path / "Projects" / "chord")
+
+    where = resolve(issue_in("chord"), start, [tmp_path / "Projects"])
+
+    assert where.path == near
+    assert where.source == FROM_PROJECT
+
+
+def test_an_explicit_line_beats_a_search_folder(tmp_path):
+    start = repo_at(tmp_path / "work")
+    repo_at(tmp_path / "Projects" / "chord")
+    named = repo_at(tmp_path / "other")
+    issue = {
+        "project": {"name": "chord"},
+        "description": f'[Chord_Working_Path: "{named}"]',
+    }
+
+    where = resolve(issue, start, [tmp_path / "Projects"])
+
+    assert where.path == named.resolve()
+    assert where.source == FROM_DESCRIPTION
+
+
+def test_two_matches_in_search_folders_refuse(tmp_path):
+    """Picking one of two checkouts would be a guess, so it's an error."""
+    start = repo_at(tmp_path / "work")
+    repo_at(tmp_path / "Projects" / "chord")
+    repo_at(tmp_path / "code" / "Chord")
+
+    with pytest.raises(ResolutionError, match="more than one"):
+        resolve(issue_in("chord"), start, [tmp_path / "Projects", tmp_path / "code"])
+
+
+def test_a_plain_folder_in_a_search_folder_is_passed_over(tmp_path):
+    """Nobody wrote this location down, so a non-repository isn't an error."""
+    start = repo_at(tmp_path / "work")
+    plain_at(tmp_path / "Projects" / "chord")
+
+    where = resolve(issue_in("chord"), start, [tmp_path / "Projects"])
+
+    assert where.path == start
+    assert where.source == FROM_ROOT
+
+
+def test_missing_search_folders_are_skipped(tmp_path):
+    start = repo_at(tmp_path / "work")
+    found = repo_at(tmp_path / "code" / "chord")
+
+    where = resolve(issue_in("chord"), start, [tmp_path / "nowhere", tmp_path / "code"])
+
+    assert where.path == found.resolve()
+
+
+def test_the_same_folder_listed_twice_is_one_match(tmp_path):
+    start = repo_at(tmp_path / "work")
+    found = repo_at(tmp_path / "Projects" / "chord")
+    (tmp_path / "link").symlink_to(tmp_path / "Projects")
+
+    where = resolve(
+        issue_in("chord"), start, [tmp_path / "Projects", tmp_path / "link"]
+    )
+
+    assert where.path == found.resolve()
+
+
+def test_search_folders_are_one_level_deep(tmp_path):
+    start = repo_at(tmp_path / "work")
+    repo_at(tmp_path / "Projects" / "group" / "chord")
+
+    where = resolve(issue_in("chord"), start, [tmp_path / "Projects"])
+
+    assert where.source == FROM_ROOT

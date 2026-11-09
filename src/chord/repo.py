@@ -8,7 +8,10 @@ directory the harness is launched in. In order:
 2. An explicit `[Chord_Working_Path: "/path/to/repo"]` line in the issue
    description. The path is quoted, and the name matches in any case, because
    both are typed by hand.
-3. Chord's own project root, as a fallback — loudly.
+3. The project title again, in the folders people keep their checkouts in
+   (`~/Projects`, `~/code` and so on, or `search_dirs` in chord.toml): a Git
+   repository of that name directly inside one of them.
+4. Chord's own project root, as a fallback — loudly.
 
 The fallback is the part that matters. Plenty of issues carry no project and no
 explicit path, and refusing to hand those over would stop Chord working for
@@ -29,6 +32,7 @@ resolved to `$HOME` or `/Users` and put the agent somewhere nobody asked for.
 
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -44,6 +48,7 @@ EXPLICIT_PATH_PREFIX = "[Chord_Working_Path:"
 # How the repository was chosen, named in the log line for every hand-over.
 FROM_PROJECT = "project title"
 FROM_DESCRIPTION = "issue description"
+FROM_SEARCH = "project title, in a search folder"
 FROM_ROOT = "project root (fallback)"
 
 
@@ -74,11 +79,20 @@ _MARKDOWN_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 _LINE_EXAMPLE = f'{EXPLICIT_PATH_PREFIX} "~/path/to/repo"]'
 
 
-def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
+def resolve(
+    issue: dict[str, Any],
+    start_dir: Path,
+    search_dirs: Sequence[Path] = (),
+) -> Resolution:
     """Find the repository for `issue`, falling back to `start_dir`.
 
+    `search_dirs` are the folders checkouts usually live in. Only consulted
+    for a project title that matched nothing at `start_dir`, and only after an
+    explicit working-path line, because a written-down path beats a guess.
+
     Raises `ResolutionError` when the issue names a repository explicitly and
-    that name is wrong, or when the fallback directory itself is unusable.
+    that name is wrong, when the project title matches a repository in more
+    than one search folder, or when the fallback directory itself is unusable.
     """
     project_name = _project_name(issue)
     unmatched: str | None = None
@@ -108,6 +122,21 @@ def resolve(issue: dict[str, Any], start_dir: Path) -> Resolution:
             f"repository.",
             hint="Make it one, or point the line somewhere else.",
         )
+
+    if unmatched and search_dirs:
+        found_in = _find_in_search_dirs(unmatched, start_dir, search_dirs)
+        if len(found_in) == 1:
+            return Resolution(found_in[0], FROM_SEARCH)
+        if found_in:
+            # Two checkouts of the same name. Picking one would be a guess
+            # about which the issue meant, and a wrong guess works on the
+            # wrong code, so ask for the line that settles it.
+            places = ", ".join(str(path) for path in found_in)
+            raise ResolutionError(
+                f"its Linear project '{unmatched}' matches more than one "
+                f"repository: {places}.",
+                hint=f"Add {_LINE_EXAMPLE} to the description to pick one.",
+            )
 
     # Nothing named a location. Work where Chord was started.
     if is_git_repository(start_dir):
@@ -178,6 +207,52 @@ def _find_by_project_name(project_name: str, start_dir: Path) -> Path | None:
         if entry.name.casefold() == wanted and entry.is_dir():
             return entry
     return None
+
+
+def _find_in_search_dirs(
+    project_name: str, start_dir: Path, search_dirs: Sequence[Path]
+) -> list[Path]:
+    """Every Git repository called `project_name` directly inside a search folder.
+
+    One level deep, like the project-root lookup, and for the same reason: a
+    recursive walk of `~/Projects` finds vendored copies, submodules and old
+    clones nobody meant. A folder of the right name that isn't a repository is
+    passed over rather than an error, since nobody wrote this location down;
+    it is only a likely place to look.
+
+    Folders that don't exist are skipped, so the default list can name the
+    usual spots without anyone having all of them. The same folder reached two
+    ways (a symlink, a case-insensitive disk) counts once, and `start_dir`
+    itself is skipped because it was already searched.
+    """
+    wanted = project_name.casefold()
+    seen: set[Path] = set()
+    try:
+        seen.add(start_dir.resolve())
+    except OSError:
+        pass
+    found: list[Path] = []
+    for folder in search_dirs:
+        try:
+            folder = folder.expanduser().resolve()
+        except OSError:
+            continue
+        if folder in seen or not folder.is_dir():
+            continue
+        seen.add(folder)
+        try:
+            entries = sorted(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.casefold() != wanted or not entry.is_dir():
+                continue
+            resolved = entry.resolve()
+            if resolved in found:
+                continue
+            if is_git_repository(entry):
+                found.append(resolved)
+    return found
 
 
 def _explicit_path(description: object) -> Path | None:

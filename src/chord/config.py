@@ -69,6 +69,7 @@ _SETTINGS = frozenset(
         "webhook_secret",
         "allowed_actors",
         "notify",
+        "search_dirs",
     }
 )
 _HARNESS_KEYS = frozenset({"command"})
@@ -79,6 +80,22 @@ _NOTIFY_KEYS = frozenset({"received"})
 # was before delivery was confirmed quietly: the banner is how most people
 # learn that work started somewhere they didn't start it.
 DEFAULT_NOTIFY_RECEIVED = True
+
+# Where people usually keep their checkouts. An issue whose Linear project
+# isn't a folder where Chord started is looked for directly inside these.
+# Ones that don't exist are skipped, so the list can name the usual spots
+# without anyone having all of them.
+DEFAULT_SEARCH_DIRS: tuple[str, ...] = (
+    "~/Projects",
+    "~/projects",
+    "~/Developer",
+    "~/Code",
+    "~/code",
+    "~/src",
+    "~/dev",
+    "~/repos",
+    "~/git",
+)
 
 
 class ConfigError(Exception):
@@ -221,6 +238,19 @@ webhook_secret = ""
 # allowed_actors = ["11111111-1111-1111-1111-111111111111"]
 
 
+# ----------------------------------------------------------------------------
+#  Where to look for repositories
+# ----------------------------------------------------------------------------
+#
+# When an issue's Linear project isn't a folder where you started Chord,
+# Chord also looks for a Git repository of that name directly inside these
+# folders. Ones that don't exist are skipped. `[]` turns this off.
+#
+# Default: ["~/Projects", "~/projects", "~/Developer", "~/Code", "~/code",
+#           "~/src", "~/dev", "~/repos", "~/git"]
+# search_dirs = ["~/Projects"]
+
+
 # ============================================================================
 #  Sections
 # ============================================================================
@@ -292,7 +322,10 @@ received = true
 #      started Chord in or one directly inside it. Capitals don't matter.
 #   2. A line like this in the issue's description:
 #        [Chord_Working_Path: "~/Projects/my-repo"]
-#   3. The folder you started Chord in, if it's a Git repository.
+#   3. A repository named after the Linear project directly inside one of
+#      the `search_dirs` folders (~/Projects and friends, see above). If two
+#      match, the issue is skipped until a line like the one in 2 picks one.
+#   4. The folder you started Chord in, if it's a Git repository.
 # If none of those is a Git repository, the issue is skipped and the log
 # says why.
 """
@@ -368,7 +401,9 @@ def curate(name: str, argv: list[str]) -> tuple[Path, bool]:
     at the end of the file cannot disturb what is already there.
     """
     if not usable_harness_name(name):
-        raise ConfigError(f"{name!r} isn't a usable harness name: {name_problem(name)}.")
+        raise ConfigError(
+            f"{name!r} isn't a usable harness name: {name_problem(name)}."
+        )
     if not argv or not any(part.strip() for part in argv):
         raise ConfigError("The harness command is empty.")
 
@@ -402,6 +437,9 @@ class Config:
     webhook_secret: str = ""
     allowed_actors: tuple[str, ...] = ()
     notify: NotifyOptions = field(default_factory=NotifyOptions)
+    search_dirs: tuple[Path, ...] = field(
+        default_factory=lambda: tuple(Path(p) for p in DEFAULT_SEARCH_DIRS)
+    )
     path: Path = field(default_factory=lambda: config_path()[0])
     from_file: bool = False
 
@@ -433,6 +471,7 @@ def defaults(path: Path | None = None) -> Config:
         webhook_secret="",
         allowed_actors=(),
         notify=NotifyOptions(),
+        search_dirs=tuple(Path(p) for p in DEFAULT_SEARCH_DIRS),
         path=path or config_path()[0],
         from_file=False,
     )
@@ -533,6 +572,7 @@ def _build(raw: dict, path: Path) -> Config:
         webhook_secret=webhook_secret,
         allowed_actors=_allowed_actors(raw.get("allowed_actors", []), path),
         notify=_notify_options(raw.get("notify", {}), path),
+        search_dirs=_search_dirs(raw.get("search_dirs"), base.search_dirs, path),
         path=path,
         from_file=True,
     )
@@ -560,6 +600,41 @@ def _t3_options(value: object, path: Path) -> T3Options:
     if options["branch"] and not options["worktree"]:
         raise ConfigError(f"`t3.branch` in {path} requires `t3.worktree`.")
     return T3Options(**options)
+
+
+def _search_dirs(
+    value: object, default: tuple[Path, ...], path: Path
+) -> tuple[Path, ...]:
+    """The folders to look in for a repository named after a Linear project.
+
+    Absolute or starting with `~`. A relative path would mean something
+    different depending on where Chord was started, which is the kind of
+    setting that works on one machine and quietly misses on the next.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, list):
+        raise ConfigError(
+            f"`search_dirs` in {path} has to be a list of folders, like "
+            f'`search_dirs = ["~/Projects"]`. `[]` turns it off.'
+        )
+    folders: list[Path] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ConfigError(
+                f"`search_dirs` in {path} has to be a list of folders, and "
+                f"{entry!r} isn't one."
+            )
+        text = entry.strip()
+        if not (text.startswith("~") or Path(text).is_absolute()):
+            raise ConfigError(
+                f"`search_dirs` in {path} needs absolute paths or ones starting "
+                f"with `~`; {text!r} is relative."
+            )
+        folder = Path(text)
+        if folder not in folders:
+            folders.append(folder)
+    return tuple(folders)
 
 
 def _notify_options(value: object, path: Path) -> NotifyOptions:
@@ -643,8 +718,7 @@ def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:
         where = f"`harnesses.{name}`"
         if not _usable_name(name):
             raise ConfigError(
-                f"{where} in {path} isn't a usable harness name: "
-                f"{name_problem(name)}."
+                f"{where} in {path} isn't a usable harness name: {name_problem(name)}."
             )
         if not isinstance(table, dict):
             raise ConfigError(f"{where} in {path} has to be a table with a `command`.")
