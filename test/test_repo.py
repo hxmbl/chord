@@ -4,6 +4,7 @@ Temporary repositories throughout. No Linear credentials, no agent.
 """
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -518,4 +519,69 @@ def test_search_folders_are_one_level_deep(tmp_path):
 
     where = resolve(issue_in("chord"), start, [tmp_path / "Projects"])
 
+    assert where.source == FROM_ROOT
+
+
+def test_a_search_folder_that_is_a_file_is_skipped(tmp_path):
+    """A path in `search_dirs` that isn't a folder is no reason to fail."""
+    start = repo_at(tmp_path / "work")
+    found = repo_at(tmp_path / "code" / "chord")
+    (tmp_path / "stray").write_text("not a folder")
+
+    where = resolve(
+        issue_in("chord"), start, [tmp_path / "stray", tmp_path / "code"]
+    )
+
+    assert where.path == found.resolve()
+
+
+def test_an_unreadable_search_folder_does_not_stop_the_search(tmp_path, monkeypatch):
+    """A listing that can't be read is passed over, not fatal.
+
+    The failure is faked rather than chmod-ed, because a mode of 0 means
+    nothing when the tests run as root, and that root runs them is not a
+    setup this code gets to veto.
+    """
+    start = repo_at(tmp_path / "work")
+    locked = plain_at(tmp_path / "locked")
+    found = repo_at(tmp_path / "code" / "chord")
+
+    listing = Path.iterdir
+
+    def refuse(folder: Path):
+        if folder.resolve() == locked.resolve():
+            raise PermissionError(str(folder))
+        return listing(folder)
+
+    monkeypatch.setattr(Path, "iterdir", refuse)
+
+    where = resolve(issue_in("chord"), start, [locked, tmp_path / "code"])
+
+    assert where.path == found.resolve()
+
+
+def test_a_symlinked_repository_reports_the_real_path(tmp_path):
+    """A same-name symlink points at the checkout the work happens in."""
+    start = repo_at(tmp_path / "work")
+    real = repo_at(tmp_path / "code" / "chord")
+    (tmp_path / "Projects").mkdir()
+    (tmp_path / "Projects" / "chord").symlink_to(real)
+
+    where = resolve(issue_in("chord"), start, [tmp_path / "Projects"])
+
+    assert where.path == real.resolve()
+    assert where.source == FROM_SEARCH
+
+
+def test_a_symlink_to_the_start_folder_is_not_a_new_match(tmp_path):
+    """A search folder already covers `start_dir`; so does anything in it
+    pointing back there. Reporting it as found in a search folder would
+    describe resolving somewhere Chord was never looking."""
+    start = repo_at(tmp_path / "work")
+    (tmp_path / "Projects").mkdir()
+    (tmp_path / "Projects" / "chord").symlink_to(start)
+
+    where = resolve(issue_in("chord"), start, [tmp_path / "Projects"])
+
+    assert where.path == start
     assert where.source == FROM_ROOT

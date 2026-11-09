@@ -196,17 +196,24 @@ def _find_by_project_name(project_name: str, start_dir: Path) -> Path | None:
     wanted = project_name.casefold()
     if start_dir.name.casefold() == wanted and start_dir.is_dir():
         return start_dir
-    exact = start_dir / project_name
-    if exact.is_dir():
-        return exact
     try:
         entries = sorted(start_dir.iterdir())
     except OSError:
         return None
+    # An exact spelling wins, for a workspace keeping `chord` and `Chord`
+    # side by side that was asked for one of them. Otherwise any casing
+    # matches. The names come from the listing itself: on a case-insensitive
+    # disk they are the directory's true spelling, so the path this hands
+    # back is the path Git will recognise rather than a mistyped copy of it.
+    fallback: Path | None = None
     for entry in entries:
-        if entry.name.casefold() == wanted and entry.is_dir():
+        if not entry.is_dir():
+            continue
+        if entry.name == project_name:
             return entry
-    return None
+        if fallback is None and entry.name.casefold() == wanted:
+            fallback = entry
+    return fallback
 
 
 def _find_in_search_dirs(
@@ -223,19 +230,21 @@ def _find_in_search_dirs(
     Folders that don't exist are skipped, so the default list can name the
     usual spots without anyone having all of them. The same folder reached two
     ways (a symlink, a case-insensitive disk) counts once, and `start_dir`
-    itself is skipped because it was already searched.
+    itself is skipped because it was already searched. The same dedup and the
+    refusing-to-break apply one level down too: an entry whose path can't be
+    resolved is skipped rather than ending the search.
     """
     wanted = project_name.casefold()
     seen: set[Path] = set()
     try:
         seen.add(start_dir.resolve())
-    except OSError:
+    except (OSError, RuntimeError):
         pass
     found: list[Path] = []
     for folder in search_dirs:
         try:
             folder = folder.expanduser().resolve()
-        except OSError:
+        except (OSError, RuntimeError):
             continue
         if folder in seen or not folder.is_dir():
             continue
@@ -247,8 +256,14 @@ def _find_in_search_dirs(
         for entry in entries:
             if entry.name.casefold() != wanted or not entry.is_dir():
                 continue
-            resolved = entry.resolve()
-            if resolved in found:
+            try:
+                resolved = entry.resolve()
+            except (OSError, RuntimeError):
+                continue
+            # A same-name folder reached two ways is one place, and one that
+            # resolves into a folder already searched — `start_dir` above all
+            # — is not a new place either.
+            if resolved in seen or resolved in found:
                 continue
             if is_git_repository(entry):
                 found.append(resolved)
