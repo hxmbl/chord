@@ -520,7 +520,9 @@ def test_terminal_state_issues_are_recorded_active_issues_are_retried(tmp_path, 
     done_issue["project"] = {"name": "Chord"}
 
     # Active issue - should not be recorded
-    active_issue = issue(2, state={"name": "Todo"}, labels={"nodes": [{"name": "chord"}]})
+    active_issue = issue(
+        2, state={"name": "Todo"}, labels={"nodes": [{"name": "chord"}]}
+    )
     active_issue["project"] = {"name": "Chord"}
 
     stub = LinearStub([done_issue, active_issue])

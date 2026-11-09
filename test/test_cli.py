@@ -744,8 +744,7 @@ def test_harness_add_takes_a_slash_name_and_prints_an_arrow_label(no_env):
         "opencode/big-pickle": ["opencode", "run", "--model", "big-pickle"]
     }
     assert (
-        "Create the label 'Chord -> opencode -> big-pickle' in Linear"
-        in result.output
+        "Create the label 'Chord -> opencode -> big-pickle' in Linear" in result.output
     )
 
 

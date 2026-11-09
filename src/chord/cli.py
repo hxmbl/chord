@@ -38,7 +38,7 @@ from chord.config import (
 from chord.harness import HarnessError, command_line
 from chord.linear import Linear
 from chord.paths import config_path, project_root
-from chord.routing import Router, route_label
+from chord.routing import RepoRouters, Router, route_label, router_for
 from chord.version import build as build_number
 from chord.watcher import StateError
 from chord.webhook import Webhook
@@ -682,7 +682,9 @@ def _service_line() -> str:
 
 
 async def _watch(managed: bool = False) -> None:
-    config = _config()
+    config = _config(quiet=True)
+    for warning in config.warnings:
+        watcher.log(f"warning: {warning}")
     if managed:
         # Signed out is a state a service waits through, not a crash: see
         # `_wait_for_sign_in`.
@@ -735,6 +737,10 @@ async def _watch(managed: bool = False) -> None:
             notify_received=config.notify.received,
             # Where else to look for a repository named after the project.
             search_dirs=config.search_dirs,
+            # Each target repository's own chord.toml, read per issue.
+            repo_router=RepoRouters(
+                config, router, warn=lambda line: watcher.log(f"warning: {line}")
+            ),
         )
     except StateError as exc:
         watcher.log(str(exc))
@@ -807,21 +813,19 @@ async def _wait_for_sign_in(every: float) -> str | None:
         loop.remove_signal_handler(signal.SIGTERM)
 
 
-def _config() -> Config:
+def _config(*, quiet: bool = False) -> Config:
     try:
-        return load()
+        config = load()
     except ConfigError as exc:
         _fail(str(exc))
+    if not quiet:
+        for warning in config.warnings:
+            typer.echo(f"warning: {warning}", err=True)
+    return config
 
 
 def _router(config: Config) -> Router:
-    return Router(
-        config.label,
-        config.harness,
-        config.harnesses,
-        allowed_actors=config.allowed_actors,
-        t3_options=config.t3,
-    )
+    return router_for(config)
 
 
 def _check_routes(router: Router) -> None:
@@ -1091,6 +1095,8 @@ def _daemon_line(pid: int | None) -> str:
 def _config_line(config: Config) -> str:
     if not config.from_file:
         return f"{config.path} (defaults, file not created)"
+    if len(config.layers) > 1:
+        return "  +  ".join(f"{layer.path} ({layer.source})" for layer in config.layers)
     return str(config.path)
 
 

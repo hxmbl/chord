@@ -23,8 +23,15 @@ def _repo(tmp_path):
     _git(tmp_path, "init", "-q")
     _git(
         tmp_path,
-        "-c", "user.name=t", "-c", "user.email=t@example.com",
-        "commit", "-q", "--allow-empty", "-m", "x",
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "x",
     )
     return tmp_path
 
