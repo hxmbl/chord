@@ -248,8 +248,8 @@ class Watcher:
         # back the same dead string is recognised as not-a-renewal.
         self._adopted: str | None = None
         # The directory where Chord was started, used as the base for repository
-        # resolution. Falls back to the current working directory if not specified.
-        self._start_dir = start_dir or Path.cwd()
+        # resolution. Falls back to the project root if not specified.
+        self._start_dir = start_dir or project_root()
 
     @property
     def handed_over(self) -> int:
@@ -694,6 +694,9 @@ class Watcher:
         # for that reason rather than for its repository.
         if where is None:
             exc = unresolved or ResolutionError("no repository")
+            # Recorded only for terminal states (Done, Canceled), which won't be
+            # retried. Active issues (Backlog, Todo, In Progress) are not recorded
+            # so they can be retried once the repository is fixed.
             _spacer()
             self._problem(f"{identifier} skipped: {one_line(str(exc))}")
             if exc.hint:

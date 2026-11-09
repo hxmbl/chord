@@ -215,6 +215,20 @@ def test_the_dir_spelling_of_the_line_is_read_the_same(tmp_path):
     assert found.source == FROM_DESCRIPTION
 
 
+def test_the_last_working_path_line_wins_whatever_its_spelling(tmp_path):
+    start = repo_at(tmp_path / "workspace")
+    first = repo_at(tmp_path / "first")
+    last = repo_at(tmp_path / "last")
+
+    for older, newer in (
+        ("Chord_Working_Path", "Chord_Working_Dir"),
+        ("Chord_Working_Dir", "Chord_Working_Path"),
+    ):
+        description = f'[{older}: "{first}"]\nnotes\n[{newer}: "{last}"]'
+        found = resolve({"project": None, "description": description}, start)
+        assert found.path == last
+
+
 def test_a_malformed_dir_line_names_the_spelling_it_was_written_in(tmp_path):
     """The error quotes the line as typed, not the other spelling."""
     start = repo_at(tmp_path / "workspace")
@@ -557,9 +571,7 @@ def test_a_search_folder_that_is_a_file_is_skipped(tmp_path):
     found = repo_at(tmp_path / "code" / "chord")
     (tmp_path / "stray").write_text("not a folder")
 
-    where = resolve(
-        issue_in("chord"), start, [tmp_path / "stray", tmp_path / "code"]
-    )
+    where = resolve(issue_in("chord"), start, [tmp_path / "stray", tmp_path / "code"])
 
     assert where.path == found.resolve()
 

@@ -299,7 +299,9 @@ def _explicit_path(description: object) -> tuple[Path, str] | None:
     if not isinstance(description, str):
         return None
     lowered = tuple(prefix.lower() for prefix in EXPLICIT_PATH_PREFIX)
-    for line in description.splitlines():
+    # The last line wins, whichever spelling it uses, so a definition added
+    # further down settles a conflict with an older one above it.
+    for line in reversed(description.splitlines()):
         # Linear stores descriptions as Markdown and escapes what its editor
         # would otherwise read as syntax: the line typed as `[Chord_Working_Path:
         # "..."]` comes back as `\[Chord_Working_Path: "..."\]`, and an
@@ -323,8 +325,7 @@ def _explicit_path(description: object) -> tuple[Path, str] | None:
         end = rest.find(quote)
         if end == -1:
             raise ResolutionError(
-                f"The `{prefix}` line opens a {quote} quote and "
-                f"never closes it."
+                f"The `{prefix}` line opens a {quote} quote and never closes it."
             )
         text, trailing = rest[:end], rest[end + 1 :].strip()
         if trailing not in ("", "]"):
@@ -333,9 +334,7 @@ def _explicit_path(description: object) -> tuple[Path, str] | None:
                 f"quoted path; found {trailing!r} after the closing quote."
             )
         if not text:
-            raise ResolutionError(
-                f"The `{prefix}` line quotes an empty path."
-            )
+            raise ResolutionError(f"The `{prefix}` line quotes an empty path.")
         # `~` first, because it is what a person writes and pathlib
         # treats it as an ordinary directory name.
         return Path(text).expanduser(), prefix
