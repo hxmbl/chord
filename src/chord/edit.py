@@ -19,6 +19,7 @@ from tomlkit.toml_document import TOMLDocument
 
 from chord.config import (
     CONFIG_VERSION,
+    IDENTITY_KEYS,
     MACHINE_KEYS,
     ConfigError,
     T3Options,
@@ -231,6 +232,16 @@ def migrate(project: Path | None, user: Path) -> tuple[dict[Path, str], list[str
 
         if path != user:
             for key in sorted(MACHINE_KEYS):
+                if key in doc and key in IDENTITY_KEYS:
+                    # Who "me" is never comes from a project's file, so it is
+                    # dropped rather than moved: moving it would turn an id a
+                    # cloned repository wrote into the user's own identity.
+                    del doc[key]
+                    notes.append(
+                        f"Dropped `{key}` from {path}; only `chord setup` sets "
+                        f'who "me" is, in {user}.'
+                    )
+                    continue
                 if key in doc:
                     value = doc[key]
                     if key not in user_doc:

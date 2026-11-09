@@ -342,3 +342,17 @@ def test_the_schema_refuses_what_chord_refuses(text, tmp_path):
     path = write(tmp_path / "chord.toml", text)
     with pytest.raises(config.ConfigError):
         config.load(path)
+
+
+def test_migrate_drops_a_project_id_instead_of_adopting_it(project):
+    """Moving it would launder a cloned repository's "me" into the user file."""
+    alice = "00000000-0000-0000-0000-000000000008"
+    path = write(project_file(project), f'linear_user_id = "{alice}"\n')
+
+    done = runner.invoke(app, ["config", "migrate", "--yes"])
+    assert done.exit_code == 0, done.output
+
+    assert "linear_user_id" not in tomllib.loads(path.read_text())
+    user = user_file()
+    if user.is_file():
+        assert "linear_user_id" not in tomllib.loads(user.read_text())
