@@ -6,7 +6,7 @@ directory the harness is launched in. In order:
 1. The project title, matched against the two places it can plausibly be: the
    directory Chord is rooted at, and a directory of that name inside it.
 2. An explicit `[Chord_Working_Path: "/path/to/repo"]` line in the issue
-   description. The path is quoted, and the name matches in any case, because
+   description (`Chord_Working_Dir` is read the same). The path is quoted, and the name matches in any case, because
    both are typed by hand.
 3. The project title again, in the folders people keep their checkouts in
    (`~/Projects`, `~/code` and so on, or `search_dirs` in chord.toml): a Git
@@ -43,7 +43,7 @@ from chord.text import one_line
 # Matched in any case, since it is typed by hand; the path it carries must be
 # in single or double quotes, so that spaces inside it stay inside it.
 # Relative paths resolve from the directory Chord is rooted at.
-EXPLICIT_PATH_PREFIX = "[Chord_Working_Path:"
+EXPLICIT_PATH_PREFIX = ["[Chord_Working_Path:", "[Chord_Working_Dir:"]
 
 # How the repository was chosen, named in the log line for every hand-over.
 FROM_PROJECT = "project title"
@@ -76,7 +76,7 @@ class Resolution(NamedTuple):
 _MARKDOWN_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 
 # What a working-path line looks like, for messages that suggest writing one.
-_LINE_EXAMPLE = f'{EXPLICIT_PATH_PREFIX} "~/path/to/repo"]'
+_LINE_EXAMPLE = f'{EXPLICIT_PATH_PREFIX[0]} "~/path/to/repo"]'
 
 
 def resolve(
@@ -113,13 +113,13 @@ def resolve(
 
     explicit = _explicit_path(issue.get("description"))
     if explicit is not None:
-        path = explicit if explicit.is_absolute() else (start_dir / explicit)
+        raw, prefix = explicit
+        path = raw if raw.is_absolute() else (start_dir / raw)
         path = path.resolve()
         if is_git_repository(path):
             return Resolution(path, FROM_DESCRIPTION)
         raise ResolutionError(
-            f"its {EXPLICIT_PATH_PREFIX}] line names {path}, which isn't a Git "
-            f"repository.",
+            f"its {prefix}] line names {path}, which isn't a Git repository.",
             hint="Make it one, or point the line somewhere else.",
         )
 
@@ -270,8 +270,12 @@ def _find_in_search_dirs(
     return found
 
 
-def _explicit_path(description: object) -> Path | None:
-    """The path from a `[Chord_Working_Path: "..."]` line, or None without one.
+def _explicit_path(description: object) -> tuple[Path, str] | None:
+    """The path from a working-path line, with the prefix it was written under.
+
+    Either spelling of the line counts — `[Chord_Working_Path: "..."]` or
+    `[Chord_Working_Dir: "..."]` — and the prefix comes back with the path so
+    error messages can name the line as it was written.
 
     The path is quoted — single or double — so a path containing a space is
     still one path, and so a line that forgot the quotes is an error rather
@@ -294,41 +298,47 @@ def _explicit_path(description: object) -> Path | None:
     """
     if not isinstance(description, str):
         return None
-    prefix = EXPLICIT_PATH_PREFIX.lower()
+    lowered = tuple(prefix.lower() for prefix in EXPLICIT_PATH_PREFIX)
     for line in description.splitlines():
         # Linear stores descriptions as Markdown and escapes what its editor
         # would otherwise read as syntax: the line typed as `[Chord_Working_Path:
         # "..."]` comes back as `\[Chord_Working_Path: "..."\]`, and an
         # underscore anywhere in it may come back as `\_`. Read it as typed.
         line = _MARKDOWN_ESCAPE.sub(r"\1", line.strip())
-        if not line.lower().startswith(prefix):
+        folded = line.lower()
+        match = next(
+            (i for i, prefix in enumerate(lowered) if folded.startswith(prefix)),
+            None,
+        )
+        if match is None:
             continue
-        rest = line[len(EXPLICIT_PATH_PREFIX) :].strip()
+        prefix = EXPLICIT_PATH_PREFIX[match]
+        rest = line[len(lowered[match]) :].strip()
         if not rest or rest[0] not in "\"'":
             raise ResolutionError(
-                f"The `{EXPLICIT_PATH_PREFIX}` line needs its path in single or "
-                f'double quotes, like `{EXPLICIT_PATH_PREFIX} "/path/to/repo"]`.'
+                f"The `{prefix}` line needs its path in single or "
+                f'double quotes, like `{prefix} "/path/to/repo"]`.'
             )
         quote, rest = rest[0], rest[1:]
         end = rest.find(quote)
         if end == -1:
             raise ResolutionError(
-                f"The `{EXPLICIT_PATH_PREFIX}` line opens a {quote} quote and "
+                f"The `{prefix}` line opens a {quote} quote and "
                 f"never closes it."
             )
         text, trailing = rest[:end], rest[end + 1 :].strip()
         if trailing not in ("", "]"):
             raise ResolutionError(
-                f"The `{EXPLICIT_PATH_PREFIX}` line must hold nothing but the "
+                f"The `{prefix}` line must hold nothing but the "
                 f"quoted path; found {trailing!r} after the closing quote."
             )
         if not text:
             raise ResolutionError(
-                f"The `{EXPLICIT_PATH_PREFIX}` line quotes an empty path."
+                f"The `{prefix}` line quotes an empty path."
             )
         # `~` first, because it is what a person writes and pathlib
         # treats it as an ordinary directory name.
-        return Path(text).expanduser()
+        return Path(text).expanduser(), prefix
     return None
 
 

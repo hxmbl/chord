@@ -1141,7 +1141,7 @@ class Watcher:
             return
         self._problem(
             f"{root} isn't a Git repository, so each issue needs a Linear "
-            f"project named after a folder in it, or a {EXPLICIT_PATH_PREFIX}] line."
+            f"project named after a folder in it, or a {EXPLICIT_PATH_PREFIX[0]}] line."
         )
 
     def _problem(self, message: str) -> bool:
