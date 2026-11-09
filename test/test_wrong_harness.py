@@ -150,7 +150,11 @@ def test_route_of_never_returns_none_for_something_the_filter_matched():
     """
     router = Router("Chord", "print")
     suffixes = ["", "/", "//", ":", "x", "/x", "x/", ":x", "x:", "//x//", " ", "claude"]
-    for label in [prefix + suffix for prefix in ("Chord ->", "Chord->", "Chord/") for suffix in suffixes]:
+    for label in [
+        prefix + suffix
+        for prefix in ("Chord ->", "Chord->", "Chord/")
+        for suffix in suffixes
+    ]:
         assert route_of("Chord", label) is not None, (
             f"{label!r} matches the poll filter but names no harness"
         )

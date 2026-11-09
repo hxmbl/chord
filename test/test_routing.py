@@ -234,8 +234,13 @@ def test_a_backslash_in_a_key_is_an_ordinary_character(tmp_path):
         "[harnesses.'opencode\\big-pickle']\ncommand = \"tac\"\n"
     )
     cfg = config.load(path)
-    assert cfg.harnesses == {"opencode/big-pickle": "cat", "opencode\\big-pickle": "tac"}
-    assert route_label("Chord", "opencode\\big-pickle") == "Chord -> opencode\\big-pickle"
+    assert cfg.harnesses == {
+        "opencode/big-pickle": "cat",
+        "opencode\\big-pickle": "tac",
+    }
+    assert (
+        route_label("Chord", "opencode\\big-pickle") == "Chord -> opencode\\big-pickle"
+    )
 
 
 @pytest.mark.parametrize("key", ['"opencode->tiny"', '"opencode -> tiny"', '"->"'])
@@ -321,7 +326,9 @@ def test_candidates_ignore_labels_that_arent_routes():
 
 def test_a_duplicate_route_label_is_only_one_candidate():
     router = Router("Chord", "print")
-    assert router.candidates(labels("Chord -> opencode", "Chord -> opencode")) == ["opencode"]
+    assert router.candidates(labels("Chord -> opencode", "Chord -> opencode")) == [
+        "opencode"
+    ]
 
 
 def test_candidates_survive_a_label_node_that_is_not_a_dict():
@@ -565,7 +572,11 @@ def test_the_newest_route_label_is_the_one_that_runs(tmp_path, capsys):
     """The example from the issue: `Chord -> opencode -> space-bunny-free`."""
     spy = RecordingHarness()
     stub = StubLinear(
-        [issue(1, "Chord", "Chord -> opencode", "Chord -> opencode -> space-bunny-free")],
+        [
+            issue(
+                1, "Chord", "Chord -> opencode", "Chord -> opencode -> space-bunny-free"
+            )
+        ],
         history=[
             change("2026-03-01", "Chord -> opencode -> space-bunny-free", who=BY_BOB),
             change("2026-02-01", "Chord -> opencode", who=BY_ALICE),
