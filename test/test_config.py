@@ -81,13 +81,16 @@ def test_notify_is_validated(tmp_path, text, message):
         config.load(path)
 
 
-def test_the_stock_file_offers_the_switch_at_its_default():
+def test_the_stock_file_is_minimal_and_loads():
+    """The stock file holds the few real choices; machine settings live in the
+    user file, so a committed project file never carries them."""
     import tomllib
 
     raw = tomllib.loads(config.STOCK)
-    assert raw["notify"] == {"received": True}
-    assert "received = false" not in config.STOCK.split("[notify]")[0]
-    assert config._build(raw, config.config_path()[0]).notify.received is True
+    assert set(raw) == {"version", "label", "harness", "routes"}
+    assert not set(raw) & config.MACHINE_KEYS
+    built = config._build(raw, config.config_path()[0])
+    assert built.notify.received is True
 
 
 def test_a_curated_harness_appended_to_the_stock_file_leaves_notify_alone(
@@ -251,12 +254,15 @@ def test_search_dirs_are_validated(tmp_path, text, message):
         config.load(path)
 
 
-def test_uncommenting_search_dirs_in_the_stock_file_works():
-    """It sits above the first [section], so turning it on can't misfile it."""
+def test_uncommenting_the_stock_examples_works():
+    """They sit where they belong, so turning them on can't misfile them."""
     text = config.STOCK.replace(
-        '# search_dirs = ["~/Projects"]', 'search_dirs = ["~/Projects"]'
+        '# model = "big-pickle"', 'model = "big-pickle"'
+    ).replace(
+        '# big-pickle = "opencode:big-pickle"', 'big-pickle = "opencode:big-pickle"'
     )
     import tomllib
 
     raw = tomllib.loads(text)
-    assert raw["search_dirs"] == ["~/Projects"]
+    assert raw["model"] == "big-pickle"
+    assert raw["routes"] == {"big-pickle": "opencode:big-pickle"}

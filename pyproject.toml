@@ -17,6 +17,9 @@ dependencies = [
     "keyring>=25.7.0",
     "python-dotenv>=1.2.3",
     "desktop-notifier>=6.1.0",
+    # Edits chord.toml from the CLI (`chord route`, `chord set`, `chord config
+    # migrate`) while keeping a person's comments and key order.
+    "tomlkit>=0.13",
     # Not imported directly: httpx verifies TLS against certifi's CA bundle.
     # The floor keeps installs off bundles that still trust the compromised
     # emSign roots (GHSA-6q48-6c7w-9gw2), even into an existing environment.
@@ -31,6 +34,7 @@ live = [
 ]
 dev = [
     "build>=1.2",
+    "jsonschema>=4.23",
     "pyright>=1.1.380",
     "pytest>=8",
     "pytest-cov>=5",

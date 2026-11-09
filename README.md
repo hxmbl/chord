@@ -84,8 +84,13 @@ Without a webhook Chord polls Linear every 60 seconds. For instant pick-up, see
 | Command                  | What it does                                            |
 | ------------------------ | ------------------------------------------------------- |
 | `chord setup`            | Get Chord ready. Safe to run again.                     |
-| `chord init`             | Write the stock `chord.toml`, annotated.               |
+| `chord init`             | Write a minimal project `chord.toml`.                   |
 | `chord config`           | Edit `chord.toml` in your editor; checked before saving. |
+| `chord config show`      | The effective config and where each value came from (`--json`, `--repo`). |
+| `chord config migrate`   | Rewrite an old `chord.toml` into the current shape, diff first. |
+| `chord route add\|rm\|ls` | Manage `[routes]` (`--user` for your own file).       |
+| `chord set KEY VALUE`    | Change one setting (`--user` for your own file).        |
+| `chord labels`           | List the labels Chord needs in Linear; `--create` makes the missing ones. |
 | `chord harness add`      | Curate a harness: `chord harness add NAME -- CMD ...`.  |
 | `chord start`            | Watch in the background. Sets up first if needed.       |
 | `chord refresh`          | Renew the token now. Chord also does it on its own.     |
@@ -221,55 +226,68 @@ A file may start with `version = 1`. Missing means 1. A file written for a newer
 config version than this Chord reads is refused with an error, rather than
 half-read.
 
+A project's file (what `chord init` and `chord setup` write) holds only the
+choices that are yours:
+
 ```toml
-# The label that triggers a run. Default: "Chord".
+#:schema https://raw.githubusercontent.com/hxmbl/chord/master/schema/chord.v1.json
+version = 1
 label = "Chord"
-
-# What does the work by default: "opencode" (runs `opencode run`, the issue on
-# stdin), a preset ("claude", "codex", "cursor"), "print", or a command.
-# Default: "opencode".
 harness = "opencode"
+# model = "big-pickle"
+allowed_actors = ["me"]
 
-# Seconds between checks of Linear. Default: 60, floor 5.
-interval = 60
-
-# Local webhook listener. Default: 23842; use 0 for an ephemeral test port.
-webhook_port = 23842
-
-# Shared secret for the webhook, sent as the X-Chord-Secret header. Default: ""
-# — no authentication. Set it to anything else and every request must carry a
-# matching header or get a 401. See "Webhooks" below before setting one.
-webhook_secret = ""
-
-# Who may trigger a run. Default: everyone in the workspace — read the
-# "Who can trigger a run" section below before leaving it that way.
-allowed_actors = ["11111111-1111-1111-1111-111111111111"]
-
-# Tables come last: in TOML everything after a `[table]` header belongs to that
-# table, so `interval` above has to be written before the first one of these.
-
-# Desktop banners. Failed, skipped and refused always post one. `received` is
-# the banner for an issue that reached its harness, posted once delivery is
-# confirmed; false keeps deliveries quiet (the log and `chord info` still show
-# every one). Default: true. See "Notifications" below.
-[notify]
-received = true
-
-# Extra named harnesses. A `Chord -> <name>` label routes an issue to the one
-# called `<name>` instead of the default. See "Routing" below.
-[harnesses."opencode/big-pickle"]
-command = ["opencode", "run", "--model", "big-pickle"]
-
-[harnesses.claude]
-command = ["claude"]   # the Claude Code preset; see "Harnesses" below
-
-# Optional T3 Code CLI settings, used only when the selected harness is "t3".
-[t3]
-# provider = "provider-instance-id"  # Set with model.
-# model = "model-slug"                # Set with provider.
-# worktree = "main"                   # Optional T3 git worktree base.
-# branch = "chord/issue-branch"       # Optional; requires worktree.
+[routes]
+big-pickle = "opencode:big-pickle"
 ```
+
+Your user file holds the machine settings, each optional:
+
+```toml
+linear_user_id = "11111111-1111-1111-1111-111111111111"  # who "me" is; `chord setup` writes it
+interval = 60                 # seconds between checks of Linear; floor 5
+webhook_port = 23842          # local webhook listener; 0 for any free port
+webhook_secret = ""           # X-Chord-Secret header value; see "Webhooks"
+search_dirs = ["~/Projects"]  # where checkouts named after a Linear project live
+
+[notify]
+received = true               # a banner when an issue reaches its harness
+```
+
+`chord help config` lists every setting. The JSON Schema for the file is
+[`schema/chord.v1.json`](schema/chord.v1.json); the `#:schema` line lets
+taplo-based editors check and complete it as you type.
+
+### Changing it from the command line
+
+```bash
+chord route add big-pickle opencode:big-pickle   # [routes], checked first
+chord route rm big-pickle
+chord route ls                                    # every route, label and file
+chord set harness claude:opus
+chord set --user interval 30                      # machine settings: --user
+chord config show                                 # effective config + sources
+chord config show --json --repo ~/Projects/lib    # as a repo's issues see it
+chord config migrate                              # old shapes -> new, diff first
+chord labels                                      # labels Linear needs: present/missing
+chord labels --create                             # create only the missing ones
+```
+
+Writes keep the file's comments and order, are checked before they land (an
+invalid value writes nothing), and go through a temp file and a rename. A new
+top-level key is placed above the first `[table]`, so the TOML trap (a key
+after a table header belongs to that table) can't bite. `chord set` refuses a
+machine setting without `--user`, since a project's copy would be ignored.
+
+`chord config migrate` rewrites old files: machine settings move to your user
+file, `harness = "t3"` with `[t3]` becomes `harness = "t3:provider/model@worktree"`,
+`[harnesses]` entries a route can say move to `[routes]`, and `version = 1` is
+added. It shows a diff and asks first (`--yes` skips the question). A
+`[harnesses."a/b"]` entry stays as it is, because a route name can't hold `/` and
+renaming it would change its Linear label; so does `[t3]` with a `branch`.
+
+`chord labels` never creates anything unless you pass `--create`, and then only
+the labels that are missing.
 
 Commit this file. It holds no secrets. Legacy root-level `chord.toml` files are
 still read for compatibility.

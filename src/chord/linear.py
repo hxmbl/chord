@@ -319,6 +319,21 @@ class IssuePage(NamedTuple):
     truncated: bool
 
 
+LABELS_BY_PREFIX = """
+query($prefix: String!, $after: String) {
+  issueLabels(first: 250, after: $after, filter: { name: { startsWith: $prefix } }) {
+    nodes { name }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+CREATE_LABEL = """
+mutation($name: String!) {
+  issueLabelCreate(input: { name: $name }) { success }
+}
+"""
+
 USERS_BY_EMAIL = """
 query($emails: [String!]) {
   users(filter: { email: { in: $emails } }) { nodes { id email } }
@@ -400,6 +415,33 @@ class Linear:
                 )
             )
         return changes
+
+    async def label_names(self, prefix: str) -> set[str]:
+        """Every label name starting with `prefix`, across the workspace."""
+        names: set[str] = set()
+        after: str | None = None
+        for _ in range(20):
+            data = await self._query(
+                LABELS_BY_PREFIX, {"prefix": prefix, "after": after}
+            )
+            labels = data.get("issueLabels")
+            if not isinstance(labels, dict):
+                break
+            for node in labels.get("nodes") or []:
+                if isinstance(node, dict) and node.get("name"):
+                    names.add(str(node["name"]))
+            page = labels.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            after = page.get("endCursor")
+        return names
+
+    async def create_label(self, name: str) -> None:
+        """Create a workspace label. Only ever on an explicit `chord labels --create`."""
+        data = await self._query(CREATE_LABEL, {"name": name})
+        result = data.get("issueLabelCreate")
+        if not isinstance(result, dict) or not result.get("success"):
+            raise LinearError(f"Linear didn't create the label {name!r}.")
 
     async def user_ids_by_email(self, emails: list[str]) -> dict[str, str]:
         """`{email: user id}` for the emails Linear knows, lowercased.

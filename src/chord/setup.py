@@ -197,10 +197,11 @@ def _project(say: Callable[[str], None], viewer: dict) -> None:
     except ConfigError as exc:
         raise SetupError(str(exc)) from exc
     say(f"   Wrote {written}.")
-    say("   Each issue that reaches the tool gets a desktop banner; set")
-    say("   `received = false` under [notify] there to keep deliveries quiet.")
+    say("   Each issue that reaches the tool gets a desktop banner;")
+    say("   `chord set --user notify.received false` keeps deliveries quiet.")
     if allowed:
         say("   Only you can trigger a run. Add teammates to allowed_actors there.")
 
-    say(f"\n   Create the label {label!r} in Linear yourself. Chord never creates")
-    say("   labels, so adding it is what lets an issue reach this machine.")
+    say(f"\n   Create the label {label!r} in Linear (`chord labels --create` does")
+    say("   it when you ask). Chord never creates labels on its own; adding it is")
+    say("   what lets an issue reach this machine.")

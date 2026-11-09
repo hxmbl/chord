@@ -7,6 +7,7 @@ the operating system, so it starts at login and comes back after a crash.
 """
 
 import asyncio
+import json
 import os
 import shlex
 import shutil
@@ -23,7 +24,7 @@ from typing import NoReturn
 import typer
 import typer.core
 
-from chord import credentials, daemon, notify, service, subscribe, watcher
+from chord import credentials, daemon, edit, notify, service, subscribe, watcher
 from chord import setup as guided
 from chord.config import (
     SEPARATOR,
@@ -35,11 +36,14 @@ from chord.config import (
     curate,
     init_file,
     load,
+    load_repo,
     resolve_emails,
+    spell,
 )
 from chord.harness import HarnessError, command_line
 from chord.linear import Linear, LinearError
-from chord.paths import config_path, project_root
+from chord.paths import config_path, project_config_path, project_root
+from chord.repo import FROM_ROOT, ResolutionError, resolve
 from chord.routing import RepoRouters, Router, route_label, router_for
 from chord.version import build as build_number
 from chord.watcher import StateError
@@ -125,8 +129,13 @@ def init():
     typer.echo("Every setting is there at its default, with a comment. Commit it.")
 
 
-@app.command("config")
+config_app = typer.Typer(no_args_is_help=False)
+app.add_typer(config_app, name="config")
+
+
+@config_app.callback(invoke_without_command=True)
 def config_command(
+    ctx: typer.Context,
     path_only: bool = typer.Option(
         False, "--path", help="Print which chord.toml Chord reads, and stop."
     ),
@@ -136,7 +145,33 @@ def config_command(
     Opens the file Chord would read from here ($VISUAL, then $EDITOR, then
     nano or vi), or the stock file if there isn't one yet. A mistake is shown
     and you go back in to fix it; nothing reaches the file until it loads.
+    `chord config show` prints the effective config and where each value came
+    from; `chord config migrate` rewrites an old file into the current shape.
+
+    \b
+    Files, merged per key, nearest winning:
+      ~/.config/chord/chord.toml   yours (machine settings live here)
+      .config/chord/chord.toml     the start folder's, found upward
+      <repo>/.config/chord/chord.toml   the issue's repository, per issue
+
+    \b
+    Settings (all optional):
+      version          config format, 1
+      label            trigger label (default "Chord")
+      harness          default harness: opencode, claude, codex, cursor, t3,
+                       print, a route string, or a command list
+      model            model for the default harness
+      allowed_actors   "me", emails or Linear user ids (default: anyone)
+      \\[routes]         name = "harness\\[:model]\\[@branch]", label Chord -> name
+      interval         machine: seconds between polls (default 60, min 5)
+      webhook_port     machine: local webhook port (default 23842)
+      webhook_secret   machine: X-Chord-Secret value (default none)
+      \\[notify]         machine: received = true|false (default true)
+      search_dirs      machine: folders holding checkouts
+      linear_user_id   machine: who "me" is; `chord setup` writes it
     """
+    if ctx.invoked_subcommand is not None:
+        return
     path, exists = config_path()
     if path_only:
         typer.echo(path)
@@ -186,6 +221,274 @@ def config_command(
         typer.echo("`chord service restart` to use it.")
     elif daemon.running_pid() is not None:
         typer.echo("Chord is running: `chord stop`, then `chord start`, to use it.")
+
+
+_SHOWN = (
+    "version",
+    "label",
+    "harness",
+    "model",
+    "allowed_actors",
+    "interval",
+    "webhook_port",
+    "webhook_secret",
+    "notify.received",
+    "search_dirs",
+    "linear_user_id",
+)
+
+
+def _shown(config: Config, key: str) -> object:
+    if key == "harness":
+        return spell(config.harness)
+    if key == "notify.received":
+        return config.notify.received
+    if key == "search_dirs":
+        return [str(folder) for folder in config.search_dirs]
+    if key == "allowed_actors":
+        return list(config.allowed_actors)
+    if key == "webhook_secret":
+        # Shown as set or not: this output gets pasted into issues.
+        return "(set)" if config.webhook_secret else ""
+    return getattr(config, key)
+
+
+def _effective(config: Config) -> dict:
+    settings = {}
+    for key in _SHOWN:
+        source, file = config.source_of(key.split(".")[0])
+        if key == "harness" and source == "default" and config.model:
+            # `model` alone turns the default harness into a route.
+            source, file = config.source_of("model")
+        settings[key] = {
+            "value": _shown(config, key),
+            "source": source,
+            "file": str(file) if file else None,
+        }
+    routes = {}
+    for name, spec in sorted(config.all_routes.items()):
+        table = "routes" if name in config.routes else "harnesses"
+        source, file = config.source_of(f"{table}.{name}")
+        routes[name] = {
+            "route": spell(spec),
+            "label": route_label(config.label, name),
+            "source": source,
+            "file": str(file) if file else None,
+        }
+    return {
+        "layers": [
+            {"source": layer.source, "file": str(layer.path)} for layer in config.layers
+        ],
+        "settings": settings,
+        "routes": routes,
+        "warnings": list(config.warnings),
+    }
+
+
+def _repo_path(where: str, config: Config) -> Path:
+    """A repository given as a path, or as the Linear project it belongs to."""
+    path = Path(where).expanduser()
+    if path.is_dir():
+        return path.resolve()
+    try:
+        found = resolve(
+            {"project": {"name": where}, "description": ""},
+            project_root(),
+            config.search_dirs,
+        )
+    except ResolutionError as exc:
+        _fail(str(exc))
+    if found.source == FROM_ROOT:
+        _fail(f"{where!r} is neither a folder nor a Linear project Chord can find.")
+    return found.path
+
+
+@config_app.command("show")
+def config_show(
+    as_json: bool = typer.Option(False, "--json", help="Print JSON, for scripts."),
+    repo: str | None = typer.Option(
+        None,
+        "--repo",
+        help="Include this repository's own file: a path, or a Linear project name.",
+    ),
+):
+    """Print the effective config, with where each value came from."""
+    config = _config(quiet=True)
+    if repo is not None:
+        try:
+            config = load_repo(config, _repo_path(repo, config))
+        except ConfigError as exc:
+            _fail(str(exc))
+    found = _effective(config)
+    if as_json:
+        typer.echo(json.dumps(found, indent=2))
+        return
+    if not found["layers"]:
+        typer.echo("No chord.toml found: everything is a default.")
+    for layer in found["layers"]:
+        typer.echo(f"{layer['source']:<8} {layer['file']}")
+    typer.echo("")
+    width = max(len(key) for key in _SHOWN)
+    for key, entry in found["settings"].items():
+        where = entry["source"]
+        typer.echo(f"{key.ljust(width)}  {json.dumps(entry['value'])}  ({where})")
+    if found["routes"]:
+        typer.echo("")
+        typer.echo("routes")
+        for entry in found["routes"].values():
+            typer.echo(f"  {entry['label']}  ->  {entry['route']}  ({entry['source']})")
+    for warning in found["warnings"]:
+        typer.echo(f"warning: {warning}", err=True)
+
+
+@config_app.command("migrate")
+def config_migrate(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Write without asking."),
+):
+    """Rewrite old chord.toml files into the current shape, showing a diff first.
+
+    Machine settings move to your user file, `[t3]` becomes a route string, and
+    `[harnesses]` entries a route can say move to `[routes]`.
+    """
+    try:
+        changes, notes = edit.migrate(project_config_path(), edit.user_target())
+    except ConfigError as exc:
+        _fail(str(exc))
+    for note in notes:
+        typer.echo(note)
+    if not changes:
+        typer.echo("Nothing to migrate.")
+        return
+    for path, text in changes.items():
+        typer.echo(edit.diff(path, text))
+    # Every file is checked before any is written, so a migration never stops
+    # half done.
+    try:
+        for path, text in changes.items():
+            check_text(text, path)
+    except ConfigError as exc:
+        _fail(f"The migrated file wouldn't load, so nothing was written: {exc}")
+    if not yes:
+        if not guided.interactive():
+            _fail("Nothing written. Run `chord config migrate --yes` to write it.")
+        if not typer.confirm("Write these changes?", default=True):
+            _fail("Nothing written.")
+    for path, text in changes.items():
+        edit.write(path, text)
+        typer.echo(f"Wrote {path}.")
+
+
+route_app = typer.Typer(no_args_is_help=True)
+app.add_typer(route_app, name="route", help="List, add and remove routes.")
+
+
+@route_app.command("add")
+def route_add_command(
+    name: str = typer.Argument(
+        ..., help="The route's name; its label is Chord -> NAME."
+    ),
+    route: str = typer.Argument(..., help="harness[:model][@branch]"),
+    user: bool = typer.Option(False, "--user", help="Write your user file."),
+):
+    """Add a route, like `chord route add big-pickle opencode:big-pickle`."""
+    path = edit.target(user)
+    try:
+        written = edit.route_add(path, name, route)
+    except ConfigError as exc:
+        _fail(str(exc))
+    label = _config(quiet=True).label
+    typer.echo(f"Added {name} = {json.dumps(written)} to {path}.")
+    typer.echo(
+        f"Its label is '{route_label(label, name)}'. `chord labels` checks it "
+        "exists in Linear."
+    )
+
+
+@route_app.command("rm")
+def route_rm_command(
+    name: str = typer.Argument(..., help="The route to remove."),
+    user: bool = typer.Option(False, "--user", help="Edit your user file."),
+):
+    """Remove a route."""
+    path = edit.target(user)
+    try:
+        removed = edit.route_rm(path, name)
+    except ConfigError as exc:
+        _fail(str(exc))
+    if not removed:
+        _fail(f"No route called {name!r} in {path}.")
+    typer.echo(f"Removed {name} from {path}.")
+
+
+@route_app.command("ls")
+def route_ls_command():
+    """List every route, its label and the file it comes from."""
+    config = _config(quiet=True)
+    routes = _effective(config)["routes"]
+    default = f"{config.label}  ->  {spell(config.harness)}  (default)"
+    typer.echo(default)
+    for entry in routes.values():
+        where = entry["file"] or "default"
+        typer.echo(
+            f"{entry['label']}  ->  {entry['route']}  ({entry['source']}: {where})"
+        )
+
+
+@app.command("set")
+def set_command(
+    key: str = typer.Argument(
+        ..., help="The setting, like harness or notify.received."
+    ),
+    value: str = typer.Argument(..., help="The value, as TOML or plain text."),
+    user: bool = typer.Option(False, "--user", help="Write your user file."),
+):
+    """Set one setting, keeping the file's comments and order."""
+    path = edit.target(user)
+    try:
+        written = edit.set_value(path, key, value, user=user)
+    except ConfigError as exc:
+        _fail(str(exc))
+    typer.echo(f"Set {key} = {json.dumps(written)} in {path}.")
+
+
+@app.command("labels")
+def labels_command(
+    create: bool = typer.Option(
+        False, "--create", help="Create the missing labels in Linear."
+    ),
+):
+    """List the labels Chord needs in Linear, and whether each exists.
+
+    A dry run unless you pass --create, which creates only the missing ones.
+    Chord never creates a label on its own.
+    """
+    config = _config(quiet=True)
+    wanted = [route.label for route in _router(config).routes()]
+    client = Linear(_token())
+    try:
+        existing = asyncio.run(client.label_names(config.label))
+    except LinearError as exc:
+        _fail(f"Couldn't read labels from Linear: {exc}")
+    missing = [name for name in wanted if name not in existing]
+    width = max(len(name) for name in wanted)
+    for name in wanted:
+        state = "missing" if name in missing else "present"
+        typer.echo(f"  {name.ljust(width)}  {state}")
+    if not missing:
+        typer.echo("Every label is there.")
+        return
+    if not create:
+        typer.echo(
+            f"{_plural(len(missing), 'label')} missing. `chord labels --create` "
+            "creates them."
+        )
+        return
+    for name in missing:
+        try:
+            asyncio.run(client.create_label(name))
+        except LinearError as exc:
+            _fail(f"Couldn't create '{name}': {exc}")
+        typer.echo(f"Created '{name}'.")
 
 
 def _editor() -> list[str] | None:
@@ -246,7 +549,8 @@ def harness_add(
     typer.echo(
         # Quoted by hand, not with !r, so it is always the exact text to type
         # into Linear, whatever quotes the label or name contain.
-        f"Create the label '{label}' in Linear by hand — Chord never creates one."
+        f"Create the label '{label}' in Linear — `chord labels --create` does it "
+        "if you ask; Chord never creates one on its own."
     )
     typer.echo("`chord info` lists every label Chord acts on.")
 
@@ -941,8 +1245,9 @@ def _labels(config: Config) -> list[str]:
                 f"{' ' * len(lead)}{' ' * width}  ! can't run: {broken[route.label]}"
             )
     return lines + [
-        "             Add these in Linear by hand — Chord never creates a",
-        "             label. Adding one is what makes this machine run a",
+        "             Add these in Linear by hand or with `chord labels",
+        "             --create`; Chord never creates a label on its own.",
+        "             Adding one is what makes this machine run a",
         "             harness, so this list is the whole trigger surface.",
         "             Anything else under that prefix is reported and",
         "             skipped, never run on the default harness.",
