@@ -205,6 +205,37 @@ def test_a_repo_file_cannot_say_who_me_is(tmp_path):
     assert any("`linear_user_id`" in w for w in effective.warnings)
 
 
+def test_a_start_folder_file_cannot_say_who_me_is_without_a_user_file(
+    tmp_path, stored_token
+):
+    """The single-file exception honours machine keys, but never identity.
+
+    With no user file the start folder's file stands in for it, and it is
+    often a cloned repository. Its `linear_user_id` must not decide who "me"
+    authorises; the signed-in user does.
+    """
+    stored_token(viewer_id=ME)
+    start = tmp_path / "start"
+    write(
+        start / ".config" / "chord" / "chord.toml",
+        f'linear_user_id = "{ALICE}"\nallowed_actors = ["me"]\ninterval = 120\n',
+    )
+    loaded = cfg.load(start=start)
+    assert loaded.allowed_actors == (ME,)
+    assert loaded.interval == 120  # the other machine keys still count
+    assert any("`linear_user_id`" in w for w in loaded.warnings)
+
+
+def test_a_start_folder_id_alone_does_not_make_me_resolvable(tmp_path):
+    start = tmp_path / "start"
+    write(
+        start / ".config" / "chord" / "chord.toml",
+        f'linear_user_id = "{ALICE}"\nallowed_actors = ["me"]\n',
+    )
+    with pytest.raises(cfg.ConfigError, match="chord setup"):
+        cfg.load(start=start)
+
+
 def test_me_falls_back_to_the_signed_in_user(tmp_path, stored_token):
     stored_token(viewer_id=ME)
     path = write(tmp_path / "chord.toml", 'allowed_actors = ["me"]\n')

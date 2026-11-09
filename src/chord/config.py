@@ -137,6 +137,12 @@ MACHINE_KEYS = frozenset(
     }
 )
 
+# Who "me" is. Stricter than the machine settings: only a user-level file may
+# say it, never a start-folder file, even the one standing in for a missing
+# user file. That one is often a cloned repository, and honouring its
+# `linear_user_id` would let the repository decide who "me" authorises.
+IDENTITY_KEYS = frozenset({"linear_user_id"})
+
 # Settings that belong to the watcher as a whole. One poll asks Linear for
 # every issue under one trigger label, so a target repository can't change it
 # per issue; it is ignored (with a warning) in a repository's file.
@@ -202,7 +208,8 @@ class Layer:
 
     `machine` says whether its machine settings count: true for the user file,
     and for a start-folder file when there is no user file (so a setup that has
-    only ever had one file keeps working exactly as it did).
+    only ever had one file keeps working exactly as it did). `linear_user_id`
+    is the exception: only a USER layer may set it, whatever `machine` says.
     """
 
     source: str
@@ -846,6 +853,8 @@ def _kept(layer: Layer) -> tuple[dict, list[str]]:
     ignored: set[str] = set()
     if not layer.machine:
         ignored |= MACHINE_KEYS
+    if layer.source != USER:
+        ignored |= IDENTITY_KEYS
     if layer.source == REPO:
         ignored |= WATCHER_KEYS
     dropped = sorted(set(layer.raw) & ignored)
