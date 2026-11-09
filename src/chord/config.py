@@ -582,11 +582,12 @@ def write_setup(label: str, harness: HarnessSpec, allowed: list[str]) -> Path:
     if exists:
         raise ConfigError(f"{path} already exists — this would overwrite it.")
     text = STOCK.replace('label = "Chord"', f"label = {json.dumps(label)}", 1)
-    spelled = (
-        json.dumps(harness)
-        if isinstance(harness, str)
-        else "[" + ", ".join(json.dumps(part) for part in harness) + "]"
-    )
+    if isinstance(harness, RouteSpec):
+        spelled = json.dumps(str(harness))
+    elif isinstance(harness, str):
+        spelled = json.dumps(harness)
+    else:
+        spelled = "[" + ", ".join(json.dumps(part) for part in harness) + "]"
     text = text.replace('harness = "opencode"', f"harness = {spelled}", 1)
     if allowed:
         quoted = ", ".join(json.dumps(ident) for ident in allowed)
