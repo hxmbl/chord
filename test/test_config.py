@@ -260,9 +260,12 @@ def test_uncommenting_the_stock_examples_works():
         '# model = "big-pickle"', 'model = "big-pickle"'
     ).replace(
         '# big-pickle = "opencode:big-pickle"', 'big-pickle = "opencode:big-pickle"'
+    ).replace(
+        '# search_dirs = ["~/Projects"]', 'search_dirs = ["~/Projects"]'
     )
     import tomllib
 
     raw = tomllib.loads(text)
     assert raw["model"] == "big-pickle"
     assert raw["routes"] == {"big-pickle": "opencode:big-pickle"}
+    assert raw["search_dirs"] == ["~/Projects"]

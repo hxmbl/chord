@@ -270,6 +270,52 @@ def _find_in_search_dirs(
     return found
 
 
+def _find_in_search_dirs(
+    project_name: str, start_dir: Path, search_dirs: Sequence[Path]
+) -> list[Path]:
+    """Every Git repository called `project_name` directly inside a search folder.
+
+    One level deep, like the project-root lookup, and for the same reason: a
+    recursive walk of `~/Projects` finds vendored copies, submodules and old
+    clones nobody meant. A folder of the right name that isn't a repository is
+    passed over rather than an error, since nobody wrote this location down;
+    it is only a likely place to look.
+
+    Folders that don't exist are skipped, so the default list can name the
+    usual spots without anyone having all of them. The same folder reached two
+    ways (a symlink, a case-insensitive disk) counts once, and `start_dir`
+    itself is skipped because it was already searched.
+    """
+    wanted = project_name.casefold()
+    seen: set[Path] = set()
+    try:
+        seen.add(start_dir.resolve())
+    except OSError:
+        pass
+    found: list[Path] = []
+    for folder in search_dirs:
+        try:
+            folder = folder.expanduser().resolve()
+        except OSError:
+            continue
+        if folder in seen or not folder.is_dir():
+            continue
+        seen.add(folder)
+        try:
+            entries = sorted(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.casefold() != wanted or not entry.is_dir():
+                continue
+            resolved = entry.resolve()
+            if resolved in found:
+                continue
+            if is_git_repository(entry):
+                found.append(resolved)
+    return found
+
+
 def _explicit_path(description: object) -> Path | None:
     """The path from a `[Chord_Working_Path: "..."]` line, or None without one.
 

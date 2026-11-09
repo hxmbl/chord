@@ -367,11 +367,151 @@ harness = "opencode"
 # emails, or Linear user ids. Unset means anyone in your Linear workspace.
 # allowed_actors = ["me"]
 
-# Extra harnesses, each picked by a `Chord -> <name>` label:
+# ----------------------------------------------------------------------------
+#  Extra harnesses, each picked by a `Chord -> <name>` label
+# ----------------------------------------------------------------------------
+#
 #   name = "harness[:model][@branch]"
 # `chord route add NAME ROUTE` adds one and checks it.
 [routes]
 # big-pickle = "opencode:big-pickle"
+
+
+# ----------------------------------------------------------------------------
+#  How often to check Linear
+# ----------------------------------------------------------------------------
+#
+# Seconds between checks. Chord also hears about changes straight away when
+# it can (see the webhook below), so this is mostly a safety net.
+#
+# Default: 60. Lowest allowed: 5.
+interval = 60
+
+
+# ----------------------------------------------------------------------------
+#  Webhook (optional, for instant pickup)
+# ----------------------------------------------------------------------------
+#
+# Chord listens on this local port. Anything that POSTs to it (a Linear
+# webhook relayed to this machine, say) wakes Chord to check Linear right
+# away. It's only a nudge: Chord still reads Linear itself, and polling works
+# without it.
+#
+# Default: 23842. Use 0 to pick any free port (mainly for tests).
+webhook_port = 23842
+
+# A password the sender has to include, in the X-Chord-Secret header.
+# Empty means anyone who can reach the port can send to it. Read "Webhooks"
+# in the README before setting one. No spaces at either end.
+#
+# Default: "" (no secret)
+webhook_secret = ""
+
+
+# ----------------------------------------------------------------------------
+#  Who can trigger a run
+# ----------------------------------------------------------------------------
+#
+# A label decides whether this machine runs a command, so think about who can
+# add one. Unset, ANYONE in your Linear workspace can trigger a run here, and
+# Chord warns you about that every time it starts.
+#
+# List the Linear user ids allowed to trigger runs. `chord info` prints yours.
+# Remove the `#` to turn it on:
+#
+# allowed_actors = ["11111111-1111-1111-1111-111111111111"]
+
+
+# ----------------------------------------------------------------------------
+#  Where to look for repositories
+# ----------------------------------------------------------------------------
+#
+# When an issue's Linear project isn't a folder where you started Chord,
+# Chord also looks for a Git repository of that name directly inside these
+# folders. Ones that don't exist are skipped. `[]` turns this off.
+#
+# Default: ["~/Projects", "~/projects", "~/Developer", "~/Code", "~/code",
+#           "~/src", "~/dev", "~/repos", "~/git"]
+# search_dirs = ["~/Projects"]
+
+
+# ============================================================================
+#  Sections
+# ============================================================================
+#
+# TOML rule: everything under a `[section]` line belongs to that section until
+# the next one. So plain settings like the ones above must come BEFORE the
+# first `[section]`, never after it.
+
+
+# ----------------------------------------------------------------------------
+#  [notify]: desktop notifications
+# ----------------------------------------------------------------------------
+#
+# Chord always posts a notification when an issue fails, is skipped or is
+# refused, because then nothing is happening on it.
+#
+# received: also notify when an issue reaches its harness ("STRM-12
+# received"). false keeps those quiet; the log and `chord info` still record
+# every one.
+#
+# Default: true
+[notify]
+received = true
+
+
+# ----------------------------------------------------------------------------
+#  [harnesses]: extra harnesses, picked by label
+# ----------------------------------------------------------------------------
+#
+# Name a harness here, then route an issue to it with a label. Linear won't
+# allow `/` or `:` in a label, so each `/` in a name becomes ` -> ` in the
+# label:
+#
+#   name in this file          label in Linear
+#   codex                      Chord -> codex
+#   opencode/big-pickle        Chord -> opencode -> big-pickle
+#
+# Names are matched exactly, capitals included. Create each label in Linear
+# yourself. `chord harness add NAME -- COMMAND...` writes the entry for you
+# and prints the label to make. Remove the `#`s to use these examples:
+#
+# [harnesses."codex"]
+# command = ["codex"]
+#
+# [harnesses."opencode/big-pickle"]
+# command = ["opencode", "run", "--model", "big-pickle"]
+
+
+# ----------------------------------------------------------------------------
+#  [t3]: T3 Code settings
+# ----------------------------------------------------------------------------
+#
+# Only used when the harness is "t3". Set provider and model together, or
+# neither.
+#
+# [t3]
+# provider = "provider-instance-id"
+# model = "model-slug"
+# worktree = "main"
+# branch = "chord/issue-branch"
+
+
+# ----------------------------------------------------------------------------
+#  Where the work happens (no setting, just a reminder)
+# ----------------------------------------------------------------------------
+#
+# For each issue Chord picks a repository, in this order:
+#   1. A folder named after the issue's Linear project, either the folder you
+#      started Chord in or one directly inside it. Capitals don't matter.
+#   2. A line like this in the issue's description:
+#        [Chord_Working_Path: "~/Projects/my-repo"]
+#   3. A repository named after the Linear project directly inside one of
+#      the `search_dirs` folders (~/Projects and friends, see above). If two
+#      match, the issue is skipped until a line like the one in 2 picks one.
+#   4. The folder you started Chord in, if it's a Git repository.
+# If none of those is a Git repository, the issue is skipped and the log
+# says why.
 """
 
 
