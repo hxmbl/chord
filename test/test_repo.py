@@ -528,7 +528,9 @@ def test_a_search_folder_that_is_a_file_is_skipped(tmp_path):
     found = repo_at(tmp_path / "code" / "chord")
     (tmp_path / "stray").write_text("not a folder")
 
-    where = resolve(issue_in("chord"), start, [tmp_path / "stray", tmp_path / "code"])
+    where = resolve(
+        issue_in("chord"), start, [tmp_path / "stray", tmp_path / "code"]
+    )
 
     assert where.path == found.resolve()
 
