@@ -177,7 +177,13 @@ class Router:
         self._specs: dict[str, HarnessSpec] = dict(harnesses or {})
         self._factory = factory or (lambda spec: build(spec, t3_options))
         self._built: dict[str, Harness] = {}
-        self._allowed = frozenset(actor.strip().lower() for actor in allowed_actors)
+        # An email still waiting to be resolved turns the check on but matches
+        # nobody: Linear's actor ids are never emails, and failing closed is the
+        # only safe reading of a name Chord couldn't look up.
+        self._checks = bool(allowed_actors)
+        self._allowed = frozenset(
+            actor.strip().lower() for actor in allowed_actors if "@" not in actor
+        )
 
     @property
     def authorises(self) -> bool:
@@ -187,7 +193,7 @@ class Router:
         who applied the routing label. With nothing allowed, nobody is asked and
         nobody is refused.
         """
-        return bool(self._allowed)
+        return self._checks
 
     def authorises_actor(self, actor_id: str | None) -> bool:
         """Whether `actor_id` may trigger a hand-over.
@@ -197,7 +203,7 @@ class Router:
         page. Both are refused, because a control that guesses in the
         permissive direction is not a control.
         """
-        if not self._allowed:
+        if not self._checks:
             return True
         return bool(actor_id) and actor_id.strip().lower() in self._allowed
 
@@ -344,7 +350,7 @@ def router_for(config: Config) -> Router:
     return Router(
         config.label,
         config.harness,
-        config.harnesses,
+        config.all_routes,
         allowed_actors=config.allowed_actors,
         t3_options=config.t3,
     )

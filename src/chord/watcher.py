@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from chord import daemon, logging, notify, subscribe
-from chord.config import ConfigError
+from chord.config import ConfigError, route_name_problem
 from chord.context import Issue, _at, _text, render
 from chord.harness import (
     CommandHarness,
@@ -173,6 +173,13 @@ def log(message: str) -> None:
     should be able to break the line or draw on the reader's terminal.
     """
     logging.info(message)
+
+
+def _route_fix(name: str) -> str:
+    """How to define the route `name`, for the line that says it's missing."""
+    if route_name_problem(name) is None:
+        return f'`{name} = "<harness>[:model]"` under [routes]'
+    return f'[harnesses."{name}"]'
 
 
 def _spacer() -> None:
@@ -645,7 +652,7 @@ class Watcher:
                 f"names a harness chord.toml doesn't define."
             )
             self._problem(
-                f'  to retry it: add [harnesses."{exc.name}"] to chord.toml, then '
+                f"  to retry it: add {_route_fix(exc.name)} to chord.toml, then "
                 f"drop {_key(issue_id)} from {self._path.name}."
             )
             await notify.skipped(

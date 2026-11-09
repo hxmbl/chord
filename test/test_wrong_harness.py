@@ -266,7 +266,7 @@ def test_a_well_formed_uncured_route_is_still_skipped(tmp_path):
     assert ran == []
     assert "skipped" in out
     assert "Chord -> nope" in out
-    assert '[harnesses."nope"]' in out, "the fix must be spelled out"
+    assert 'nope = "<harness>[:model]"` under [routes]' in out, "the fix must be spelled out"
 
 
 def test_a_well_formed_curated_route_still_runs(tmp_path):

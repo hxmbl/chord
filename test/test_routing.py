@@ -691,7 +691,7 @@ def test_an_uncured_route_says_how_to_retry_it(tmp_path, capsys):
     # The issue is recorded, so removing the label won't bring it back. Saying
     # so is the difference between a message someone can act on and one that
     # sends them round in circles.
-    assert '[harnesses."nope"]' in out
+    assert 'nope = "<harness>[:model]"` under [routes]' in out
     assert "state.json" in out
 
 

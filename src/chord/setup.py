@@ -25,9 +25,15 @@ import typer
 from dotenv import dotenv_values, set_key
 
 from chord import credentials
-from chord.config import DEFAULT_LABEL, ConfigError, write_setup
+from chord.config import (
+    DEFAULT_LABEL,
+    ME,
+    ConfigError,
+    remember_user_id,
+    write_setup,
+)
 from chord.harness import PRESETS, missing
-from chord.paths import ENV_NAME, config_path, find_upwards, project_root
+from chord.paths import ENV_NAME, find_upwards, project_root, project_target
 
 REDIRECT_URL = f"http://127.0.0.1:{credentials.CALLBACK_PORT}/callback"
 
@@ -52,6 +58,14 @@ def run(say: Callable[[str], None] = typer.echo) -> None:
     say("Setting up Chord.\n")
     _linear_app(say)
     viewer = _sign_in(say)
+    you = credentials.viewer_id(viewer)
+    if you:
+        # Who "me" is in any chord.toml: stored in the user's own file, so on a
+        # shared machine each OS user has their own, and no committed file says.
+        try:
+            remember_user_id(you)
+        except (ConfigError, OSError) as exc:
+            raise SetupError(f"Couldn't record your Linear user id: {exc}") from exc
     _project(say, viewer)
 
 
@@ -152,7 +166,8 @@ def _choose(tools: list[str], say: Callable[[str], None]) -> str:
 
 
 def _project(say: Callable[[str], None], viewer: dict) -> None:
-    path, exists = config_path()
+    path = project_target()
+    exists = path.is_file()
     if exists:
         say(f"\n3. This project: using {path}.")
         return
@@ -176,7 +191,7 @@ def _project(say: Callable[[str], None], viewer: dict) -> None:
         tool = _choose(tools, say)
 
     you = credentials.viewer_id(viewer)
-    allowed = [you] if you else []
+    allowed = [ME] if you else []
     try:
         written = write_setup(label, tool, allowed)
     except ConfigError as exc:

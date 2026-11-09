@@ -319,6 +319,13 @@ class IssuePage(NamedTuple):
     truncated: bool
 
 
+USERS_BY_EMAIL = """
+query($emails: [String!]) {
+  users(filter: { email: { in: $emails } }) { nodes { id email } }
+}
+"""
+
+
 class LinearClient(Protocol):
     async def issues_for(self, filter: dict[str, Any]) -> IssuePage: ...
 
@@ -393,6 +400,23 @@ class Linear:
                 )
             )
         return changes
+
+    async def user_ids_by_email(self, emails: list[str]) -> dict[str, str]:
+        """`{email: user id}` for the emails Linear knows, lowercased.
+
+        For `allowed_actors`, which may name people by email: the allowlist
+        still matches on the id, which nobody can change.
+        """
+        if not emails:
+            return {}
+        data = await self._query(USERS_BY_EMAIL, {"emails": list(emails)})
+        users = data.get("users")
+        nodes = users.get("nodes") if isinstance(users, dict) else None
+        found: dict[str, str] = {}
+        for node in nodes if isinstance(nodes, list) else []:
+            if isinstance(node, dict) and node.get("id") and node.get("email"):
+                found[str(node["email"]).lower()] = str(node["id"])
+        return found
 
     async def comments(self, issue_id: str) -> list[dict[str, Any]]:
         nodes, _ = await self._paged(

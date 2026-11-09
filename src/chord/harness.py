@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
 from chord import logging
-from chord.config import HarnessSpec, T3Options
+from chord.config import HarnessSpec, RouteSpec, T3Options
 
 
 def _harness_timeout() -> float:
@@ -578,6 +578,15 @@ class Preset(NamedTuple):
     args: tuple[str, ...]
     install: str
     prompt_as_argument: bool = False
+    # Where `--model <m>` goes among `args` when a route names a model. None
+    # for the end.
+    model_at: int | None = None
+
+    def with_model(self, model: str | None) -> tuple[str, ...]:
+        if not model:
+            return self.args
+        at = len(self.args) if self.model_at is None else self.model_at
+        return (*self.args[:at], "--model", model, *self.args[at:])
 
 
 # Name to preset. A preset is written by name (`harness = "claude"`, or
@@ -598,6 +607,7 @@ PRESETS: dict[str, Preset] = {
         ("codex",),
         ("exec", "--sandbox", "workspace-write", "-"),
         "the Codex CLI (https://developers.openai.com/codex/cli)",
+        model_at=1,
     ),
     # Cursor's CLI, installed as `cursor-agent` and, newer, `agent`. Print mode
     # wants the prompt as an argument and rejects one on stdin. `--force` is what
@@ -621,7 +631,7 @@ def preset_executable(name: str) -> str | None:
     return None
 
 
-def _preset(name: str) -> CommandHarness:
+def _preset(name: str, model: str | None = None) -> CommandHarness:
     preset = PRESETS[name]
     found = preset_executable(name)
     if found is None:
@@ -630,10 +640,21 @@ def _preset(name: str) -> CommandHarness:
             f"{preset.install}, or pick another harness."
         )
     return CommandHarness(
-        [found, *preset.args],
+        [found, *preset.with_model(model)],
         name,
         prompt_as_argument=preset.prompt_as_argument,
     )
+
+
+def _route_argv(route: RouteSpec) -> list[str] | None:
+    """The command line a route runs, for the ones that are commands."""
+    if route.harness == OpenCodeHarness.name:
+        model = ["--model", route.model] if route.model else []
+        return [*OPENCODE_ARGV, *model]
+    if route.harness in PRESETS:
+        preset = PRESETS[route.harness]
+        return [preset.executables[0], *preset.with_model(route.model)]
+    return None
 
 
 def command_line(spec: HarnessSpec) -> str | None:
@@ -643,6 +664,15 @@ def command_line(spec: HarnessSpec) -> str | None:
     its command line. Read from the same tables `build` uses, without touching
     the PATH, so the line cannot drift from what runs.
     """
+    if isinstance(spec, RouteSpec):
+        if spec.harness == T3CodeHarness.name:
+            return None
+        argv = _route_argv(spec)
+        if argv is None:
+            return None
+        line = " ".join(argv)
+        preset = PRESETS.get(spec.harness)
+        return f"{line} <issue>" if preset and preset.prompt_as_argument else line
     if isinstance(spec, list):
         if len(spec) != 1:
             return None
@@ -669,6 +699,8 @@ def missing(spec: HarnessSpec) -> str | None:
     A command given by path (`./scripts/on-issue.sh`) is not checked: it runs in
     the issue's repository, which isn't known until an issue arrives.
     """
+    if isinstance(spec, RouteSpec):
+        spec = spec.harness
     if isinstance(spec, list):
         if len(spec) == 1 and spec[0] in PRESETS:
             spec = spec[0]
@@ -702,6 +734,19 @@ def _not_on_path(command: str) -> str | None:
 
 def build(spec: HarnessSpec, t3_options: T3Options | None = None) -> Harness:
     """Turn a configured harness into one that can be sent work."""
+    if isinstance(spec, RouteSpec):
+        # A route carries its own model and branch, so it never borrows the
+        # deprecated `[t3]` table's.
+        if spec.harness == T3CodeHarness.name:
+            return T3CodeHarness(spec.t3_options())
+        if spec.harness == PrintHarness.name:
+            return PrintHarness()
+        if spec.harness in PRESETS:
+            return _preset(spec.harness, spec.model)
+        argv = _route_argv(spec)
+        if argv is None:
+            raise HarnessError(f"Don't know a harness called `{spec.harness}`.")
+        return CommandHarness(argv, spec.harness)
     if isinstance(spec, list):
         if spec == [T3CodeHarness.name]:
             return T3CodeHarness(t3_options)
