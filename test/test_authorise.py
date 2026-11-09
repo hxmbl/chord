@@ -345,13 +345,13 @@ def test_render_ignores_creator_entirely():
 # --- the setting itself ---
 
 
-def test_the_allowlist_is_a_list_of_user_ids_not_names_or_emails(tmp_path):
+def test_the_allowlist_is_me_emails_or_user_ids_never_names(tmp_path):
     """Rejected at load, so a typo is one line rather than a silent refusal."""
     from chord import config
 
     for value, because in [
-        ('allowed_actors = ["alice@example.com"]', "email"),
         ('allowed_actors = ["Alice"]', "display name"),
+        ('allowed_actors = ["alice@"]', "isn't an email"),
         (f'allowed_actors = "{uuid_of(1)}"', "has to be a list"),
         ("allowed_actors = [42]", "isn't one"),
     ]:
@@ -360,7 +360,7 @@ def test_the_allowlist_is_a_list_of_user_ids_not_names_or_emails(tmp_path):
         with pytest.raises(config.ConfigError) as caught:
             config.load(path)
         assert because in str(caught.value), f"{value}: {caught.value}"
-        assert "chord info" in str(caught.value), "the error must say how to find yours"
+        assert '"me"' in str(caught.value), "the error must name the easy spelling"
 
 
 def test_the_allowlist_normalises_and_dedupes(tmp_path):

@@ -79,6 +79,19 @@ def no_env(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolated_home(tmp_path_factory, monkeypatch):
+    """A home directory of the test's own.
+
+    Config is layered on the user's own file in `~/.config/chord`, and
+    `chord setup` writes there, so no test may see or touch the real one.
+    Tests that need a particular home set `Path.home` again themselves.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    return home
+
+
+@pytest.fixture(autouse=True)
 def no_service_manager(monkeypatch):
     """Keep every test away from the machine's own systemd or launchd.
 

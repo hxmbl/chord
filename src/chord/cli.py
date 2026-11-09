@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
@@ -34,9 +35,10 @@ from chord.config import (
     curate,
     init_file,
     load,
+    resolve_emails,
 )
 from chord.harness import HarnessError, command_line
-from chord.linear import Linear
+from chord.linear import Linear, LinearError
 from chord.paths import config_path, project_root
 from chord.routing import RepoRouters, Router, route_label, router_for
 from chord.version import build as build_number
@@ -269,6 +271,11 @@ def start():
     """Start watching Linear in the background. Sets Chord up first if needed."""
     _signed_in()
     config = _config()
+    if config.unresolved_emails:
+        try:
+            _People(_token).resolve(config)
+        except ConfigError as exc:
+            _fail(str(exc))
     # Everything that can be wrong is checked here, before anything is spawned,
     # so the person who typed the command is the one who hears about it rather
     # than a log file they haven't been pointed at yet.
@@ -698,6 +705,12 @@ async def _watch(managed: bool = False) -> None:
         # `chord start` checked the sign-in before spawning this, so a missing
         # token here is a real failure, said to the log on the way out.
         token = _token()
+    people = _People(lambda: _try_token() or token)
+    try:
+        config = people.resolve(config)
+    except ConfigError as exc:
+        watcher.log(str(exc))
+        raise SystemExit(1) from None
     router = _router(config)
     try:
         # `chord start` did this too, but config can have changed since, and a
@@ -739,7 +752,10 @@ async def _watch(managed: bool = False) -> None:
             search_dirs=config.search_dirs,
             # Each target repository's own chord.toml, read per issue.
             repo_router=RepoRouters(
-                config, router, warn=lambda line: watcher.log(f"warning: {line}")
+                config,
+                router,
+                make=lambda found: router_for(people.resolve(found)),
+                warn=lambda line: watcher.log(f"warning: {line}"),
             ),
         )
     except StateError as exc:
@@ -826,6 +842,39 @@ def _config(*, quiet: bool = False) -> Config:
 
 def _router(config: Config) -> Router:
     return router_for(config)
+
+
+class _People:
+    """Emails in `allowed_actors`, turned into Linear user ids.
+
+    Each email is asked about once per watcher. The question runs on a worker
+    thread with its own event loop, so it can be asked from the watcher's loop
+    (a repository's file read at dispatch) as well as from a plain command.
+    """
+
+    def __init__(self, token: Callable[[], str]) -> None:
+        self._token = token
+        self._known: dict[str, str] = {}
+
+    def __call__(self, emails: list[str]) -> dict[str, str]:
+        wanted = [email.lower() for email in emails]
+        missing = [email for email in wanted if email not in self._known]
+        if missing:
+            client = Linear(self._token())
+            try:
+                with ThreadPoolExecutor(1) as pool:
+                    found = pool.submit(
+                        asyncio.run, client.user_ids_by_email(missing)
+                    ).result()
+            except LinearError as exc:
+                raise ConfigError(
+                    f"Couldn't ask Linear who {', '.join(missing)} is: {exc}"
+                ) from exc
+            self._known.update(found)
+        return {email: self._known[email] for email in wanted if email in self._known}
+
+    def resolve(self, config: Config) -> Config:
+        return resolve_emails(config, self)
 
 
 def _check_routes(router: Router) -> None:

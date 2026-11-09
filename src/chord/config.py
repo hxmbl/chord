@@ -7,15 +7,18 @@ named harnesses are.
 """
 
 import json
+import re
 import shlex
 import tomllib
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from chord.paths import (
     config_path,
     project_config_path,
+    project_target,
     repo_config_path,
     user_config_path,
 )
@@ -58,10 +61,56 @@ NAME_SEPARATOR = "/"
 LEGACY_SEPARATOR = "/"
 
 
-# A harness is either the name of one Chord knows, or the command to run. The
-# command form is the reason Chord stays small: anything that reads a prompt
-# from stdin is a harness, so supporting a new tool needs no change in here.
-type HarnessSpec = str | list[str]
+# The harnesses Chord knows by name, which a route string can name. Kept here
+# rather than read from `harness.PRESETS` because harness.py imports this
+# module; a test keeps the two in step.
+KNOWN_HARNESSES = ("opencode", "claude", "codex", "cursor", "t3", "print")
+
+# What a route string looks like, for error messages.
+ROUTE_SHAPE = (
+    'harness[:model][@branch], like "opencode", "opencode:big-pickle" or '
+    '"t3:openai/gpt-5@main"'
+)
+
+
+@dataclass(frozen=True)
+class RouteSpec:
+    """A harness Chord knows, with an optional model and branch.
+
+    Written as one string, `harness[:model][@branch]`: `opencode:big-pickle`,
+    `t3:openai/gpt-5@main`. The model may contain `/` and `:` (model ids do);
+    the branch is everything after the last `@`.
+    """
+
+    harness: str
+    model: str | None = None
+    branch: str | None = None
+
+    def __str__(self) -> str:
+        text = self.harness
+        if self.model:
+            text += f":{self.model}"
+        if self.branch:
+            text += f"@{self.branch}"
+        return text
+
+    def t3_options(self) -> "T3Options":
+        """The T3 Code options a `t3:` route stands for.
+
+        The model is `provider/model`, split at the first `/`; the branch is
+        the worktree base T3 starts from.
+        """
+        provider = model = None
+        if self.model:
+            provider, _, model = self.model.partition("/")
+        return T3Options(provider=provider, model=model, worktree=self.branch)
+
+
+# A harness is either the name of one Chord knows, the command to run, or a
+# route string. The command form is the reason Chord stays small: anything
+# that reads a prompt from stdin is a harness, so supporting a new tool needs
+# no change in here.
+type HarnessSpec = str | list[str] | RouteSpec
 
 # The newest config format this Chord reads. A file may say `version = N`;
 # missing means 1. A newer file is refused rather than half-read, because the
@@ -73,9 +122,26 @@ CONFIG_VERSION = 1
 # the local webhook, banners, where checkouts live. They live in the user file.
 # Found in a project's or a repository's file they are warned about and
 # ignored, which also keeps a webhook secret out of a committed file.
+#
+# `linear_user_id` is who "me" is. `chord setup` writes it, and only the user's
+# own file may say it: a cloned repository naming somebody else as "me" would
+# hand them this machine.
 MACHINE_KEYS = frozenset(
-    {"interval", "webhook_port", "webhook_secret", "notify", "search_dirs"}
+    {
+        "interval",
+        "webhook_port",
+        "webhook_secret",
+        "notify",
+        "search_dirs",
+        "linear_user_id",
+    }
 )
+
+# Who "me" is. Stricter than the machine settings: only a user-level file may
+# say it, never a start-folder file, even the one standing in for a missing
+# user file. That one is often a cloned repository, and honouring its
+# `linear_user_id` would let the repository decide who "me" authorises.
+IDENTITY_KEYS = frozenset({"linear_user_id"})
 
 # Settings that belong to the watcher as a whole. One poll asks Linear for
 # every issue under one trigger label, so a target repository can't change it
@@ -93,6 +159,9 @@ _SETTINGS = frozenset(
         "version",
         "label",
         "harness",
+        "model",
+        "routes",
+        "linear_user_id",
         "harnesses",
         "t3",
         "interval",
@@ -139,7 +208,8 @@ class Layer:
 
     `machine` says whether its machine settings count: true for the user file,
     and for a start-folder file when there is no user file (so a setup that has
-    only ever had one file keeps working exactly as it did).
+    only ever had one file keeps working exactly as it did). `linear_user_id`
+    is the exception: only a USER layer may set it, whatever `machine` says.
     """
 
     source: str
@@ -170,7 +240,103 @@ class NotifyOptions:
 
 def spell(spec: HarnessSpec) -> str:
     """How to name a harness in a sentence or a log line."""
+    if isinstance(spec, RouteSpec):
+        return str(spec)
     return spec if isinstance(spec, str) else " ".join(spec)
+
+
+def parse_route(text: object, where: str = "route") -> RouteSpec:
+    """Read a route string, `harness[:model][@branch]`. Raises `ConfigError`.
+
+    The harness is everything before the first `:` (or `@`), the branch
+    everything after the last `@`, and the model what is in between, `/` and
+    `:` included, because model ids have both (`openai/gpt-5`, `qwen3:4b`).
+    """
+
+    def bad(why: str) -> ConfigError:
+        return ConfigError(f"{where} is {text!r}, which {why}. Expected {ROUTE_SHAPE}.")
+
+    if not isinstance(text, str):
+        return_type = type(text).__name__
+        raise ConfigError(
+            f"{where} has to be a string, not a {return_type}. Expected {ROUTE_SHAPE}."
+        )
+    if not text.strip():
+        raise bad("is empty")
+    if text != text.strip() or any(ch.isspace() for ch in text):
+        raise bad("contains spaces")
+    body, at, branch = text.rpartition("@") if "@" in text else (text, "", "")
+    if at and not branch:
+        raise bad("has nothing after '@'")
+    harness, colon, model = body.partition(":")
+    if not harness:
+        raise bad("names no harness before ':'" if colon else "names no harness")
+    if colon and not model:
+        raise bad("has nothing after ':'")
+    if "@" in model:
+        raise bad("has more than one '@'")
+    if harness not in KNOWN_HARNESSES:
+        known = ", ".join(KNOWN_HARNESSES)
+        raise bad(f"names a harness Chord doesn't know ({known})")
+    if harness == "print" and model:
+        raise bad("gives `print` a model, which it doesn't take")
+    if harness == "t3" and model:
+        provider, slash, rest = model.partition("/")
+        if not (provider and slash and rest):
+            raise bad("gives t3 a model without its provider (`t3:provider/model`)")
+    if branch and harness != "t3":
+        raise bad("gives a branch, which only t3 understands so far")
+    return RouteSpec(harness, model or None, branch or None)
+
+
+_ROUTE_NAME_FORBIDDEN = ("/", ":")
+
+
+def route_name_problem(name: object) -> str | None:
+    """Why `name` can't be a key under `[routes]`, or None if it can.
+
+    The name becomes the `Chord -> <name>` label, and Linear refuses `/` and
+    `:` in a label, so neither may appear.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return "it is empty"
+    if name != name.strip():
+        return "it starts or ends with a space"
+    for forbidden in _ROUTE_NAME_FORBIDDEN:
+        if forbidden in name:
+            return (
+                f"it contains '{forbidden}', which a Linear label can't; the name "
+                f"becomes the `Chord -> <name>` label"
+            )
+    if ARROW in name:
+        return f"it contains '{ARROW}', which a route label reads as a separator"
+    return None
+
+
+def as_route(spec: HarnessSpec, t3: "T3Options | None" = None) -> RouteSpec | None:
+    """The route string an old-style harness is, if it is one.
+
+    For the deprecation notice and `chord config migrate`: a preset, plain
+    `t3`, `print`, and `opencode run [--model M]` all have a route spelling.
+    Any other command stays a command: that is the escape hatch.
+    """
+    if isinstance(spec, RouteSpec):
+        return spec
+    argv = [spec] if isinstance(spec, str) else list(spec)
+    if len(argv) == 1 and argv[0] in KNOWN_HARNESSES:
+        if argv[0] == "t3":
+            t3 = t3 or T3Options()
+            if t3.branch:
+                return None  # a T3 branch name has no slot in a route string
+            model = f"{t3.provider}/{t3.model}" if t3.provider and t3.model else None
+            return RouteSpec("t3", model, t3.worktree)
+        return RouteSpec(argv[0])
+    if argv[:2] == ["opencode", "run"]:
+        if len(argv) == 2:
+            return RouteSpec("opencode")
+        if len(argv) == 4 and argv[2] in ("--model", "-m") and argv[3]:
+            return RouteSpec("opencode", argv[3])
+    return None
 
 
 # What `chord init` writes: every setting, at its default, annotated. It holds
@@ -284,10 +450,10 @@ webhook_secret = ""
 # add one. Unset, ANYONE in your Linear workspace can trigger a run here, and
 # Chord warns you about that every time it starts.
 #
-# List the Linear user ids allowed to trigger runs. `chord info` prints yours.
-# Remove the `#` to turn it on:
+# List who may trigger runs: "me" (you, as `chord setup` recorded you), emails,
+# or Linear user ids. Remove the `#` to turn it on:
 #
-# allowed_actors = ["11111111-1111-1111-1111-111111111111"]
+# allowed_actors = ["me"]
 
 
 # ----------------------------------------------------------------------------
@@ -403,7 +569,8 @@ def check_text(text: str, path: Path) -> None:
 
 def init_file() -> Path:
     """Write the stock chord.toml for this directory. Refuses to overwrite."""
-    path, exists = config_path()
+    path = project_target()
+    exists = path.is_file()
     if exists:
         raise ConfigError(f"{path} already exists — this would overwrite it.")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -417,20 +584,22 @@ def write_setup(label: str, harness: HarnessSpec, allowed: list[str]) -> Path:
     The same annotated file `chord init` writes, so everything a person might
     want to change later is there with its comment. Refuses to overwrite.
     """
-    path, exists = config_path()
+    path = project_target()
+    exists = path.is_file()
     if exists:
         raise ConfigError(f"{path} already exists — this would overwrite it.")
     text = STOCK.replace('label = "Chord"', f"label = {json.dumps(label)}", 1)
-    spelled = (
-        json.dumps(harness)
-        if isinstance(harness, str)
-        else "[" + ", ".join(json.dumps(part) for part in harness) + "]"
-    )
+    if isinstance(harness, RouteSpec):
+        spelled = json.dumps(str(harness))
+    elif isinstance(harness, str):
+        spelled = json.dumps(harness)
+    else:
+        spelled = "[" + ", ".join(json.dumps(part) for part in harness) + "]"
     text = text.replace('harness = "opencode"', f"harness = {spelled}", 1)
     if allowed:
         quoted = ", ".join(json.dumps(ident) for ident in allowed)
         text = text.replace(
-            '# allowed_actors = ["11111111-1111-1111-1111-111111111111"]',
+            '# allowed_actors = ["me"]',
             f"allowed_actors = [{quoted}]",
             1,
         )
@@ -439,6 +608,36 @@ def write_setup(label: str, harness: HarnessSpec, allowed: list[str]) -> Path:
         _build(tomllib.loads(text), path)
     except tomllib.TOMLDecodeError as exc:  # pragma: no cover - defensive
         raise ConfigError(f"Those answers would make {path} invalid: {exc}.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+_USER_ID_LINE = re.compile(r"^linear_user_id\s*=.*$", re.MULTILINE)
+
+
+def remember_user_id(ident: str) -> Path:
+    """Store who "me" is, `linear_user_id`, in the user's own file.
+
+    The user file rather than a project's: on a shared machine each OS user
+    gets their own "me", and a committed file never says who it is. Creates
+    the file if there isn't one; otherwise replaces the line or adds it at the
+    top, where a top-level key is always safe in TOML.
+    """
+    canonical = str(uuid.UUID(ident))
+    path = user_config_path() or Path.home() / ".config" / "chord" / "chord.toml"
+    line = f"linear_user_id = {json.dumps(canonical)}"
+    text = path.read_text() if path.is_file() else ""
+    head, sep, rest = text.partition("\n[")
+    if _USER_ID_LINE.search(head):
+        text = _USER_ID_LINE.sub(line, head, count=1) + sep + rest
+    else:
+        comment = '# Who "me" is in allowed_actors. Written by `chord setup`.\n'
+        text = comment + line + "\n" + ("\n" + text if text else "")
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:  # pragma: no cover - defensive
+        raise ConfigError(f"Couldn't add linear_user_id to {path}: {exc}.") from exc
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path
@@ -483,6 +682,10 @@ class Config:
     label: str
     harness: HarnessSpec
     harnesses: dict[str, HarnessSpec] = field(default_factory=dict)
+    # `[routes]`: name -> route string. Merged with `harnesses` for routing.
+    routes: dict[str, RouteSpec] = field(default_factory=dict)
+    model: str | None = None
+    linear_user_id: str | None = None
     t3: T3Options = field(default_factory=T3Options)
     interval: int = DEFAULT_INTERVAL
     webhook_port: int = DEFAULT_WEBHOOK_PORT
@@ -502,6 +705,16 @@ class Config:
     sources: dict[str, tuple[str, Path]] = field(default_factory=dict)
     # Things worth saying that don't stop Chord: ignored settings, mostly.
     warnings: tuple[str, ...] = ()
+
+    @property
+    def all_routes(self) -> dict[str, HarnessSpec]:
+        """Every named route: old `[harnesses]` and `[routes]`, routes winning."""
+        return {**self.harnesses, **self.routes}
+
+    @property
+    def unresolved_emails(self) -> tuple[str, ...]:
+        """Emails in `allowed_actors` that still need a Linear user id."""
+        return tuple(actor for actor in self.allowed_actors if "@" in actor)
 
     def source_of(self, key: str) -> tuple[str, Path | None]:
         """Where `key` came from: a layer's source and file, or the default."""
@@ -630,11 +843,9 @@ def _load_one(path: Path) -> Config:
         if not exists:
             return defaults(path)
         raise
-    result = _build(raw, path)
     if not exists:  # pragma: no cover - a race with the file disappearing
         return defaults(path)
-    layer = Layer(USER, path, raw, machine=True)
-    return replace(result, layers=(layer,), sources=_sources((layer,)))
+    return _compose((Layer(USER, path, raw, machine=True),), path)
 
 
 def _kept(layer: Layer) -> tuple[dict, list[str]]:
@@ -642,11 +853,17 @@ def _kept(layer: Layer) -> tuple[dict, list[str]]:
     ignored: set[str] = set()
     if not layer.machine:
         ignored |= MACHINE_KEYS
+    if layer.source != USER:
+        ignored |= IDENTITY_KEYS
     if layer.source == REPO:
         ignored |= WATCHER_KEYS
     dropped = sorted(set(layer.raw) & ignored)
     warnings = []
     for key in dropped:
+        if _is_default(key, layer.raw[key]):
+            # Ignoring a value that is the default anyway changes nothing, so
+            # the stock file's own lines don't warn on every start.
+            continue
         if key in MACHINE_KEYS:
             why = "is a machine setting; it belongs in ~/.config/chord/chord.toml"
         else:
@@ -655,10 +872,23 @@ def _kept(layer: Layer) -> tuple[dict, list[str]]:
     return {k: v for k, v in layer.raw.items() if k not in ignored}, warnings
 
 
+def _is_default(key: str, value: object) -> bool:
+    defaults_by_key: dict[str, object] = {
+        "interval": DEFAULT_INTERVAL,
+        "webhook_port": DEFAULT_WEBHOOK_PORT,
+        "webhook_secret": "",
+        "search_dirs": list(DEFAULT_SEARCH_DIRS),
+        "label": DEFAULT_LABEL,
+    }
+    if key == "notify":
+        return value in ({}, {"received": DEFAULT_NOTIFY_RECEIVED})
+    return key in defaults_by_key and value == defaults_by_key[key]
+
+
 # Tables merged entry by entry across layers, so a project can add a route
 # without restating the user's. Every other table is replaced whole by the
 # nearer file: `[t3]`'s provider and model only make sense together.
-_MERGED_TABLES = frozenset({"harnesses"})
+_MERGED_TABLES = frozenset({"harnesses", "routes"})
 
 
 def _merge(layers: tuple[Layer, ...]) -> dict:
@@ -694,13 +924,17 @@ def _compose(layers: tuple[Layer, ...], path: Path) -> Config:
     if not layers:
         return defaults(path)
     warnings: list[str] = []
+    merged = _merge(layers)
+    # Who "me" is comes from the user's own file, whichever file says "me".
+    me = _user_id(merged.get("linear_user_id"), layers[0].path)
     for layer in layers:
         kept, dropped = _kept(layer)
         warnings.extend(dropped)
         # Each file on its own first, so a mistake is reported against the
         # file that holds it rather than against the merge.
-        _build(kept, layer.path)
-    result = _build(_merge(layers), layers[-1].path)
+        _build(kept, layer.path, me)
+        warnings.extend(_deprecations(kept, layer.path))
+    result = _build(merged, layers[-1].path, me)
     return replace(
         result,
         path=path,
@@ -710,7 +944,7 @@ def _compose(layers: tuple[Layer, ...], path: Path) -> Config:
     )
 
 
-def _build(raw: dict, path: Path) -> Config:
+def _build(raw: dict, path: Path, me: str | None = None) -> Config:
     base = defaults(path)
 
     # A misspelled setting would otherwise be ignored, and the symptom is
@@ -772,21 +1006,113 @@ def _build(raw: dict, path: Path) -> Config:
             "which cannot be sent in an HTTP header. Remove it."
         )
 
+    user_id = _user_id(raw.get("linear_user_id"), path) or me
+    model = raw.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise ConfigError(f"`model` in {path} has to be a non-empty string.")
+    harness = _spec(raw.get("harness", base.harness), path, "`harness`")
+    if model is not None:
+        if isinstance(harness, RouteSpec):
+            name = harness.harness
+        elif isinstance(harness, str) and harness in KNOWN_HARNESSES:
+            name = harness
+        else:
+            raise ConfigError(
+                f"`model` in {path} needs `harness` to be one Chord knows "
+                f"({', '.join(KNOWN_HARNESSES)}); a command sets its own model."
+            )
+        branch = harness.branch if isinstance(harness, RouteSpec) else None
+        harness = parse_route(
+            str(RouteSpec(name, model.strip(), branch)),
+            f"`harness` with `model` in {path}",
+        )
+
     return Config(
         label=label,
-        harness=_spec(raw.get("harness", base.harness), path, "`harness`"),
+        harness=harness,
         harnesses=_harnesses(raw.get("harnesses", {}), path),
+        routes=_routes(raw.get("routes", {}), path),
+        model=model.strip() if isinstance(model, str) else None,
+        linear_user_id=user_id,
         t3=_t3_options(raw.get("t3", {}), path),
         interval=interval,
         webhook_port=webhook_port,
         webhook_secret=webhook_secret,
-        allowed_actors=_allowed_actors(raw.get("allowed_actors", []), path),
+        allowed_actors=_allowed_actors(raw.get("allowed_actors", []), path, user_id),
         notify=_notify_options(raw.get("notify", {}), path),
         search_dirs=_search_dirs(raw.get("search_dirs"), base.search_dirs, path),
         path=path,
         from_file=True,
         version=version,
     )
+
+
+def _user_id(value: object, path: Path) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except ValueError:
+        raise ConfigError(
+            f"`linear_user_id` in {path} has to be a Linear user id (a UUID). "
+            "`chord setup` writes it."
+        ) from None
+
+
+def _routes(value: object, path: Path) -> dict[str, RouteSpec]:
+    """`[routes]`: `name = "harness[:model][@branch]"`, one line per route."""
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f"`routes` in {path} has to be a table, like `[routes]` then "
+            f'`big-pickle = "opencode:big-pickle"`.'
+        )
+    result: dict[str, RouteSpec] = {}
+    for name, text in value.items():
+        problem = route_name_problem(name)
+        if problem:
+            raise ConfigError(
+                f"`routes.{name}` in {path} isn't a usable route name: {problem}."
+            )
+        result[name] = parse_route(text, f"`routes.{name}` in {path}")
+    return result
+
+
+def _deprecations(raw: dict, path: Path) -> list[str]:
+    """Notices for the old shapes, which still load."""
+    found: list[str] = []
+    if "t3" in raw:
+        found.append(
+            f"`[t3]` in {path} is deprecated: write it as a route string, like "
+            '`harness = "t3:provider/model@worktree"`. `chord config migrate` '
+            "does it for you."
+        )
+    harnesses = raw.get("harnesses")
+    if isinstance(harnesses, dict):
+        movable = [
+            name
+            for name, table in harnesses.items()
+            if isinstance(table, dict)
+            and route_name_problem(name) is None
+            and isinstance(table.get("command"), str | list)
+            and as_route(table["command"], None) is not None
+            and table.get("command") not in (["t3"], "t3")
+        ]
+        if movable:
+            names = ", ".join(f"`{name}`" for name in movable)
+            found.append(
+                f"`[harnesses]` entries {names} in {path} are deprecated: write "
+                'them under `[routes]`, like `big-pickle = "opencode:big-pickle"`. '
+                "`chord config migrate` does it for you."
+            )
+    return found
+
+
+def _keychain_user_id() -> str | None:
+    """The Linear user id recorded with the stored token, if any."""
+    from chord import credentials  # here, not at the top: avoids an import cycle
+
+    code, content = credentials.read()
+    return None if code else credentials.viewer_id(content)
 
 
 def _version(value: object, path: Path) -> int:
@@ -881,49 +1207,98 @@ def _notify_options(value: object, path: Path) -> NotifyOptions:
     return NotifyOptions(received=received)
 
 
-def _allowed_actors(value: object, path: Path) -> tuple[str, ...]:
+ME = "me"
+
+# Good enough to tell an email from a typo; Linear is the judge of the rest.
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _allowed_actors(
+    value: object, path: Path, me: str | None = None
+) -> tuple[str, ...]:
     """The Linear user ids allowed to trigger a hand-over.
 
     Matched on user id and nothing else, deliberately. Linear lets anyone
     rewrite their own `displayName` and `name` through the API, and neither is
     unique, so an allowlist keyed on either could be satisfied by someone who
-    merely types a name they were not given. `User.email` is not in
-    `UserUpdateInput` and is the identity Linear's own OAuth uses, so it would
-    do — but it churns when someone's address changes, and a churn here fails
-    closed, which reads as Chord being broken. The id is immutable and unique.
+    merely types a name they were not given. The id is immutable and unique.
 
-    Which means the config holds UUIDs, so `chord info` prints yours: that is
-    the only way to write this setting down without a copy-paste from the
-    Linear UI.
+    The file may say it three ways, and all three become ids:
+      - a UUID, as before;
+      - "me", the id `chord setup` stored as `linear_user_id` in the user
+        file (else the one recorded with the stored token);
+      - an email, kept lowercased here and resolved to an id with Linear when
+        the watcher starts (`resolve_emails`). Until then it matches nobody,
+        so an email Linear doesn't know fails closed.
     """
     if not isinstance(value, list):
         raise ConfigError(
-            f"`allowed_actors` in {path} has to be a list of Linear user ids, "
-            'even for one of them: `allowed_actors = ["<id>"]`. '
-            "`chord info` prints yours."
+            f"`allowed_actors` in {path} has to be a list, even for one person: "
+            '`allowed_actors = ["me"]`. Use "me", emails or Linear user ids.'
         )
 
     seen: dict[str, str] = {}
     for entry in value:
         if not isinstance(entry, str) or not entry.strip():
             raise ConfigError(
-                f"`allowed_actors` in {path} has to be a list of Linear user ids, "
-                f"and {entry!r} isn't one. `chord info` prints yours."
+                f'`allowed_actors` in {path} has to be a list of "me", emails or '
+                f"Linear user ids, and {entry!r} isn't one."
             )
+        text = entry.strip()
+        if text.lower() == ME:
+            ident = me or _keychain_user_id()
+            if not ident:
+                raise ConfigError(
+                    f'`allowed_actors` in {path} says "me", but Chord doesn\'t know '
+                    "your Linear user id yet. Run `chord setup`, which stores it."
+                )
+            seen.setdefault(str(uuid.UUID(ident)), text)
+            continue
+        if "@" in text:
+            if not _EMAIL.match(text):
+                raise ConfigError(
+                    f"`allowed_actors` in {path} holds {text!r}, which isn't an "
+                    'email. Use "me", an email or a Linear user id.'
+                )
+            seen.setdefault(text.lower(), text)
+            continue
         try:
             # Canonical form, so the same id written two ways is one entry.
-            seen.setdefault(str(uuid.UUID(entry.strip())), entry.strip())
+            seen.setdefault(str(uuid.UUID(text)), text)
         except (ValueError, AttributeError, TypeError):
             raise ConfigError(
-                f"`allowed_actors` in {path} holds {entry.strip()!r}, which is not "
-                "a Linear user id. Use the id, not an email or a display name: "
-                "`chord info` prints yours, and a display name would be something "
-                "any workspace member could set to match yours."
+                f'`allowed_actors` in {path} holds {text!r}, which is not "me", an '
+                "email or a Linear user id. Not a display name: any workspace "
+                "member could set theirs to match yours."
             ) from None
 
     # Sorted so the setting reads the same way twice and `chord info` can
     # compare it against what is stored in the keychain.
     return tuple(sorted(seen))
+
+
+def resolve_emails(
+    config: Config, lookup: "Callable[[list[str]], dict[str, str]]"
+) -> Config:
+    """`config` with each email in `allowed_actors` replaced by its user id.
+
+    `lookup` asks Linear: emails in, `{email: id}` out for the ones it knows.
+    An email Linear doesn't know is an error, naming it, rather than a person
+    silently not allowed.
+    """
+    emails = list(config.unresolved_emails)
+    if not emails:
+        return config
+    found = {email.lower(): ident for email, ident in lookup(emails).items()}
+    unknown = [email for email in emails if email not in found]
+    if unknown:
+        names = ", ".join(unknown)
+        raise ConfigError(
+            f"`allowed_actors` names {names}, and Linear has no user with that "
+            "email in this workspace."
+        )
+    ids = {str(uuid.UUID(found[a])) if "@" in a else a for a in config.allowed_actors}
+    return replace(config, allowed_actors=tuple(sorted(ids)))
 
 
 def _harnesses(value: object, path: Path) -> dict[str, HarnessSpec]:
@@ -1007,7 +1382,23 @@ def usable_harness_name(name: object) -> bool:
 _usable_name = usable_harness_name
 
 
+def _looks_like_route(value: str) -> bool:
+    """Whether a `harness` string is a route string rather than a command.
+
+    One word, naming a harness Chord knows, followed by `:` or `@`. A command
+    with a colon in it (`./run.sh host:1`) has a space, or doesn't start with a
+    known name, so it stays a command.
+    """
+    text = value.strip()
+    if not text or any(ch.isspace() for ch in text):
+        return False
+    head = re.split(r"[:@]", text, maxsplit=1)[0]
+    return head in KNOWN_HARNESSES and head != text
+
+
 def _spec(value: object, path: Path, where: str) -> HarnessSpec:
+    if isinstance(value, str) and _looks_like_route(value):
+        return parse_route(value.strip(), f"{where} in {path}")
     if isinstance(value, str) and value.strip():
         try:
             argv = shlex.split(value)

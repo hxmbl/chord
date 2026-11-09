@@ -1,6 +1,7 @@
 """`chord setup` walks a person from nothing to ready, and is safe to re-run."""
 
 import tomllib
+from pathlib import Path
 
 import pytest
 from dotenv import dotenv_values
@@ -66,8 +67,10 @@ def test_enter_all_the_way_through_gives_a_working_setup(
     cfg = config(project)
     assert cfg["label"] == "Chord"
     assert cfg["harness"] == "opencode"
-    assert cfg["allowed_actors"] == ["2b43e68a-b603-49e9-ad29-18a65b4dc59f"], (
-        "the person signing in wasn't allowed"
+    assert cfg["allowed_actors"] == ["me"], "the person signing in wasn't allowed"
+    user = tomllib.loads((Path.home() / ".config" / "chord" / "chord.toml").read_text())
+    assert user["linear_user_id"] == "2b43e68a-b603-49e9-ad29-18a65b4dc59f", (
+        '"me" is stored in the user file'
     )
     assert "Create the label 'Chord' in Linear" in result.output
     assert "Run `chord start`" in result.output
@@ -148,5 +151,5 @@ def test_start_sets_chord_up_first_when_it_isnt(project, signs_in, monkeypatch):
 
     assert "isn't set up yet" in result.output
     assert signs_in == [True]
-    assert config(project)["allowed_actors"] == ["2b43e68a-b603-49e9-ad29-18a65b4dc59f"]
+    assert config(project)["allowed_actors"] == ["me"]
     assert started, result.output

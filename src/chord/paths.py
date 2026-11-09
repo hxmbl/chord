@@ -94,6 +94,14 @@ def project_config_path(start: Path | None = None) -> Path | None:
     return None
 
 
+def project_target(start: Path | None = None) -> Path:
+    """The start folder's chord.toml: the one there is, or where it would go."""
+    found = project_config_path(start)
+    if found is not None:
+        return found
+    return (start or Path.cwd()).resolve() / PROJECT_CONFIG
+
+
 def repo_config_path(repo: Path) -> Path:
     """Where a target repository keeps its own chord.toml."""
     return repo / PROJECT_CONFIG

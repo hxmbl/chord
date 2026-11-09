@@ -279,6 +279,32 @@ from and then upward, so `chord start` works the same from a subdirectory. That
 directory is also what identifies the project to the rest of Chord — see
 [State on disk](#state-on-disk).
 
+### Routes
+
+`[routes]` names the harnesses a `Chord -> <name>` label can pick, one line
+each, as a route string `harness[:model][@branch]`:
+
+```toml
+harness = "opencode"          # the bare `Chord` label
+model = "big-pickle"          # optional; same as harness = "opencode:big-pickle"
+
+[routes]
+big-pickle = "opencode:big-pickle"
+claude = "claude"
+gpt = "t3:openai/gpt-5@main"
+```
+
+The harness is one Chord knows (`opencode`, `claude`, `codex`, `cursor`, `t3`,
+`print`). The model may contain `/` and `:` (`opencode:ollama/qwen3:4b`); for
+`t3` it is `provider/model`. `@branch` is the worktree base, and only `t3`
+takes one so far. A route's name becomes its label, so it may not contain `/`
+or `:`. A malformed string is an error that quotes it and shows the expected
+shape.
+
+The older `[harnesses."x/y"] command = [...]` tables and the `[t3]` table still
+load. Those with a route spelling get a deprecation notice; a command of your
+own under `[harnesses]` remains the escape hatch for anything else.
+
 ### Whose chord.toml is it?
 
 **Running `chord start` in a repository runs that repository's `harness`
@@ -344,22 +370,26 @@ lower bar than "may run code here". It is the default because every existing
 install is in that state and changing it silently would stop every hand-over,
 but it is worth closing.
 
-`allowed_actors` is the list of Linear user ids allowed to trigger a run.
-`chord info` prints yours, because Linear's UI does not:
+`allowed_actors` is the list of people allowed to trigger a run. Write each one
+as `"me"`, an email, or a Linear user id:
 
-```
-$ chord info
-  ...
-  allowed    1 Linear user id(s)
-             yours: 11111111-1111-1111-1111-111111111111
+```toml
+allowed_actors = ["me", "sam@example.com"]
 ```
 
-It is a list of **ids**, and that is deliberate. Linear lets anyone rewrite their
-own `name` and `displayName` through its API, and neither is unique, so an
-allowlist keyed on either could be satisfied by somebody who merely typed a name
-they were not given. `User.email` is not self-editable and would work, but it
-churns when someone's address changes, and a churn here fails *closed* — the
-issue is skipped, and it reads as Chord being broken. The id never changes.
+- `"me"` is you. `chord setup` looks up your Linear user and stores its id as
+  `linear_user_id` in your user file (`~/.config/chord/chord.toml`), so on a
+  shared machine each OS user has their own "me". Only the user file can say
+  who "me" is; a project's or repository's `linear_user_id` is ignored.
+- An email is looked up in Linear when the watcher starts (or when a
+  repository's file naming it is first read) and replaced by that user's id.
+  An email Linear doesn't know is an error, naming it.
+- A user id is used as written. `chord info` prints yours.
+
+Whatever the spelling, the check is on the **id**, and that is deliberate.
+Linear lets anyone rewrite their own `name` and `displayName` through its API,
+and neither is unique, so an allowlist keyed on either could be satisfied by
+somebody who merely typed a name they were not given. Display names are refused.
 
 Chord checks the person who added the **routing label**, because that is the act
 which caused the run. An issue narrowed from `Chord` to `Chord -> claude` is
