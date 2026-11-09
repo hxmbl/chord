@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/hxmbl/chord/master/schema/chord.v1.json",
+  "title": "chord.toml (config version 1)",
+  "description": "Chord's settings. Every key is optional. Machine settings (interval, webhook_port, webhook_secret, notify, search_dirs, linear_user_id) only count in the user file, ~/.config/chord/chord.toml.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "route": {
+      "type": "string",
+      "description": "harness[:model][@branch], e.g. \"opencode:big-pickle\" or \"t3:openai/gpt-5@main\".",
+      "pattern": "^(opencode|claude|codex|cursor|t3|print)(:[^@\\s]+)?(@[^@\\s:]+)?$"
+    },
+    "command": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      ]
+    },
+    "nonEmpty": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    }
+  },
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "default": 1,
+      "description": "Config format version. Missing means 1."
+    },
+    "label": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/nonEmpty"
+        }
+      ],
+      "default": "Chord",
+      "description": "The Linear label that sends an issue to Chord."
+    },
+    "harness": {
+      "$ref": "#/$defs/command",
+      "default": "opencode",
+      "description": "What works on an issue labelled just with `label`: a known harness, a route string, or a command."
+    },
+    "model": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/nonEmpty"
+        }
+      ],
+      "description": "Model for the default harness; needs a harness Chord knows."
+    },
+    "allowed_actors": {
+      "type": "array",
+      "description": "Who may trigger a run: \"me\", emails, or Linear user ids. Unset: anyone in the workspace.",
+      "items": {
+        "anyOf": [
+          {
+            "const": "me"
+          },
+          {
+            "type": "string",
+            "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+          },
+          {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$"
+          }
+        ]
+      }
+    },
+    "routes": {
+      "type": "object",
+      "description": "name = route string. The name becomes the `Chord -> <name>` label.",
+      "propertyNames": {
+        "pattern": "^[^/:\\s](?:[^/:]*[^/:\\s])?$",
+        "not": {
+          "pattern": "->"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/route"
+      }
+    },
+    "harnesses": {
+      "type": "object",
+      "description": "Deprecated for anything a route string can say; still the place for a command of your own.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "$ref": "#/$defs/command"
+          }
+        }
+      }
+    },
+    "t3": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Deprecated: use a route string, harness = \"t3:provider/model@worktree\".",
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "model": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "worktree": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "branch": {
+          "$ref": "#/$defs/nonEmpty"
+        }
+      }
+    },
+    "interval": {
+      "type": "integer",
+      "minimum": 5,
+      "default": 60,
+      "description": "Machine setting. Seconds between checks of Linear."
+    },
+    "webhook_port": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "default": 23842,
+      "description": "Machine setting. Local webhook port; 0 picks any."
+    },
+    "webhook_secret": {
+      "type": "string",
+      "default": "",
+      "pattern": "^(\\S(.*\\S)?)?$",
+      "description": "Machine setting. Required X-Chord-Secret header value."
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Machine setting. Desktop banners.",
+      "properties": {
+        "received": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "search_dirs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(~|/)"
+      },
+      "description": "Machine setting. Folders to look in for a repository named after a Linear project."
+    },
+    "linear_user_id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$",
+      "description": "Machine setting, written by `chord setup`: who \"me\" is."
+    }
+  }
+}
