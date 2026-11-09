@@ -217,3 +217,46 @@ def test_missing_keychain_entry_is_a_message(no_env):
     code, content = credentials.read()
     assert code == credentials.FAILED
     assert "chord setup" in str(content)
+
+
+def test_search_dirs_default_to_the_usual_folders(tmp_path):
+    loaded = config.load(tmp_path / "nothing.toml")
+    assert loaded.search_dirs[0] == config.Path("~/Projects")
+    assert len(loaded.search_dirs) == len(config.DEFAULT_SEARCH_DIRS)
+
+
+def test_search_dirs_can_be_set_and_turned_off(tmp_path):
+    path = tmp_path / "chord.toml"
+    path.write_text('search_dirs = ["~/work", "/srv/code", "~/work"]\n')
+    assert config.load(path).search_dirs == (
+        config.Path("~/work"),
+        config.Path("/srv/code"),
+    )
+    path.write_text("search_dirs = []\n")
+    assert config.load(path).search_dirs == ()
+
+
+@pytest.mark.parametrize(
+    "text,message",
+    [
+        ('search_dirs = "~/Projects"\n', "has to be a list"),
+        ("search_dirs = [1]\n", "isn't one"),
+        ('search_dirs = ["Projects"]\n', "is relative"),
+    ],
+)
+def test_search_dirs_are_validated(tmp_path, text, message):
+    path = tmp_path / "chord.toml"
+    path.write_text(text)
+    with pytest.raises(config.ConfigError, match=message):
+        config.load(path)
+
+
+def test_uncommenting_search_dirs_in_the_stock_file_works():
+    """It sits above the first [section], so turning it on can't misfile it."""
+    text = config.STOCK.replace(
+        '# search_dirs = ["~/Projects"]', 'search_dirs = ["~/Projects"]'
+    )
+    import tomllib
+
+    raw = tomllib.loads(text)
+    assert raw["search_dirs"] == ["~/Projects"]

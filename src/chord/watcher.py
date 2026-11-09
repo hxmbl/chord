@@ -8,7 +8,7 @@ backlog again.
 import asyncio
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -193,8 +193,12 @@ class Watcher:
         start_dir: Path | None = None,
         freshen: Callable[[bool], Awaitable[str | None]] | None = None,
         notify_received: bool = True,
+        search_dirs: Sequence[Path] = (),
     ) -> None:
         self._linear = linear
+        # Folders checkouts usually live in (`search_dirs` in chord.toml), for
+        # an issue whose Linear project isn't a folder where Chord started.
+        self._search_dirs = tuple(search_dirs)
         # `[notify] received`: whether a confirmed delivery gets a banner. The
         # quiet record of it (log line, state.json) is kept either way.
         self._notify_received = notify_received
@@ -644,7 +648,7 @@ class Watcher:
         # known, because neither of those can act without it and an issue
         # refused on either ground shouldn't have its repository touched.
         try:
-            where = resolve(issue, self._start_dir)
+            where = resolve(issue, self._start_dir, self._search_dirs)
         except ResolutionError as exc:
             # Recorded only for terminal states (Done, Canceled), which won't be
             # retried. Active issues (Backlog, Todo, In Progress) are not recorded

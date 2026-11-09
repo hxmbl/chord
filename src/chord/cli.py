@@ -500,11 +500,11 @@ def serve(
             raise SystemExit(0) from None
     asyncio.run(_watch(managed=managed))
 
+
 @app.command()
 def version():
     """Print the version of Chord."""
     typer.echo(f"chord {build_number()}")
-
 
 
 service_app = typer.Typer(
@@ -733,6 +733,8 @@ async def _watch(managed: bool = False) -> None:
             start_dir=project_root(),
             # `[notify] received`: a banner when an issue reaches its harness.
             notify_received=config.notify.received,
+            # Where else to look for a repository named after the project.
+            search_dirs=config.search_dirs,
         )
     except StateError as exc:
         watcher.log(str(exc))

@@ -442,7 +442,14 @@ happened to be started from. Chord decides which one, in this order:
    ```
    [Chord_Working_Path: "~/Projects/billing"]
    ```
-3. **The project root**, which is where you started Chord.
+3. **The project title, in your usual checkout folders.** A Git repository of
+   that name directly inside `~/Projects`, `~/projects`, `~/Developer`, `~/Code`,
+   `~/code`, `~/src`, `~/dev`, `~/repos` or `~/git` (whichever exist). Change the
+   list with `search_dirs` in `chord.toml`, or set `search_dirs = []` to turn it
+   off. A folder of that name that isn't a repository is passed over; two
+   repositories of that name skip the issue until a `[Chord_Working_Path:]` line
+   picks one.
+4. **The project root**, which is where you started Chord.
 
 So start Chord in the repository, or in the folder that holds your checkouts
 (`~/Projects`, with Linear projects named after the folders in it). `chord watch`
@@ -465,9 +472,8 @@ that location down, and working somewhere else instead would be worse than not
 working at all. A skipped issue is not recorded as handed over, so it is picked
 up again as soon as the directory is there.
 
-Because that only searches two levels, a repository somewhere else on the
-machine needs the `[Chord_Working_Path:]` line. That is the whole configuration surface;
-there is no `chord.toml` setting for it.
+Every lookup is one level deep, so a repository anywhere else on the machine
+needs the `[Chord_Working_Path:]` line or a `search_dirs` entry for its parent.
 
 ## Notifications
 
