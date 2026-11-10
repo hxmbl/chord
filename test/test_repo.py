@@ -197,6 +197,49 @@ def test_either_quote_character_is_accepted(tmp_path):
     assert found.source == FROM_DESCRIPTION
 
 
+def test_the_dir_spelling_of_the_line_is_read_the_same(tmp_path):
+    """`Chord_Working_Dir` is the same instruction under another name.
+
+    Two spellings because two people typed the line before either was
+    written down; refusing the second would fall back to the project root —
+    the wrong code, quietly.
+    """
+    start = repo_at(tmp_path / "workspace")
+    elsewhere = repo_at(tmp_path / "elsewhere" / "billing")
+
+    issue = {"project": None, "description": f'[chord_working_dir: "{elsewhere}"]'}
+
+    found = resolve(issue, start)
+
+    assert found.path == elsewhere
+    assert found.source == FROM_DESCRIPTION
+
+
+def test_the_last_working_path_line_wins_whatever_its_spelling(tmp_path):
+    start = repo_at(tmp_path / "workspace")
+    first = repo_at(tmp_path / "first")
+    last = repo_at(tmp_path / "last")
+
+    for older, newer in (
+        ("Chord_Working_Path", "Chord_Working_Dir"),
+        ("Chord_Working_Dir", "Chord_Working_Path"),
+    ):
+        description = f'[{older}: "{first}"]\nnotes\n[{newer}: "{last}"]'
+        found = resolve({"project": None, "description": description}, start)
+        assert found.path == last
+
+
+def test_a_malformed_dir_line_names_the_spelling_it_was_written_in(tmp_path):
+    """The error quotes the line as typed, not the other spelling."""
+    start = repo_at(tmp_path / "workspace")
+
+    with pytest.raises(ResolutionError, match="Chord_Working_Dir"):
+        resolve(
+            {"project": None, "description": "[Chord_Working_Dir: billing]"},
+            start,
+        )
+
+
 @pytest.mark.parametrize(
     "description",
     [

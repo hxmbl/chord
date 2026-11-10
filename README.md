@@ -516,7 +516,9 @@ happened to be started from. Chord decides which one, in this order:
 2. **A `[Chord_Working_Path:]` line in the issue description.** Write it on its own line,
    with the path in single or double quotes; relative paths are read from the
    directory Chord was started in. The name is matched in any case, so
-   `[chord_working_path: "..."]` works just the same.
+   `[chord_working_path: "..."]` works just the same. `[Chord_Working_Dir: "..."]`
+   is the same line under another name. If an issue has more than one, the last
+   one wins, whichever spelling it uses.
 
    ```
    [Chord_Working_Path: "~/Projects/billing"]
