@@ -42,6 +42,7 @@ _SETTABLE = {
     "webhook_secret": "str",
     "search_dirs": "list",
     "notify.received": "bool",
+    "notify.sound": "bool",
     "linear_user_id": "str",
 }
 

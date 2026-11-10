@@ -51,6 +51,12 @@ Chord is a Python tool that watches Linear for issues carrying one of its route 
   confirmed delivery; strict like `[t3]` (unknown keys and non-bools refused).
   The stock file writes it uncommented, at its default, before the tables that
   `curate()` appends after it
+- `[notify] sound` (bool, default false) makes every banner ask for the
+  platform's default sound: `Sound("message-new-instant")` (the `sound-name`
+  hint) through desktop_notifier on Linux, `-sound default` / `sound name
+  "default"` on macOS. `Watcher(notify_sound=...)` sets it once with
+  `notify.configure(sound=...)`; the verbs don't take it. Machine key like the
+  rest of `[notify]` (user file only)
 - `harnesses` is the curation table: `<name>` to a command
 - `allowed_actors` is a list of Linear **user ids**; ids and not names because
   Linear lets anyone rewrite their own display name

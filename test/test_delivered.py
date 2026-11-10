@@ -368,3 +368,16 @@ def test_info_shows_what_the_opencode_default_runs(no_env, monkeypatch, tmp_path
     result = runner.invoke(app, ["info"])
     assert "opencode  (opencode run)" in result.output
     assert "delivery" not in result.output, "nothing delivered, nothing to show"
+
+
+def test_the_watcher_hands_the_sound_setting_to_notify(tmp_path, monkeypatch):
+    """`[notify] sound` reaches every banner through `notify.configure`, so the
+    verbs the watcher calls need no extra argument."""
+    from chord import notify
+
+    monkeypatch.setattr(notify, "_sound", False)
+    router = Router("Chord", "x", factory=lambda spec: None)
+    watcher.Watcher(Linear(), router, 1, tmp_path / "a.json", notify_sound=True)
+    assert notify.sound() is True
+    watcher.Watcher(Linear(), router, 1, tmp_path / "b.json")
+    assert notify.sound() is False, "off unless asked"

@@ -131,6 +131,18 @@ def test_set_reads_lists_and_numbers(project):
     assert user["notify"] == {"received": False}
 
 
+def test_set_notify_sound_goes_to_the_user_file_only(project):
+    refused = runner.invoke(app, ["set", "notify.sound", "true"])
+    assert refused.exit_code != 0
+    assert "machine setting" in refused.output
+
+    assert runner.invoke(app, ["set", "--user", "notify.sound", "true"]).exit_code == 0
+    assert tomllib.loads(user_file().read_text())["notify"] == {"sound": True}
+
+    bad = runner.invoke(app, ["set", "--user", "notify.sound", "loud"])
+    assert bad.exit_code != 0
+
+
 def test_set_refuses_machine_keys_without_user_and_bad_values(project):
     machine = runner.invoke(app, ["set", "interval", "30"])
     assert machine.exit_code == 1 and "--user" in machine.output

@@ -199,6 +199,7 @@ def _project(say: Callable[[str], None], viewer: dict) -> None:
     say(f"   Wrote {written}.")
     say("   Each issue that reaches the tool gets a desktop banner;")
     say("   `chord set --user notify.received false` keeps deliveries quiet.")
+    say("   `chord set --user notify.sound true` adds the system sound to each.")
     if allowed:
         say("   Only you can trigger a run. Add teammates to allowed_actors there.")
 
