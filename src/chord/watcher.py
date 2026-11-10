@@ -201,6 +201,7 @@ class Watcher:
         start_dir: Path | None = None,
         freshen: Callable[[bool], Awaitable[str | None]] | None = None,
         notify_received: bool = True,
+        notify_sound: bool = False,
         search_dirs: Sequence[Path] = (),
         repo_router: Callable[[Path], Router] | None = None,
     ) -> None:
@@ -215,6 +216,10 @@ class Watcher:
         # `[notify] received`: whether a confirmed delivery gets a banner. The
         # quiet record of it (log line, state.json) is kept either way.
         self._notify_received = notify_received
+        # `[notify] sound`: whether every banner asks for the platform's default
+        # sound. One answer per machine, so it is set on `notify` itself rather
+        # than threaded through each verb.
+        notify.configure(sound=notify_sound)
         self._router = router
         self._interval = interval
         self._path = state_path

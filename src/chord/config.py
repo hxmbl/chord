@@ -174,12 +174,16 @@ _SETTINGS = frozenset(
 )
 _HARNESS_KEYS = frozenset({"command"})
 _T3_KEYS = frozenset({"provider", "model", "worktree", "branch"})
-_NOTIFY_KEYS = frozenset({"received"})
+_NOTIFY_KEYS = frozenset({"received", "sound"})
 
 # Whether an issue that reached its harness gets a banner. On by default, as it
 # was before delivery was confirmed quietly: the banner is how most people
 # learn that work started somewhere they didn't start it.
 DEFAULT_NOTIFY_RECEIVED = True
+
+# Whether a banner asks for the platform's default sound. Off by default: a
+# banner is interruption enough unless somebody asks for more.
+DEFAULT_NOTIFY_SOUND = False
 
 # Where people usually keep their checkouts. An issue whose Linear project
 # isn't a folder where Chord started is looked for directly inside these.
@@ -236,6 +240,8 @@ class NotifyOptions:
     """
 
     received: bool = DEFAULT_NOTIFY_RECEIVED
+    # Every banner, not just `received`: asks for the platform's default sound.
+    sound: bool = DEFAULT_NOTIFY_SOUND
 
 
 def spell(spec: HarnessSpec) -> str:
@@ -366,6 +372,10 @@ harness = "opencode"
 # Who may trigger a run here: "me" (you, as `chord setup` recorded you),
 # emails, or Linear user ids. Unset means anyone in your Linear workspace.
 # allowed_actors = ["me"]
+
+# Machine settings never go here: interval, the webhook, search_dirs and
+# banners ([notify] received / sound) live in ~/.config/chord/chord.toml, e.g.
+# `chord set --user notify.sound true` for a sound with each banner.
 
 # Extra harnesses, each picked by a `Chord -> <name>` label:
 #   name = "harness[:model][@branch]"
@@ -707,7 +717,10 @@ def _is_default(key: str, value: object) -> bool:
         "label": DEFAULT_LABEL,
     }
     if key == "notify":
-        return value in ({}, {"received": DEFAULT_NOTIFY_RECEIVED})
+        defaults = {"received": DEFAULT_NOTIFY_RECEIVED, "sound": DEFAULT_NOTIFY_SOUND}
+        return isinstance(value, dict) and all(
+            key in defaults and item == defaults[key] for key, item in value.items()
+        )
     return key in defaults_by_key and value == defaults_by_key[key]
 
 
@@ -1041,7 +1054,12 @@ def _notify_options(value: object, path: Path) -> NotifyOptions:
         raise ConfigError(
             f"`notify.received` in {path} has to be true or false, unquoted."
         )
-    return NotifyOptions(received=received)
+    sound = value.get("sound", DEFAULT_NOTIFY_SOUND)
+    if not isinstance(sound, bool):
+        raise ConfigError(
+            f"`notify.sound` in {path} has to be true or false, unquoted."
+        )
+    return NotifyOptions(received=received, sound=sound)
 
 
 ME = "me"

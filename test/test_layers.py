@@ -182,6 +182,38 @@ def test_repo_file_cannot_change_machine_or_watcher_keys(home):
     assert any("`interval`" in w for w in effective.warnings)
 
 
+def test_notify_sound_is_a_machine_key(home):
+    """A project's or a repository's file can't make this machine beep: only
+    the user file sets `[notify] sound`."""
+    assert "notify" in cfg.MACHINE_KEYS
+    user_file(home, "[notify]\nsound = false\n")
+    folder = project(home, "[notify]\nsound = true\n")
+
+    loaded = cfg.load(start=folder)
+    assert loaded.notify.sound is False
+    assert any("`notify`" in w and "machine setting" in w for w in loaded.warnings)
+
+    repo = project(home, "[notify]\nsound = true\n", "lib")
+    effective = cfg.load_repo(loaded, repo)
+    assert effective.notify.sound is False
+    assert any("`notify`" in w for w in effective.warnings)
+
+
+def test_notify_sound_from_the_user_file_is_used(home):
+    user_file(home, "[notify]\nsound = true\n")
+    loaded = cfg.load(start=project(home))
+    assert loaded.notify.sound is True
+    assert loaded.source_of("notify")[0] == cfg.USER
+
+
+def test_a_default_notify_in_a_project_file_does_not_warn(home):
+    """The value it would have anyway changes nothing, so it is ignored quietly."""
+    user_file(home, 'harness = "print"\n')
+    folder = project(home, "[notify]\nreceived = true\nsound = false\n")
+    loaded = cfg.load(start=folder)
+    assert not any("`notify`" in w for w in loaded.warnings)
+
+
 def test_a_repo_without_a_file_is_the_base(home):
     base = cfg.load(start=project(home))
     assert cfg.load_repo(base, project(home, None, "lib")) is base

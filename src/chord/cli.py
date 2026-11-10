@@ -166,7 +166,8 @@ def config_command(
       interval         machine: seconds between polls (default 60, min 5)
       webhook_port     machine: local webhook port (default 23842)
       webhook_secret   machine: X-Chord-Secret value (default none)
-      \\[notify]         machine: received = true|false (default true)
+      \\[notify]         machine: received = true|false (default true),
+                       sound = true|false (default false)
       search_dirs      machine: folders holding checkouts
       linear_user_id   machine: who "me" is; `chord setup` writes it
     """
@@ -233,6 +234,7 @@ _SHOWN = (
     "webhook_port",
     "webhook_secret",
     "notify.received",
+    "notify.sound",
     "search_dirs",
     "linear_user_id",
 )
@@ -243,6 +245,8 @@ def _shown(config: Config, key: str) -> object:
         return spell(config.harness)
     if key == "notify.received":
         return config.notify.received
+    if key == "notify.sound":
+        return config.notify.sound
     if key == "search_dirs":
         return [str(folder) for folder in config.search_dirs]
     if key == "allowed_actors":
@@ -705,6 +709,7 @@ def info():
     for line in _notify():
         typer.echo(line)
     typer.echo(f"  received   {_received_line(config)}")
+    typer.echo(f"  sound      {_sound_line(config)}")
     typer.echo(f"  linear     {_linear_line()}")
     typer.echo(f"  config     {_config_line(config)}")
     if count is not None:
@@ -1052,6 +1057,8 @@ async def _watch(managed: bool = False) -> None:
             start_dir=project_root(),
             # `[notify] received`: a banner when an issue reaches its harness.
             notify_received=config.notify.received,
+            # `[notify] sound`: every banner asks for the default sound.
+            notify_sound=config.notify.sound,
             # Where else to look for a repository named after the project.
             search_dirs=config.search_dirs,
             # Each target repository's own chord.toml, read per issue.
@@ -1294,6 +1301,13 @@ def _received_line(config: Config) -> str:
     if config.notify.received:
         return "banner when an issue reaches its harness ([notify] received = true)"
     return "no banner on delivery ([notify] received = false); log and info only"
+
+
+def _sound_line(config: Config) -> str:
+    """Whether banners ask for the platform's default sound."""
+    if config.notify.sound:
+        return "banners play the default sound ([notify] sound = true)"
+    return "banners are silent ([notify] sound = false)"
 
 
 def _authorisation(config: Config) -> list[str]:

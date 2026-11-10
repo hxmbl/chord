@@ -252,6 +252,7 @@ search_dirs = ["~/Projects"]  # where checkouts named after a Linear project liv
 
 [notify]
 received = true               # a banner when an issue reaches its harness
+sound = false                 # every banner plays the platform's default sound
 ```
 
 `chord help config` lists every setting. The JSON Schema for the file is
@@ -595,6 +596,25 @@ turns it off for a quiet screen; `failed`, `skipped` and `refused` have no
 switch, because an issue that is not being worked on is what banners are for.
 `chord info` says which way it is set (`received   banner when an issue reaches
 its harness ([notify] received = true)`).
+
+**Banners are silent unless you ask for a sound.**
+
+```toml
+[notify]
+sound = true   # default false
+```
+
+asks every banner (all four verbs, and the signed-out one) to play the
+platform's default sound: the `sound-name=message-new-instant` hint on Linux,
+the same one `notify-send --hint=string:sound-name:message-new-instant` sets,
+and Notification Centre's default sound on macOS (`-sound default` for
+terminal-notifier, `sound name "default"` for osascript). It is a request: a
+notification daemon without a sound theme, or banners muted in your system
+settings, stay quiet. Like the rest of `[notify]` it is a machine setting, so it
+only counts in your own `~/.config/chord/chord.toml`
+(`chord set --user notify.sound true`); a repository's file can't make your
+machine beep. `chord info` shows it (`sound      banners are silent ([notify]
+sound = false)`).
 
 **Delivery is recorded quietly either way.** Once the harness has the issue, the
 watcher logs one line — `delivered to claude.` — and records it in

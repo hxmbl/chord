@@ -155,7 +155,13 @@
       "properties": {
         "received": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "A banner when an issue reaches its harness."
+        },
+        "sound": {
+          "type": "boolean",
+          "default": false,
+          "description": "Every banner asks for the platform's default sound (sound-name=message-new-instant on Linux, the default sound on macOS)."
         }
       }
     },

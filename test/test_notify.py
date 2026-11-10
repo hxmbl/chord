@@ -471,3 +471,129 @@ def test_a_group_name_is_bounded():
     """An identifier is Linear's, and the group ends up on a command line."""
     assert len(notify._group("ENG-201")) == len(notify.GROUP) + 1 + len("ENG-201")
     assert len(notify._group("E" * 500)) <= len(notify.GROUP) + 65
+
+
+# --- [notify] sound ---
+
+
+def sounding(monkeypatch, on_: bool = True) -> None:
+    """Turn `[notify] sound` on for one test; monkeypatch puts it back."""
+    monkeypatch.setattr(notify, "_sound", on_)
+
+
+def test_banners_are_silent_by_default(monkeypatch):
+    """Off unless asked: no sound flag reaches either macOS route."""
+    on(monkeypatch, "darwin")
+    monkeypatch.setattr(notify, "_terminal_notifier", lambda: "/opt/tn")
+    monkeypatch.setattr(notify, "_osascript", lambda: "/usr/bin/osascript")
+    rec = recorder(monkeypatch, results=[False, True])
+
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
+
+    assert notify.sound() is False
+    tn, osa = rec.commands
+    assert "-sound" not in tn
+    assert "sound name" not in osa[2]
+
+
+def test_sound_asks_terminal_notifier_for_the_default_sound(monkeypatch):
+    on(monkeypatch, "darwin")
+    sounding(monkeypatch)
+    monkeypatch.setattr(notify, "_terminal_notifier", lambda: "/opt/tn")
+    monkeypatch.setattr(notify, "_osascript", lambda: None)
+    rec = recorder(monkeypatch)
+
+    run(notify.failed("ENG-201", "`opencode` exited 1."))
+
+    (command,) = rec.commands
+    assert command[command.index("-sound") + 1] == "default"
+    assert rec.banners == [("ENG-201 failed", "`opencode` exited 1.")]
+
+
+def test_sound_asks_osascript_for_the_default_sound_without_pasting_text(
+    monkeypatch,
+):
+    """The sound name is ours and constant; the issue's words still go in argv."""
+    on(monkeypatch, "darwin")
+    sounding(monkeypatch)
+    only_osascript(monkeypatch)
+    rec = recorder(monkeypatch)
+
+    run(notify.failed('ENG-201 "quoted"', "`opencode` exited 1."))
+
+    (command,) = rec.commands
+    script = command[2]
+    assert 'sound name "default"' in script
+    assert "ENG-201" not in script
+    assert command[-2:] == ['ENG-201 "quoted" failed', "`opencode` exited 1."]
+
+
+def test_sound_on_linux_is_the_message_new_instant_hint(monkeypatch):
+    """desktop_notifier's D-Bus backend sends a named sound as `sound-name`, so
+    the name it gets is the freedesktop one, not the library's "default"."""
+    on(monkeypatch, "linux")
+    sounding(monkeypatch)
+    sent = []
+
+    class Sound:
+        def __init__(self, name):
+            self.name = name
+
+    class Fake:
+        async def send(self, title, message, sound=None):
+            sent.append((title, message, sound.name if sound else None))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "desktop_notifier",
+        SimpleNamespace(DesktopNotifier=Fake, Sound=Sound, DEFAULT_SOUND=None),
+    )
+    run(notify.skipped("ENG-201", "no route"))
+
+    assert sent == [("ENG-201 skipped", "no route", "message-new-instant")]
+
+
+def test_sound_elsewhere_uses_the_library_default(monkeypatch):
+    on(monkeypatch, "win32")
+    sounding(monkeypatch)
+    sent = []
+    default = object()
+
+    class Fake:
+        async def send(self, title, message, sound=None):
+            sent.append(sound)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "desktop_notifier",
+        SimpleNamespace(DesktopNotifier=Fake, Sound=None, DEFAULT_SOUND=default),
+    )
+    run(notify.refused("ENG-201", "not allowed"))
+
+    assert sent == [default]
+
+
+def test_sound_off_on_linux_sends_no_sound(monkeypatch):
+    """With the setting off the library is called exactly as before."""
+    on(monkeypatch, "linux")
+    sounding(monkeypatch, False)
+    sent = []
+
+    class Fake:
+        async def send(self, title, message):
+            sent.append((title, message))
+
+    monkeypatch.setitem(
+        sys.modules, "desktop_notifier", SimpleNamespace(DesktopNotifier=Fake)
+    )
+    run(notify.failed("ENG-201", "boom"))
+
+    assert sent == [("ENG-201 failed", "boom")]
+
+
+def test_configure_sets_and_clears_the_sound(monkeypatch):
+    sounding(monkeypatch, False)
+    notify.configure(sound=True)
+    assert notify.sound() is True
+    notify.configure(sound=False)
+    assert notify.sound() is False

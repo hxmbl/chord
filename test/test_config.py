@@ -64,9 +64,26 @@ def test_the_received_banner_can_be_turned_off(tmp_path):
     assert config.load(path).notify.received is False
 
 
+def test_banners_are_silent_by_default(tmp_path):
+    assert config.load(tmp_path / "nothing.toml").notify.sound is False
+    path = tmp_path / "chord.toml"
+    path.write_text("[notify]\nreceived = false\n")
+    assert config.load(path).notify.sound is False
+
+
+def test_sound_can_be_turned_on(tmp_path):
+    path = tmp_path / "chord.toml"
+    path.write_text("[notify]\nsound = true\n")
+    loaded = config.load(path)
+    assert loaded.notify.sound is True
+    assert loaded.notify.received is True, "sound leaves received alone"
+
+
 @pytest.mark.parametrize(
     "text,message",
     [
+        ('[notify]\nsound = "yes"\n', "`notify.sound`.*true or false"),
+        ("[notify]\nsound = 1\n", "`notify.sound`.*true or false"),
         ('[notify]\nreceived = "no"\n', "true or false"),
         ("[notify]\nreceived = 0\n", "true or false"),
         ("[notify]\nrecieved = false\n", "doesn't know: `recieved`"),
@@ -91,6 +108,9 @@ def test_the_stock_file_is_minimal_and_loads():
     assert not set(raw) & config.MACHINE_KEYS
     built = config._build(raw, config.config_path()[0])
     assert built.notify.received is True
+    assert built.notify.sound is False
+    # The machine settings are named in comments only, pointing at the user file.
+    assert "notify.sound" in config.STOCK
 
 
 def test_a_curated_harness_appended_to_the_stock_file_leaves_notify_alone(

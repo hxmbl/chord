@@ -531,6 +531,25 @@ def test_info_says_whether_a_delivery_gets_a_banner(
     assert "[notify] received = false" in result.stdout
 
 
+def test_info_says_whether_banners_make_a_sound(
+    keyring_backend, no_env, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "absent.pid")
+    monkeypatch.setattr(daemon, "STATE_FILE", tmp_path / "absent.json")
+
+    result = runner.invoke(app, ["info"])
+    assert result.exit_code == 0, result.output
+    assert "sound      banners are silent ([notify] sound = false)" in result.stdout
+
+    config = tmp_path / ".config" / "chord" / "chord.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[notify]\nsound = true\n")
+    result = runner.invoke(app, ["info"])
+    assert result.exit_code == 0, result.output
+    assert "[notify] sound = true" in result.stdout
+
+
 def test_info_admits_when_no_notifier_exists(
     keyring_backend, no_env, monkeypatch, tmp_path
 ):

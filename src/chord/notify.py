@@ -7,6 +7,14 @@ is *not* being worked on — so `failed`, `skipped` and `refused` always post.
 can be switched off: `[notify] received = false` in chord.toml. It is on by
 default.
 
+`[notify] sound = true` asks every banner to bring the platform's default sound
+along: `sound-name=message-new-instant` on Linux (the freedesktop sound-theme
+name for a new message), Notification Centre's default on macOS, and the toast
+default on Windows. Off by default, because a banner is already an
+interruption and nobody asked for it to be a louder one. It is a request rather
+than a guarantee: a notification daemon with no sound theme, or a person who
+has muted Chord's banners, stays quiet, and that is their call to make.
+
 `received` is posted when delivery is confirmed — the harness has the whole
 issue and survived starting up — rather than as the hand-over begins, so it
 means what it says. A harness that then fails replaces it with `failed` (they
@@ -94,6 +102,30 @@ _DISPLAY = (
     "end run"
 )
 
+# The same handler asking for a sound. The sound's name is ours and constant, so
+# it is the one thing that may sit in the source; the text still comes in argv.
+_DISPLAY_WITH_SOUND = (
+    "on run argv\n"
+    "\tdisplay notification (item 2 of argv) with title (item 1 of argv)"
+    ' sound name "default"\n'
+    "end run"
+)
+
+# What `[notify] sound` asks for. macOS (terminal-notifier's `-sound` and
+# AppleScript's `sound name`) both take "default" for Notification Centre's own
+# sound. On Linux it is a freedesktop sound-theme name passed as the
+# `sound-name` hint, the one `notify-send --hint=string:sound-name:...` sets;
+# `desktop_notifier`'s own default would send the literal "default", which no
+# sound theme has. Windows keeps the library's default toast sound.
+MACOS_SOUND = "default"
+LINUX_SOUND = "message-new-instant"
+
+# `[notify] sound`, as the watcher's owner set it with `configure`. Module state
+# rather than an argument to every verb, because the verbs are called from a
+# dozen places that have no business knowing about speakers, and one machine has
+# one answer to "should banners make a noise".
+_sound = False
+
 # By absolute path. The watcher is detached from the terminal that started it, so
 # it inherits whatever PATH that had, and a bare `osascript` is a PATH lookup in
 # service of something that has been in /usr/bin since macOS 10.8.
@@ -103,6 +135,17 @@ OSASCRIPT = "/usr/bin/osascript"
 # test does not take `shutil` away from the rest of Chord — `harness.build`
 # resolves commands the same way and needs the real one to find them.
 _find = shutil.which
+
+
+def configure(*, sound: bool) -> None:
+    """Set whether banners ask for a sound (`[notify] sound`). Off until set."""
+    global _sound
+    _sound = sound
+
+
+def sound() -> bool:
+    """Whether banners ask for a sound right now."""
+    return _sound
 
 
 async def received(thing: str, where: str) -> None:
@@ -275,11 +318,14 @@ def _macos(title: str, message: str, group: str | None) -> list[list[str]]:
             "-group",
             group or GROUP,
         ]
+        if _sound:
+            command += ["-sound", MACOS_SOUND]
         commands.append(command)
 
     osascript = _osascript()
     if osascript is not None:
-        commands.append([osascript, "-e", _DISPLAY, title, message])
+        script = _DISPLAY_WITH_SOUND if _sound else _DISPLAY
+        commands.append([osascript, "-e", script, title, message])
 
     return commands
 
@@ -296,7 +342,24 @@ async def _library(title: str, message: str) -> None:
     except ImportError:
         return
     notifier: Any = DesktopNotifier()
-    await notifier.send(title=title, message=message)
+    if not _sound:
+        await notifier.send(title=title, message=message)
+        return
+    await notifier.send(title=title, message=message, sound=_library_sound())
+
+
+def _library_sound() -> Any:
+    """The `desktop_notifier` sound `[notify] sound` asks for on this platform.
+
+    Linux's D-Bus backend passes a named sound straight through as the
+    `sound-name` hint, so it is given the freedesktop name (`LINUX_SOUND`);
+    anywhere else the library's own default is the platform's default.
+    """
+    from desktop_notifier import DEFAULT_SOUND, Sound
+
+    if sys.platform.startswith("linux"):
+        return Sound(name=LINUX_SOUND)
+    return DEFAULT_SOUND
 
 
 async def _deliver(command: list[str]) -> bool:
